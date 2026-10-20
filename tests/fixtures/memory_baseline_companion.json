@@ -1,0 +1,1706 @@
+{
+  "schema_version": 1,
+  "fixture_id": "eidolon-phase0-synthetic-companion-v1",
+  "synthetic": true,
+  "description": "Entirely invented companion conversations. No facts describe the repository owner. App speaker labels are retained to exercise the unmodified pipeline.",
+  "timezone": "Asia/Manila",
+  "reset_hour": 4,
+  "context_window": 32768,
+  "sources": [
+    {
+      "id": "headphones",
+      "timestamp": "2026-01-02T15:00:00+08:00",
+      "user": "My invented study ritual is wearing amber headphones while doing map sketches. My headphones are amber, not blue.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "interview-open",
+      "timestamp": "2026-01-02T18:10:00+08:00",
+      "user": "Tomorrow, January 3, I have an interview at Ember Library at 10 AM. I am nervous. Please give me a short encouragement when I bring it up.",
+      "assistant": "When you bring up the interview, I will offer a short encouragement.",
+      "scope": "real_life"
+    },
+    {
+      "id": "calendar-midnight",
+      "timestamp": "2026-01-03T03:30:00+08:00",
+      "user": "It is January 3 at 3:30 AM here. Tomorrow, January 4 at 9 AM, I plan to assemble the cedar shelf. Our room resets at 4 AM, but tomorrow means January 4.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "interview-resolved",
+      "timestamp": "2026-01-03T20:00:00+08:00",
+      "user": "The Ember Library interview is over. I got the catalog assistant role and start January 12. Please do not keep asking whether I have attended the interview.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "tea-old",
+      "timestamp": "2026-01-05T10:00:00+08:00",
+      "user": "For this fictional evaluation I currently prefer jasmine tea, and I dislike peppermint tea. This is about my real-life persona in the test, not roleplay.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "shared-garden",
+      "timestamp": "2026-01-05T12:00:00+08:00",
+      "user": "We planned a tiny balcony garden together today. I picked a silver fern. We called the pot Captain Crumb after your silly joke.",
+      "assistant": "Our silver fern pot is Captain Crumb. We can revisit the garden plan together.",
+      "scope": "real_life"
+    },
+    {
+      "id": "fiction-dragon",
+      "timestamp": "2026-01-06T19:00:00+08:00",
+      "user": "Roleplay scene only: I am Captain Nara, I own a crimson dragon named Velo, and we live at Moon Harbor. None of this is my real-life history.",
+      "assistant": "In our roleplay, Captain Nara and Velo arrive at Moon Harbor.",
+      "scope": "real_life"
+    },
+    {
+      "id": "real-home",
+      "timestamp": "2026-01-06T20:00:00+08:00",
+      "user": "Outside the roleplay, my test persona lives in Pinebridge, works on maps, and has no dragon.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "speaker-attribution",
+      "timestamp": "2026-01-07T10:00:00+08:00",
+      "user": "I said I would draw a new map. You suggested I might like astronomy, but I never said I studied astronomy.",
+      "assistant": "I suggested astronomy as an idea, not a fact about you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "promise-attribution",
+      "timestamp": "2026-01-07T12:00:00+08:00",
+      "user": "I promise to bring the map draft next time. You promised to help brainstorm a title when I bring it. No background reminder has been scheduled.",
+      "assistant": "I will help brainstorm the title when you bring the draft.",
+      "scope": "real_life"
+    },
+    {
+      "id": "sister-bike",
+      "timestamp": "2026-01-08T15:00:00+08:00",
+      "user": "My sister in this test story is Lina. Lina likes cycling. I like walking; please do not assign her cycling hobby to me.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "tea-new",
+      "timestamp": "2026-01-15T10:00:00+08:00",
+      "user": "My tea preference changed today, January 15. I now prefer peppermint tea and no longer prefer jasmine. Jasmine was my earlier preference.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "deadline-old",
+      "timestamp": "2026-01-20T11:00:00+08:00",
+      "user": "The Atlas Night project deadline is February 5. This is our current plan.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "deadline-correction",
+      "timestamp": "2026-01-21T11:00:00+08:00",
+      "user": "Correction to Atlas Night: the deadline is February 8, not February 5. The old date was mistaken. Use February 8 for current planning.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "multilingual-tagalog",
+      "timestamp": "2026-01-22T11:00:00+08:00",
+      "user": "Gusto ko ng maikling sagot kapag pagod ako. Kapag humingi ako ng detalye, puwede ang mahabang paliwanag. Ang pangalang gamit ko para sa mapa ay Lakbay.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "multilingual-japanese",
+      "timestamp": "2026-01-22T12:00:00+08:00",
+      "user": "日本語の練習では、難しい漢字にふりがなを付けてほしい。練習用の猫の名前は「こはく」です。これは架空の練習文です。",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "multilingual-spanish",
+      "timestamp": "2026-01-22T13:00:00+08:00",
+      "user": "Para el proyecto ficticio Brújula, elegí el color turquesa. No elegí violeta. Cuando practiquemos español, corrige solo un error por turno.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "noise-cooking",
+      "timestamp": "2026-01-24T11:00:00+08:00",
+      "user": "A fictional cooking lesson mentioned roast squash, lemon peel and cumin. This one-off example is not my favorite food.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "noise-weather",
+      "timestamp": "2026-01-24T12:00:00+08:00",
+      "user": "In a writing exercise, the weather station reported violet fog. This is invented scenery, not actual weather where I live.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "noise-transit",
+      "timestamp": "2026-01-24T13:00:00+08:00",
+      "user": "The map sample has a tram route called Loop Seven, with a station called Glass Gate. These are invented map labels.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "resolved-shelf",
+      "timestamp": "2026-01-25T11:00:00+08:00",
+      "user": "The cedar shelf is assembled now. I postponed it from January 4 and finished it January 25. It is no longer an open task.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    }
+  ],
+  "probes": [
+    {
+      "id": "daily_boundary-01",
+      "category": "daily_boundary",
+      "timestamp": "2026-01-03T04:05:00+08:00",
+      "question": "What was making me nervous before this room changed?",
+      "expected_source_ids": [
+        "interview-open"
+      ],
+      "expected_atoms": [
+        [
+          "Ember Library"
+        ],
+        [
+          "interview"
+        ]
+      ],
+      "reply_rubric": "Recall the January 3 interview at 10 AM and preserve its open status before completion.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "daily_boundary-02",
+      "category": "daily_boundary",
+      "timestamp": "2026-01-03T04:05:00+08:00",
+      "question": "What time is my Ember Library interview?",
+      "expected_source_ids": [
+        "interview-open"
+      ],
+      "expected_atoms": [
+        [
+          "Ember Library"
+        ],
+        [
+          "interview"
+        ]
+      ],
+      "reply_rubric": "Recall the January 3 interview at 10 AM and preserve its open status before completion.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "daily_boundary-03",
+      "category": "daily_boundary",
+      "timestamp": "2026-01-03T04:05:00+08:00",
+      "question": "What encouragement did we agree on?",
+      "expected_source_ids": [
+        "interview-open"
+      ],
+      "expected_atoms": [
+        [
+          "Ember Library"
+        ],
+        [
+          "interview"
+        ]
+      ],
+      "reply_rubric": "Recall the January 3 interview at 10 AM and preserve its open status before completion.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "daily_boundary-04",
+      "category": "daily_boundary",
+      "timestamp": "2026-01-03T04:05:00+08:00",
+      "question": "Which unfinished event did I tell you about yesterday?",
+      "expected_source_ids": [
+        "interview-open"
+      ],
+      "expected_atoms": [
+        [
+          "Ember Library"
+        ],
+        [
+          "interview"
+        ]
+      ],
+      "reply_rubric": "Recall the January 3 interview at 10 AM and preserve its open status before completion.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "daily_boundary-05",
+      "category": "daily_boundary",
+      "timestamp": "2026-01-03T04:05:00+08:00",
+      "question": "After 4 AM, what did I still have coming up?",
+      "expected_source_ids": [
+        "interview-open"
+      ],
+      "expected_atoms": [
+        [
+          "Ember Library"
+        ],
+        [
+          "interview"
+        ]
+      ],
+      "reply_rubric": "Recall the January 3 interview at 10 AM and preserve its open status before completion.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "daily_boundary-06",
+      "category": "daily_boundary",
+      "timestamp": "2026-01-03T04:05:00+08:00",
+      "question": "Can you carry the interview topic into this new room?",
+      "expected_source_ids": [
+        "interview-open"
+      ],
+      "expected_atoms": [
+        [
+          "Ember Library"
+        ],
+        [
+          "interview"
+        ]
+      ],
+      "reply_rubric": "Recall the January 3 interview at 10 AM and preserve its open status before completion.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "restart-01",
+      "category": "restart",
+      "timestamp": "2026-01-03T04:10:00+08:00",
+      "question": "What color are my headphones?",
+      "expected_source_ids": [
+        "headphones"
+      ],
+      "expected_atoms": [
+        [
+          "amber"
+        ],
+        [
+          "headphones"
+        ]
+      ],
+      "reply_rubric": "Recall amber headphones and map sketches without inventing other habits.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "restart-02",
+      "category": "restart",
+      "timestamp": "2026-01-03T04:10:00+08:00",
+      "question": "What ritual did I mention for sketching?",
+      "expected_source_ids": [
+        "headphones"
+      ],
+      "expected_atoms": [
+        [
+          "amber"
+        ],
+        [
+          "headphones"
+        ]
+      ],
+      "reply_rubric": "Recall amber headphones and map sketches without inventing other habits.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "restart-03",
+      "category": "restart",
+      "timestamp": "2026-01-03T04:10:00+08:00",
+      "question": "Which kind of sketches did I do?",
+      "expected_source_ids": [
+        "headphones"
+      ],
+      "expected_atoms": [
+        [
+          "amber"
+        ],
+        [
+          "headphones"
+        ]
+      ],
+      "reply_rubric": "Recall amber headphones and map sketches without inventing other habits.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "restart-04",
+      "category": "restart",
+      "timestamp": "2026-01-03T04:10:00+08:00",
+      "question": "What do I wear while studying?",
+      "expected_source_ids": [
+        "headphones"
+      ],
+      "expected_atoms": [
+        [
+          "amber"
+        ],
+        [
+          "headphones"
+        ]
+      ],
+      "reply_rubric": "Recall amber headphones and map sketches without inventing other habits.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "restart-05",
+      "category": "restart",
+      "timestamp": "2026-01-03T04:10:00+08:00",
+      "question": "Do you remember my amber study accessory?",
+      "expected_source_ids": [
+        "headphones"
+      ],
+      "expected_atoms": [
+        [
+          "amber"
+        ],
+        [
+          "headphones"
+        ]
+      ],
+      "reply_rubric": "Recall amber headphones and map sketches without inventing other habits.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "restart-06",
+      "category": "restart",
+      "timestamp": "2026-01-03T04:10:00+08:00",
+      "question": "After restarting, can you recall my map-sketch habit?",
+      "expected_source_ids": [
+        "headphones"
+      ],
+      "expected_atoms": [
+        [
+          "amber"
+        ],
+        [
+          "headphones"
+        ]
+      ],
+      "reply_rubric": "Recall amber headphones and map sketches without inventing other habits.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "temporal-01",
+      "category": "temporal",
+      "timestamp": "2026-01-03T04:15:00+08:00",
+      "question": "At 3:30 AM, what did tomorrow mean for my shelf plan?",
+      "expected_source_ids": [
+        "calendar-midnight"
+      ],
+      "expected_atoms": [
+        [
+          "cedar"
+        ],
+        [
+          "January 4",
+          "2026-01-04",
+          "Jan 4"
+        ],
+        [
+          "9 AM",
+          "09:00",
+          "9:00"
+        ]
+      ],
+      "reply_rubric": "Calendar tomorrow was January 4 at 9 AM even though the source was in the previous daily room.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "temporal-02",
+      "category": "temporal",
+      "timestamp": "2026-01-03T04:15:00+08:00",
+      "question": "Which date did I plan to assemble the cedar shelf?",
+      "expected_source_ids": [
+        "calendar-midnight"
+      ],
+      "expected_atoms": [
+        [
+          "cedar"
+        ],
+        [
+          "January 4",
+          "2026-01-04",
+          "Jan 4"
+        ],
+        [
+          "9 AM",
+          "09:00",
+          "9:00"
+        ]
+      ],
+      "reply_rubric": "Calendar tomorrow was January 4 at 9 AM even though the source was in the previous daily room.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "temporal-03",
+      "category": "temporal",
+      "timestamp": "2026-01-03T04:15:00+08:00",
+      "question": "Was the shelf plan for January 3 or January 4?",
+      "expected_source_ids": [
+        "calendar-midnight"
+      ],
+      "expected_atoms": [
+        [
+          "cedar"
+        ],
+        [
+          "January 4",
+          "2026-01-04",
+          "Jan 4"
+        ],
+        [
+          "9 AM",
+          "09:00",
+          "9:00"
+        ]
+      ],
+      "reply_rubric": "Calendar tomorrow was January 4 at 9 AM even though the source was in the previous daily room.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "temporal-04",
+      "category": "temporal",
+      "timestamp": "2026-01-03T04:15:00+08:00",
+      "question": "What time was the shelf assembly planned?",
+      "expected_source_ids": [
+        "calendar-midnight"
+      ],
+      "expected_atoms": [
+        [
+          "cedar"
+        ],
+        [
+          "January 4",
+          "2026-01-04",
+          "Jan 4"
+        ],
+        [
+          "9 AM",
+          "09:00",
+          "9:00"
+        ]
+      ],
+      "reply_rubric": "Calendar tomorrow was January 4 at 9 AM even though the source was in the previous daily room.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "temporal-05",
+      "category": "temporal",
+      "timestamp": "2026-01-03T04:15:00+08:00",
+      "question": "Did the 4 AM boundary change my shelf date?",
+      "expected_source_ids": [
+        "calendar-midnight"
+      ],
+      "expected_atoms": [
+        [
+          "cedar"
+        ],
+        [
+          "January 4",
+          "2026-01-04",
+          "Jan 4"
+        ],
+        [
+          "9 AM",
+          "09:00",
+          "9:00"
+        ]
+      ],
+      "reply_rubric": "Calendar tomorrow was January 4 at 9 AM even though the source was in the previous daily room.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "temporal-06",
+      "category": "temporal",
+      "timestamp": "2026-01-03T04:15:00+08:00",
+      "question": "What happened after midnight but before the new room?",
+      "expected_source_ids": [
+        "calendar-midnight"
+      ],
+      "expected_atoms": [
+        [
+          "cedar"
+        ],
+        [
+          "January 4",
+          "2026-01-04",
+          "Jan 4"
+        ],
+        [
+          "9 AM",
+          "09:00",
+          "9:00"
+        ]
+      ],
+      "reply_rubric": "Calendar tomorrow was January 4 at 9 AM even though the source was in the previous daily room.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "preferences-01",
+      "category": "preferences",
+      "timestamp": "2026-01-16T08:00:00+08:00",
+      "question": "Which tea do I prefer now?",
+      "expected_source_ids": [
+        "tea-new"
+      ],
+      "expected_atoms": [
+        [
+          "peppermint"
+        ],
+        [
+          "January 15",
+          "2026-01-15",
+          "Jan 15"
+        ]
+      ],
+      "reply_rubric": "Present preference is peppermint as of January 15; jasmine is historical.",
+      "forbidden_reply_atoms": [
+        "still prefer jasmine",
+        "currently prefer jasmine"
+      ],
+      "restart": false
+    },
+    {
+      "id": "preferences-02",
+      "category": "preferences",
+      "timestamp": "2026-01-16T08:00:00+08:00",
+      "question": "Has my jasmine preference changed?",
+      "expected_source_ids": [
+        "tea-new"
+      ],
+      "expected_atoms": [
+        [
+          "peppermint"
+        ],
+        [
+          "January 15",
+          "2026-01-15",
+          "Jan 15"
+        ]
+      ],
+      "reply_rubric": "Present preference is peppermint as of January 15; jasmine is historical.",
+      "forbidden_reply_atoms": [
+        "still prefer jasmine",
+        "currently prefer jasmine"
+      ],
+      "restart": false
+    },
+    {
+      "id": "preferences-03",
+      "category": "preferences",
+      "timestamp": "2026-01-16T08:00:00+08:00",
+      "question": "If we make tea today, which should we choose?",
+      "expected_source_ids": [
+        "tea-new"
+      ],
+      "expected_atoms": [
+        [
+          "peppermint"
+        ],
+        [
+          "January 15",
+          "2026-01-15",
+          "Jan 15"
+        ]
+      ],
+      "reply_rubric": "Present preference is peppermint as of January 15; jasmine is historical.",
+      "forbidden_reply_atoms": [
+        "still prefer jasmine",
+        "currently prefer jasmine"
+      ],
+      "restart": false
+    },
+    {
+      "id": "preferences-04",
+      "category": "preferences",
+      "timestamp": "2026-01-16T08:00:00+08:00",
+      "question": "What was my earlier tea preference versus today?",
+      "expected_source_ids": [
+        "tea-new"
+      ],
+      "expected_atoms": [
+        [
+          "peppermint"
+        ],
+        [
+          "January 15",
+          "2026-01-15",
+          "Jan 15"
+        ]
+      ],
+      "reply_rubric": "Present preference is peppermint as of January 15; jasmine is historical.",
+      "forbidden_reply_atoms": [
+        "still prefer jasmine",
+        "currently prefer jasmine"
+      ],
+      "restart": false
+    },
+    {
+      "id": "preferences-05",
+      "category": "preferences",
+      "timestamp": "2026-01-16T08:00:00+08:00",
+      "question": "When did I switch tea preferences?",
+      "expected_source_ids": [
+        "tea-new"
+      ],
+      "expected_atoms": [
+        [
+          "peppermint"
+        ],
+        [
+          "January 15",
+          "2026-01-15",
+          "Jan 15"
+        ]
+      ],
+      "reply_rubric": "Present preference is peppermint as of January 15; jasmine is historical.",
+      "forbidden_reply_atoms": [
+        "still prefer jasmine",
+        "currently prefer jasmine"
+      ],
+      "restart": false
+    },
+    {
+      "id": "preferences-06",
+      "category": "preferences",
+      "timestamp": "2026-01-16T08:00:00+08:00",
+      "question": "Is peppermint still something I dislike?",
+      "expected_source_ids": [
+        "tea-new"
+      ],
+      "expected_atoms": [
+        [
+          "peppermint"
+        ],
+        [
+          "January 15",
+          "2026-01-15",
+          "Jan 15"
+        ]
+      ],
+      "reply_rubric": "Present preference is peppermint as of January 15; jasmine is historical.",
+      "forbidden_reply_atoms": [
+        "still prefer jasmine",
+        "currently prefer jasmine"
+      ],
+      "restart": false
+    },
+    {
+      "id": "shared_episodes-01",
+      "category": "shared_episodes",
+      "timestamp": "2026-01-16T08:05:00+08:00",
+      "question": "What did we name the balcony pot?",
+      "expected_source_ids": [
+        "shared-garden"
+      ],
+      "expected_atoms": [
+        [
+          "Captain Crumb"
+        ],
+        [
+          "silver fern"
+        ]
+      ],
+      "reply_rubric": "Connect the silver fern and Captain Crumb to the shared balcony garden plan and joke.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "shared_episodes-02",
+      "category": "shared_episodes",
+      "timestamp": "2026-01-16T08:05:00+08:00",
+      "question": "What plant did I choose for our garden?",
+      "expected_source_ids": [
+        "shared-garden"
+      ],
+      "expected_atoms": [
+        [
+          "Captain Crumb"
+        ],
+        [
+          "silver fern"
+        ]
+      ],
+      "reply_rubric": "Connect the silver fern and Captain Crumb to the shared balcony garden plan and joke.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "shared_episodes-03",
+      "category": "shared_episodes",
+      "timestamp": "2026-01-16T08:05:00+08:00",
+      "question": "Why did we call it Captain Crumb?",
+      "expected_source_ids": [
+        "shared-garden"
+      ],
+      "expected_atoms": [
+        [
+          "Captain Crumb"
+        ],
+        [
+          "silver fern"
+        ]
+      ],
+      "reply_rubric": "Connect the silver fern and Captain Crumb to the shared balcony garden plan and joke.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "shared_episodes-04",
+      "category": "shared_episodes",
+      "timestamp": "2026-01-16T08:05:00+08:00",
+      "question": "Remember our tiny garden planning session?",
+      "expected_source_ids": [
+        "shared-garden"
+      ],
+      "expected_atoms": [
+        [
+          "Captain Crumb"
+        ],
+        [
+          "silver fern"
+        ]
+      ],
+      "reply_rubric": "Connect the silver fern and Captain Crumb to the shared balcony garden plan and joke.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "shared_episodes-05",
+      "category": "shared_episodes",
+      "timestamp": "2026-01-16T08:05:00+08:00",
+      "question": "Which shared garden joke should we revisit?",
+      "expected_source_ids": [
+        "shared-garden"
+      ],
+      "expected_atoms": [
+        [
+          "Captain Crumb"
+        ],
+        [
+          "silver fern"
+        ]
+      ],
+      "reply_rubric": "Connect the silver fern and Captain Crumb to the shared balcony garden plan and joke.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "shared_episodes-06",
+      "category": "shared_episodes",
+      "timestamp": "2026-01-16T08:05:00+08:00",
+      "question": "What did we plan together on January 5?",
+      "expected_source_ids": [
+        "shared-garden"
+      ],
+      "expected_atoms": [
+        [
+          "Captain Crumb"
+        ],
+        [
+          "silver fern"
+        ]
+      ],
+      "reply_rubric": "Connect the silver fern and Captain Crumb to the shared balcony garden plan and joke.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "fiction-01",
+      "category": "fiction",
+      "timestamp": "2026-01-16T08:10:00+08:00",
+      "question": "Do I have a dragon in real life?",
+      "expected_source_ids": [
+        "fiction-dragon",
+        "real-home"
+      ],
+      "expected_atoms": [
+        [
+          "roleplay",
+          "fiction"
+        ],
+        [
+          "Pinebridge"
+        ],
+        [
+          "Velo"
+        ]
+      ],
+      "reply_rubric": "Separate Captain Nara, Velo and Moon Harbor roleplay from Pinebridge and no real-life dragon.",
+      "forbidden_reply_atoms": [
+        "your real dragon",
+        "you live in Moon Harbor"
+      ],
+      "restart": false
+    },
+    {
+      "id": "fiction-02",
+      "category": "fiction",
+      "timestamp": "2026-01-16T08:10:00+08:00",
+      "question": "Where does my persona live outside our roleplay?",
+      "expected_source_ids": [
+        "fiction-dragon",
+        "real-home"
+      ],
+      "expected_atoms": [
+        [
+          "roleplay",
+          "fiction"
+        ],
+        [
+          "Pinebridge"
+        ],
+        [
+          "Velo"
+        ]
+      ],
+      "reply_rubric": "Separate Captain Nara, Velo and Moon Harbor roleplay from Pinebridge and no real-life dragon.",
+      "forbidden_reply_atoms": [
+        "your real dragon",
+        "you live in Moon Harbor"
+      ],
+      "restart": false
+    },
+    {
+      "id": "fiction-03",
+      "category": "fiction",
+      "timestamp": "2026-01-16T08:10:00+08:00",
+      "question": "Who is Captain Nara?",
+      "expected_source_ids": [
+        "fiction-dragon",
+        "real-home"
+      ],
+      "expected_atoms": [
+        [
+          "roleplay",
+          "fiction"
+        ],
+        [
+          "Pinebridge"
+        ],
+        [
+          "Velo"
+        ]
+      ],
+      "reply_rubric": "Separate Captain Nara, Velo and Moon Harbor roleplay from Pinebridge and no real-life dragon.",
+      "forbidden_reply_atoms": [
+        "your real dragon",
+        "you live in Moon Harbor"
+      ],
+      "restart": false
+    },
+    {
+      "id": "fiction-04",
+      "category": "fiction",
+      "timestamp": "2026-01-16T08:10:00+08:00",
+      "question": "Is Moon Harbor my actual home?",
+      "expected_source_ids": [
+        "fiction-dragon",
+        "real-home"
+      ],
+      "expected_atoms": [
+        [
+          "roleplay",
+          "fiction"
+        ],
+        [
+          "Pinebridge"
+        ],
+        [
+          "Velo"
+        ]
+      ],
+      "reply_rubric": "Separate Captain Nara, Velo and Moon Harbor roleplay from Pinebridge and no real-life dragon.",
+      "forbidden_reply_atoms": [
+        "your real dragon",
+        "you live in Moon Harbor"
+      ],
+      "restart": false
+    },
+    {
+      "id": "fiction-05",
+      "category": "fiction",
+      "timestamp": "2026-01-16T08:10:00+08:00",
+      "question": "What is Velo and which scenario is it from?",
+      "expected_source_ids": [
+        "fiction-dragon",
+        "real-home"
+      ],
+      "expected_atoms": [
+        [
+          "roleplay",
+          "fiction"
+        ],
+        [
+          "Pinebridge"
+        ],
+        [
+          "Velo"
+        ]
+      ],
+      "reply_rubric": "Separate Captain Nara, Velo and Moon Harbor roleplay from Pinebridge and no real-life dragon.",
+      "forbidden_reply_atoms": [
+        "your real dragon",
+        "you live in Moon Harbor"
+      ],
+      "restart": false
+    },
+    {
+      "id": "fiction-06",
+      "category": "fiction",
+      "timestamp": "2026-01-16T08:10:00+08:00",
+      "question": "What belongs to our roleplay rather than my daily life?",
+      "expected_source_ids": [
+        "fiction-dragon",
+        "real-home"
+      ],
+      "expected_atoms": [
+        [
+          "roleplay",
+          "fiction"
+        ],
+        [
+          "Pinebridge"
+        ],
+        [
+          "Velo"
+        ]
+      ],
+      "reply_rubric": "Separate Captain Nara, Velo and Moon Harbor roleplay from Pinebridge and no real-life dragon.",
+      "forbidden_reply_atoms": [
+        "your real dragon",
+        "you live in Moon Harbor"
+      ],
+      "restart": false
+    },
+    {
+      "id": "attribution-01",
+      "category": "attribution",
+      "timestamp": "2026-01-16T08:15:00+08:00",
+      "question": "Did I say I studied astronomy?",
+      "expected_source_ids": [
+        "speaker-attribution"
+      ],
+      "expected_atoms": [
+        [
+          "astronomy"
+        ],
+        [
+          "suggested",
+          "suggestion"
+        ]
+      ],
+      "reply_rubric": "Preserve speaker ownership; suggestions are not user facts, and a conversational promise is not a scheduled reminder.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "attribution-02",
+      "category": "attribution",
+      "timestamp": "2026-01-16T08:15:00+08:00",
+      "question": "Whose idea was astronomy?",
+      "expected_source_ids": [
+        "speaker-attribution"
+      ],
+      "expected_atoms": [
+        [
+          "astronomy"
+        ],
+        [
+          "suggested",
+          "suggestion"
+        ]
+      ],
+      "reply_rubric": "Preserve speaker ownership; suggestions are not user facts, and a conversational promise is not a scheduled reminder.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "attribution-03",
+      "category": "attribution",
+      "timestamp": "2026-01-16T08:15:00+08:00",
+      "question": "Who promised to bring the map draft?",
+      "expected_source_ids": [
+        "promise-attribution"
+      ],
+      "expected_atoms": [
+        [
+          "map"
+        ],
+        [
+          "title"
+        ],
+        [
+          "scheduled",
+          "reminder"
+        ]
+      ],
+      "reply_rubric": "Preserve speaker ownership; suggestions are not user facts, and a conversational promise is not a scheduled reminder.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "attribution-04",
+      "category": "attribution",
+      "timestamp": "2026-01-16T08:15:00+08:00",
+      "question": "What did you promise about my draft?",
+      "expected_source_ids": [
+        "promise-attribution"
+      ],
+      "expected_atoms": [
+        [
+          "map"
+        ],
+        [
+          "title"
+        ],
+        [
+          "scheduled",
+          "reminder"
+        ]
+      ],
+      "reply_rubric": "Preserve speaker ownership; suggestions are not user facts, and a conversational promise is not a scheduled reminder.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "attribution-05",
+      "category": "attribution",
+      "timestamp": "2026-01-16T08:15:00+08:00",
+      "question": "Was a reminder actually scheduled?",
+      "expected_source_ids": [
+        "promise-attribution"
+      ],
+      "expected_atoms": [
+        [
+          "map"
+        ],
+        [
+          "title"
+        ],
+        [
+          "scheduled",
+          "reminder"
+        ]
+      ],
+      "reply_rubric": "Preserve speaker ownership; suggestions are not user facts, and a conversational promise is not a scheduled reminder.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "attribution-06",
+      "category": "attribution",
+      "timestamp": "2026-01-16T08:15:00+08:00",
+      "question": "Does Lina like cycling, or do I?",
+      "expected_source_ids": [
+        "sister-bike"
+      ],
+      "expected_atoms": [
+        [
+          "Lina"
+        ],
+        [
+          "cycling"
+        ],
+        [
+          "walking"
+        ]
+      ],
+      "reply_rubric": "Preserve speaker ownership; suggestions are not user facts, and a conversational promise is not a scheduled reminder.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "contradictions-01",
+      "category": "contradictions",
+      "timestamp": "2026-01-26T10:00:00+08:00",
+      "question": "What is the corrected Atlas Night deadline?",
+      "expected_source_ids": [
+        "deadline-correction"
+      ],
+      "expected_atoms": [
+        [
+          "Atlas Night"
+        ],
+        [
+          "February 8",
+          "2026-02-08",
+          "Feb 8"
+        ]
+      ],
+      "reply_rubric": "Use corrected February 8; February 5 can appear only as the mistaken prior statement.",
+      "forbidden_reply_atoms": [
+        "deadline is February 5",
+        "deadline is Feb 5"
+      ],
+      "restart": false
+    },
+    {
+      "id": "contradictions-02",
+      "category": "contradictions",
+      "timestamp": "2026-01-26T10:00:00+08:00",
+      "question": "Was February 5 the final deadline?",
+      "expected_source_ids": [
+        "deadline-correction"
+      ],
+      "expected_atoms": [
+        [
+          "Atlas Night"
+        ],
+        [
+          "February 8",
+          "2026-02-08",
+          "Feb 8"
+        ]
+      ],
+      "reply_rubric": "Use corrected February 8; February 5 can appear only as the mistaken prior statement.",
+      "forbidden_reply_atoms": [
+        "deadline is February 5",
+        "deadline is Feb 5"
+      ],
+      "restart": false
+    },
+    {
+      "id": "contradictions-03",
+      "category": "contradictions",
+      "timestamp": "2026-01-26T10:00:00+08:00",
+      "question": "What date should we use for Atlas Night now?",
+      "expected_source_ids": [
+        "deadline-correction"
+      ],
+      "expected_atoms": [
+        [
+          "Atlas Night"
+        ],
+        [
+          "February 8",
+          "2026-02-08",
+          "Feb 8"
+        ]
+      ],
+      "reply_rubric": "Use corrected February 8; February 5 can appear only as the mistaken prior statement.",
+      "forbidden_reply_atoms": [
+        "deadline is February 5",
+        "deadline is Feb 5"
+      ],
+      "restart": false
+    },
+    {
+      "id": "contradictions-04",
+      "category": "contradictions",
+      "timestamp": "2026-01-26T10:00:00+08:00",
+      "question": "Which project date did I correct?",
+      "expected_source_ids": [
+        "deadline-correction"
+      ],
+      "expected_atoms": [
+        [
+          "Atlas Night"
+        ],
+        [
+          "February 8",
+          "2026-02-08",
+          "Feb 8"
+        ]
+      ],
+      "reply_rubric": "Use corrected February 8; February 5 can appear only as the mistaken prior statement.",
+      "forbidden_reply_atoms": [
+        "deadline is February 5",
+        "deadline is Feb 5"
+      ],
+      "restart": false
+    },
+    {
+      "id": "contradictions-05",
+      "category": "contradictions",
+      "timestamp": "2026-01-26T10:00:00+08:00",
+      "question": "Can you distinguish the mistaken date from the current one?",
+      "expected_source_ids": [
+        "deadline-correction"
+      ],
+      "expected_atoms": [
+        [
+          "Atlas Night"
+        ],
+        [
+          "February 8",
+          "2026-02-08",
+          "Feb 8"
+        ]
+      ],
+      "reply_rubric": "Use corrected February 8; February 5 can appear only as the mistaken prior statement.",
+      "forbidden_reply_atoms": [
+        "deadline is February 5",
+        "deadline is Feb 5"
+      ],
+      "restart": false
+    },
+    {
+      "id": "contradictions-06",
+      "category": "contradictions",
+      "timestamp": "2026-01-26T10:00:00+08:00",
+      "question": "Did my deadline move to February 8?",
+      "expected_source_ids": [
+        "deadline-correction"
+      ],
+      "expected_atoms": [
+        [
+          "Atlas Night"
+        ],
+        [
+          "February 8",
+          "2026-02-08",
+          "Feb 8"
+        ]
+      ],
+      "reply_rubric": "Use corrected February 8; February 5 can appear only as the mistaken prior statement.",
+      "forbidden_reply_atoms": [
+        "deadline is February 5",
+        "deadline is Feb 5"
+      ],
+      "restart": false
+    },
+    {
+      "id": "multilingual-01",
+      "category": "multilingual",
+      "timestamp": "2026-01-26T10:05:00+08:00",
+      "question": "Ano ang gusto kong haba ng sagot kapag pagod?",
+      "expected_source_ids": [
+        "multilingual-tagalog"
+      ],
+      "expected_atoms": [
+        [
+          "maikli",
+          "short",
+          "brief"
+        ]
+      ],
+      "reply_rubric": "Use brief responses when tired; longer detail is okay when explicitly requested.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "multilingual-02",
+      "category": "multilingual",
+      "timestamp": "2026-01-26T10:05:00+08:00",
+      "question": "Ano ang tawag ko sa mapa?",
+      "expected_source_ids": [
+        "multilingual-tagalog"
+      ],
+      "expected_atoms": [
+        [
+          "Lakbay"
+        ]
+      ],
+      "reply_rubric": "Recall Lakbay as the chosen map name.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "multilingual-03",
+      "category": "multilingual",
+      "timestamp": "2026-01-26T10:05:00+08:00",
+      "question": "日本語の練習で漢字に何を付けてほしい？",
+      "expected_source_ids": [
+        "multilingual-japanese"
+      ],
+      "expected_atoms": [
+        [
+          "ふりがな",
+          "furigana"
+        ]
+      ],
+      "reply_rubric": "Recall furigana request for difficult kanji.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "multilingual-04",
+      "category": "multilingual",
+      "timestamp": "2026-01-26T10:05:00+08:00",
+      "question": "練習文の猫の名前は？ 実際のペットなの？",
+      "expected_source_ids": [
+        "multilingual-japanese"
+      ],
+      "expected_atoms": [
+        [
+          "こはく",
+          "Kohaku"
+        ],
+        [
+          "架空",
+          "fiction",
+          "practice"
+        ]
+      ],
+      "reply_rubric": "Kohaku belongs to a fictional practice sentence, not a real pet.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "multilingual-05",
+      "category": "multilingual",
+      "timestamp": "2026-01-26T10:05:00+08:00",
+      "question": "¿Qué color elegí para Brújula?",
+      "expected_source_ids": [
+        "multilingual-spanish"
+      ],
+      "expected_atoms": [
+        [
+          "turquesa",
+          "turquoise"
+        ]
+      ],
+      "reply_rubric": "Recall turquoise rather than violet for the fictional project.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "multilingual-06",
+      "category": "multilingual",
+      "timestamp": "2026-01-26T10:05:00+08:00",
+      "question": "How many mistakes should you correct in each Spanish practice turn?",
+      "expected_source_ids": [
+        "multilingual-spanish"
+      ],
+      "expected_atoms": [
+        [
+          "un error",
+          "one error",
+          "one mistake",
+          "single error"
+        ]
+      ],
+      "reply_rubric": "Correct only one mistake per Spanish practice turn.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "weeks-01",
+      "category": "weeks",
+      "timestamp": "2026-02-16T10:00:00+08:00",
+      "question": "Weeks later, what accessory did I use for study?",
+      "expected_source_ids": [
+        "headphones"
+      ],
+      "expected_atoms": [
+        [
+          "amber"
+        ],
+        [
+          "headphones"
+        ]
+      ],
+      "reply_rubric": "Recover dated evidence after several weeks; distinguish resolved plans and current state.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "weeks-02",
+      "category": "weeks",
+      "timestamp": "2026-02-16T10:00:00+08:00",
+      "question": "What was our balcony pot named several weeks ago?",
+      "expected_source_ids": [
+        "shared-garden"
+      ],
+      "expected_atoms": [
+        [
+          "Captain Crumb"
+        ]
+      ],
+      "reply_rubric": "Recover dated evidence after several weeks; distinguish resolved plans and current state.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "weeks-03",
+      "category": "weeks",
+      "timestamp": "2026-02-16T10:00:00+08:00",
+      "question": "What did I start on January 12?",
+      "expected_source_ids": [
+        "interview-resolved"
+      ],
+      "expected_atoms": [
+        [
+          "catalog assistant"
+        ],
+        [
+          "January 12",
+          "2026-01-12",
+          "Jan 12"
+        ]
+      ],
+      "reply_rubric": "Recover dated evidence after several weeks; distinguish resolved plans and current state.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "weeks-04",
+      "category": "weeks",
+      "timestamp": "2026-02-16T10:00:00+08:00",
+      "question": "What calendar date was my interview?",
+      "expected_source_ids": [
+        "interview-open"
+      ],
+      "expected_atoms": [
+        [
+          "January 3",
+          "2026-01-03",
+          "Jan 3"
+        ]
+      ],
+      "reply_rubric": "Recover dated evidence after several weeks; distinguish resolved plans and current state.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "weeks-05",
+      "category": "weeks",
+      "timestamp": "2026-02-16T10:00:00+08:00",
+      "question": "What did we promise about my map draft?",
+      "expected_source_ids": [
+        "promise-attribution"
+      ],
+      "expected_atoms": [
+        [
+          "draft"
+        ],
+        [
+          "title"
+        ]
+      ],
+      "reply_rubric": "Recover dated evidence after several weeks; distinguish resolved plans and current state.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "weeks-06",
+      "category": "weeks",
+      "timestamp": "2026-02-16T10:00:00+08:00",
+      "question": "Did the cedar shelf remain unfinished by January 26?",
+      "expected_source_ids": [
+        "resolved-shelf"
+      ],
+      "expected_atoms": [
+        [
+          "January 25",
+          "2026-01-25",
+          "Jan 25"
+        ],
+        [
+          "assembled",
+          "finished",
+          "completed"
+        ]
+      ],
+      "reply_rubric": "Recover dated evidence after several weeks; distinguish resolved plans and current state.",
+      "forbidden_reply_atoms": [],
+      "restart": true
+    },
+    {
+      "id": "irrelevance-01",
+      "category": "irrelevance",
+      "timestamp": "2026-02-16T10:05:00+08:00",
+      "question": "What color did I choose for Brújula, ignoring the fog exercise?",
+      "expected_source_ids": [
+        "multilingual-spanish"
+      ],
+      "expected_atoms": [
+        [
+          "turquesa",
+          "turquoise"
+        ]
+      ],
+      "reply_rubric": "Avoid assigning unrelated one-off examples or fictional map labels to real preferences or lived events.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "irrelevance-02",
+      "category": "irrelevance",
+      "timestamp": "2026-02-16T10:05:00+08:00",
+      "question": "Does the roast-squash example establish my favorite food?",
+      "expected_source_ids": [
+        "noise-cooking"
+      ],
+      "expected_atoms": [
+        [
+          "example",
+          "lesson"
+        ],
+        [
+          "not",
+          "one-off"
+        ]
+      ],
+      "reply_rubric": "Avoid assigning unrelated one-off examples or fictional map labels to real preferences or lived events.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "irrelevance-03",
+      "category": "irrelevance",
+      "timestamp": "2026-02-16T10:05:00+08:00",
+      "question": "Was violet fog a fact about my real weather?",
+      "expected_source_ids": [
+        "noise-weather"
+      ],
+      "expected_atoms": [
+        [
+          "invented",
+          "exercise",
+          "fiction"
+        ]
+      ],
+      "reply_rubric": "Avoid assigning unrelated one-off examples or fictional map labels to real preferences or lived events.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "irrelevance-04",
+      "category": "irrelevance",
+      "timestamp": "2026-02-16T10:05:00+08:00",
+      "question": "Was Glass Gate an actual place I visited?",
+      "expected_source_ids": [
+        "noise-transit"
+      ],
+      "expected_atoms": [
+        [
+          "invented",
+          "exercise",
+          "fiction"
+        ]
+      ],
+      "reply_rubric": "Avoid assigning unrelated one-off examples or fictional map labels to real preferences or lived events.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "irrelevance-05",
+      "category": "irrelevance",
+      "timestamp": "2026-02-16T10:05:00+08:00",
+      "question": "What is my present tea preference, after unrelated exercises?",
+      "expected_source_ids": [
+        "tea-new"
+      ],
+      "expected_atoms": [
+        [
+          "peppermint"
+        ]
+      ],
+      "reply_rubric": "Avoid assigning unrelated one-off examples or fictional map labels to real preferences or lived events.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "irrelevance-06",
+      "category": "irrelevance",
+      "timestamp": "2026-02-16T10:05:00+08:00",
+      "question": "What was Captain Crumb, rather than Loop Seven?",
+      "expected_source_ids": [
+        "shared-garden"
+      ],
+      "expected_atoms": [
+        [
+          "silver fern"
+        ],
+        [
+          "Captain Crumb"
+        ]
+      ],
+      "reply_rubric": "Avoid assigning unrelated one-off examples or fictional map labels to real preferences or lived events.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "unknown-01",
+      "category": "unknown",
+      "timestamp": "2026-02-16T10:10:00+08:00",
+      "question": "What is my bank account number?",
+      "expected_source_ids": [],
+      "expected_atoms": [],
+      "reply_rubric": "Acknowledge no supporting evidence; do not invent a personal fact.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "unknown-02",
+      "category": "unknown",
+      "timestamp": "2026-02-16T10:10:00+08:00",
+      "question": "What is my real birthday?",
+      "expected_source_ids": [],
+      "expected_atoms": [],
+      "reply_rubric": "Acknowledge no supporting evidence; do not invent a personal fact.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "unknown-03",
+      "category": "unknown",
+      "timestamp": "2026-02-16T10:10:00+08:00",
+      "question": "What medical diagnosis did I tell you about?",
+      "expected_source_ids": [],
+      "expected_atoms": [],
+      "reply_rubric": "Acknowledge no supporting evidence; do not invent a personal fact.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "unknown-04",
+      "category": "unknown",
+      "timestamp": "2026-02-16T10:10:00+08:00",
+      "question": "What is my exact street address?",
+      "expected_source_ids": [],
+      "expected_atoms": [],
+      "reply_rubric": "Acknowledge no supporting evidence; do not invent a personal fact.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "unknown-05",
+      "category": "unknown",
+      "timestamp": "2026-02-16T10:10:00+08:00",
+      "question": "What was my childhood school called?",
+      "expected_source_ids": [],
+      "expected_atoms": [],
+      "reply_rubric": "Acknowledge no supporting evidence; do not invent a personal fact.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    },
+    {
+      "id": "unknown-06",
+      "category": "unknown",
+      "timestamp": "2026-02-16T10:10:00+08:00",
+      "question": "What is my favorite food?",
+      "expected_source_ids": [],
+      "expected_atoms": [],
+      "reply_rubric": "Acknowledge no supporting evidence; do not invent a personal fact.",
+      "forbidden_reply_atoms": [],
+      "restart": false
+    }
+  ],
+  "scoring_notes": "Substring atoms measure supplied evidence availability, not factual correctness or reply quality. Contradictory historical evidence is allowed in retrieval; human reply rubrics decide whether it is qualified correctly. Unknown probes have no retrieval score."
+}

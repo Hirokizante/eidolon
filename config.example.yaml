@@ -1,0 +1,163 @@
+# Generic defaults. eidolon setup creates the private config.yaml.
+identity:
+  # Display names: 1–80 Unicode code points after trimming; no controls or line breaks.
+  user_name: You
+  companion_name: Companion
+provider: local
+providers:
+- name: local
+  endpoint: http://127.0.0.1:1234/v1
+  model: configure-model
+  api_key_ref: null
+  headers: {}
+  tools: true
+  presentation: auto
+  structured_verified: false
+  post_history: system
+  # Token window used for prompt budgeting and the status bar.
+  # null discovers the selected model automatically; set manually if discovery is unavailable.
+  context_window: null
+  # Filled automatically per model, including source and refresh time.
+  model_metadata: {}
+  parameters: {}
+# Setup detects the machine's IANA timezone; UTC is the fallback.
+timezone: UTC
+reset_hour: 4
+allowed_roots: []
+mcp_servers: []
+memory:
+  # Independent choices: use existing learned context and save future completed exchanges.
+  enabled: false
+  save_enabled: false
+  # Local current-life maintenance and inclusion are independent opt-ins.
+  continuity_enabled: false
+  continuity_use_enabled: false
+  continuity_max_notes: 12  # Active notes only; archived notes do not count (1–64).
+  continuity_batch_exchanges: 8
+  continuity_idle_seconds: 600
+  url: http://127.0.0.1:8888
+  bank: ''  # Existing bank for recall/delivery; saving can queue locally without one.
+  api_key_ref: null
+  # Manual retention-readiness gates; setup/doctor do not turn these on.
+  # See docs/MEMORY.md before enabling delivery to an existing bank.
+  retain_enabled: false
+  verified: false
+  timeout: 20
+  recall_budget: low
+  max_memories: 12
+# App-owned background inference, currently current-life maintenance only.
+# Missing section follows dialogue without changing any memory controls.
+auxiliary:
+  mode: inherit  # inherit | separate | disabled
+  provider: null  # separate: saved providers[].name
+  model: null  # separate: independent model ID; manual IDs work
+  context_chars: null  # no character cap; known token capacity still applies
+  context_window: null  # tokens for this binding; unknown stays unknown
+  timeout_seconds: 60
+  max_output_tokens: 4096
+  output_token_field: max_tokens  # or max_completion_tokens; never both
+  reasoning_effort: null  # separate: omit unless explicitly supported/configured
+  thinking_mode: null  # optional disabled | adaptive; requires endpoint support
+# Optional image analyst, chosen independently in /preferences.
+# Disabled sends images directly to the dialogue model when it supports vision.
+# Separate lets the dialogue model call vision_analyze with its own question.
+vision:
+  mode: disabled  # disabled | separate
+  provider: null  # separate: saved providers[].name
+  model: null  # separate: independent vision-capable model ID
+  context_window: null
+  timeout_seconds: 60
+  max_output_tokens: 4096
+  output_token_field: max_tokens
+  reasoning_effort: null
+  thinking_mode: null
+# /preferences → Web search configures every option below, including API keys.
+# Credentials are references only; keys entered in the TUI are stored in Keychain.
+web_search:
+  provider: tavily  # tavily | brave | exa | perplexity | searxng
+  tavily:
+    api_key_ref: null
+    max_results: 5
+    timeout_seconds: 15
+    max_content_chars: 3000
+    depth: basic  # basic | advanced | fast | ultra-fast
+    topic: general  # general | news | finance
+    chunks_per_source: 3
+    time_range: null  # day | week | month | year
+    start_date: null  # YYYY-MM-DD
+    end_date: null
+    include_domains: []
+    exclude_domains: []
+    include_published_date: true
+    exact_match: false
+    safe_search: false  # basic / advanced depth only
+  brave:
+    api_key_ref: null
+    max_results: 5
+    timeout_seconds: 15
+    max_content_chars: 3000
+    country: ALL
+    search_lang: en
+    safesearch: moderate  # off | moderate | strict
+    freshness: null  # pd | pw | pm | py | YYYY-MM-DDtoYYYY-MM-DD
+    extra_snippets: true
+    goggles: []
+  exa:
+    api_key_ref: null
+    max_results: 5
+    timeout_seconds: 15
+    max_content_chars: 3000
+    search_type: auto  # auto | instant | fast | deep-lite | deep | deep-reasoning
+    content_mode: highlights  # highlights | text
+    category: null  # news | publication | company | people | personal site | financial report
+    include_domains: []
+    exclude_domains: []
+    start_date: null  # YYYY-MM-DD; unsupported for company / people categories
+    end_date: null
+  perplexity:
+    api_key_ref: null
+    max_results: 5
+    timeout_seconds: 15
+    max_content_chars: 3000
+    search_type: web  # web | fast
+    country: null  # two-letter country code
+    language_filter: []  # two-letter language codes
+    domain_filter: []  # all included, or all prefixed with - to exclude
+    recency: null  # hour | day | week | month | year
+    start_date: null  # YYYY-MM-DD; converted to provider date format
+    end_date: null
+    updated_after: null
+    updated_before: null
+    max_tokens: 5000
+    max_tokens_per_page: 1024
+  searxng:
+    api_key_ref: null  # optional Bearer credential for a protected instance
+    max_results: 5
+    timeout_seconds: 15
+    max_content_chars: 3000
+    base_url: http://127.0.0.1:8080  # instance must enable JSON search output
+    engines: []  # blank uses instance defaults
+    categories: []
+    language: null
+    time_range: null  # day | month | year
+    safesearch: 0  # 0 off | 1 moderate | 2 strict
+avatar:
+  enabled: false
+  server: avatar
+  profile: companion  # Lifecycle route; independent of display names. Match the external profile.
+  lifecycle_url: http://127.0.0.1:8766/events
+  signing_key_ref: null
+  catalog_ttl: 300
+preferences:
+  follow_replies: true
+  show_service_status: true
+  status_components: [model, context, cache, speed]
+bindings:
+  send: enter
+  newline: shift+enter
+
+theme:
+  name: tokyo-night
+  colors: {}
+  custom_base: null
+  custom_colors: {}

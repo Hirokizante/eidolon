@@ -1,0 +1,29 @@
+minimum_pre_commit_version: '4.0.0'
+default_install_hook_types: [pre-commit, pre-push]
+repos:
+  - repo: local
+    hooks:
+      - id: private-files
+        name: Keep local configuration and prompts out of Git
+        entry: python scripts/check_private_files.py
+        language: python
+        stages: [pre-commit, manual]
+      - id: private-files-history
+        name: Check history for private files before pushing
+        entry: python scripts/check_private_files.py --history
+        language: python
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1
+    hooks:
+      - id: gitleaks
+        stages: [pre-commit]
+      - id: gitleaks
+        alias: gitleaks-history
+        name: Scan commit history for secrets before pushing
+        entry: gitleaks git --redact --log-opts=--all
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
