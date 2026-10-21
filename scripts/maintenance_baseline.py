@@ -16,15 +16,19 @@ import sys
 import time
 import uuid
 from collections import Counter
+from collections.abc import AsyncIterator
 from contextlib import aclosing
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import httpx
 import yaml
 
-from eidolon.config import AppConfig, AuxiliaryModelConfig, IdentityConfig, atomic_write
+from eidolon.config import (
+    AppConfig, AuxiliaryModelConfig, IdentityConfig, ProviderConfig, atomic_write,
+)
 from eidolon.memory.continuity import validate_operations
 from eidolon.memory.maintenance import ContinuityWorker, numeric_usage
 from eidolon.providers.openai import (
@@ -160,10 +164,10 @@ def expand(value: object, refs: dict[str, dict], revision: int) -> object:
 class ScriptedProvider:
     """A fixture answer, never an inference or a quality result."""
 
-    def __init__(self, profile, response: object):
+    def __init__(self, profile: ProviderConfig, response: object) -> None:
         self.config, self.response = profile, response
 
-    async def stream(self, messages: list[dict], **kwargs):
+    async def stream(self, messages: list[dict], **kwargs: Any) -> AsyncIterator[dict]:
         yield {"type": "request", "endpoint": "scripted://offline"}
         yield {"type": "token", "text": json.dumps(self.response)}
         yield {"type": "finish", "reason": "stop"}
@@ -172,7 +176,7 @@ class ScriptedProvider:
 class SingleDispatchTransport(httpx.AsyncBaseTransport):
     """Count actual HTTP sends and forbid a second dispatch, including retries."""
 
-    def __init__(self, transport: httpx.AsyncBaseTransport):
+    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
         self.transport = transport
         self.requests = 0
         self.status_code: int | None = None
@@ -190,7 +194,7 @@ class SingleDispatchTransport(httpx.AsyncBaseTransport):
 
 
 class ObservedProvider:
-    def __init__(self, provider):
+    def __init__(self, provider: OpenAIProvider | ScriptedProvider) -> None:
         self.provider, self.config = provider, provider.config
         self.calls = 0
         self.requests = 0
@@ -201,7 +205,7 @@ class ObservedProvider:
         self.endpoint: str | None = None
         self.usage: dict = {}
 
-    async def stream(self, messages: list[dict], **kwargs):
+    async def stream(self, messages: list[dict], **kwargs: Any) -> AsyncIterator[dict]:
         if self.calls:
             raise RuntimeError("Recovery is disabled in first-attempt evaluation")
         self.calls += 1
@@ -257,6 +261,8 @@ def outcome(provider: ObservedProvider, committed: bool, changes: bool,
             status_code: int | None = None) -> str:
     if status_code is not None and status_code >= 400:
         return "provider_rejection"
+    if provider.failure == "provider_failure" and provider.text and provider.finish is None:
+        return "truncated"
     if provider.failure:
         return provider.failure
     if committed:
@@ -317,6 +323,7 @@ async def evaluate_case(case: dict, sources: dict[str, dict], directory: Path,
             "request_metrics": [row["metrics"] for row in store.list_request_metrics()],
             "before": before, "after": after, "messages": observed.messages,
             "response": observed.text, "finish_reason": observed.finish,
+            "provider_failure": observed.failure,
             "request_endpoint": observed.endpoint,
             "status_code": dispatch.status_code if dispatch else None,
             "attempts": store.maintenance_status()["stages"]}
@@ -381,7 +388,7 @@ def apply_reviews(report: dict, reviews: dict) -> dict:
 
 
 def provenance() -> dict:
-    def git(*args):
+    def git(*args: str) -> str:
         return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True).strip()
     paths = [*sorted((ROOT / "src/eidolon/memory").glob("*.py")),
              ROOT / "src/eidolon/storage/store.py", ROOT / "src/eidolon/providers/openai.py",
@@ -417,12 +424,11 @@ async def run(args: argparse.Namespace) -> Path:
         "complete": False, "planned_samples": len(workload["cases"]) * args.repetitions,
         "pricing": {"input_usd_per_million": rates[0], "output_usd_per_million": rates[1],
                     "kind": "user-supplied estimate; excludes discounts, fees and cache pricing"},
-        "repetitions": args.repetitions, "identity": {
+        "repetitions": args.repetitions, "identity": {**execution.provenance(),
             "endpoint": profile.endpoint if live else "scripted://offline",
             "model": profile.model if live else "scripted-fixture-v1",
             "transport": "openai-compatible-chat-completions" if live else "scripted",
-            "output_mode": "prompt-only-json", "schema_enforcement": False,
-            **execution.provenance()}, "rows": []}
+            "output_mode": "prompt-only-json", "schema_enforcement": False}, "rows": []}
     path = directory / "report.json"
     atomic_write(directory / "workload.json", json.dumps(workload, indent=2))
     atomic_write(directory / "sources.json", json.dumps(sources, indent=2))
