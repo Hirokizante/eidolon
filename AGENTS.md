@@ -32,13 +32,15 @@ Use four-space indentation, `snake_case` for functions/modules, and `PascalCase`
 
 ## Testing Guidelines
 
+Keep screenshots generated during testing in temporary directories outside Git checkouts and worktrees. Never stage or commit these captures, including screenshots made with synthetic content. Record UI validation results in the contribution notes.
+
 Use pytest, pytest-asyncio, and pytest-xdist; async tests run in auto mode. Name files `test_<module>.py` and functions `test_<behavior>`. Use `tmp_path`, fake services, and `httpx.MockTransport` to isolate state and network calls. Exercise Textual interactions with `app.run_test()` and its pilot. Add regression tests for behavior changes; no numeric coverage threshold is configured.
 
 Always use `uv run pytest -n 4 --dist worksteal` for full-suite and focused test runs. Append paths, node IDs, or `-k` filters to this command; for example, `uv run pytest -n 4 --dist worksteal tests/test_provider.py`. These commands supersede serial pytest examples in older reports and task specs. Use `-n 0` only when a specific debugging task requires serial execution, and explain the reason in validation notes.
 
 ## Commit & Pull Request Guidelines
 
-Use imperative, sentence-case commit subjects such as “Harden memory recall, recovery, and presentation fallback.” Keep commits focused. PRs should explain changed behavior, link relevant issues, list validation performed and its limits, and include screenshots with synthetic content for terminal layout changes. Update maintained guides and generic examples when behavior changes.
+Use imperative, sentence-case commit subjects such as “Harden memory recall, recovery, and presentation fallback.” Keep commits focused. PRs should explain changed behavior, link relevant issues, and list validation performed and its limits, including terminal layout checks. Update maintained guides and generic examples when behavior changes.
 
 Use GitHub Issues and pull requests for planning and review. CI runs privacy/history hooks, dependency auditing, Ruff, source compilation, tests, and builds. Live macOS integrations require separate validation.
 

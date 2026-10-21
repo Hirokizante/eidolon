@@ -117,6 +117,8 @@ agents as test fixtures.
 Exercise Textual interactions with `app.run_test()` and its pilot, using fake
 clients as in [`tests/test_ui.py`](tests/test_ui.py). Assert observable behavior,
 including focus restoration, preserved drafts, and keyboard access where relevant.
+Handle screenshots generated during testing according to the
+[test-artifact rule](AGENTS.md#testing-guidelines).
 Synthetic adapter tests do not establish that a live Keychain transfer, launchd
 replacement, or external integration has been validated; distinguish any manual
 integration checks in the change description.
@@ -185,8 +187,7 @@ it from history. Handle any history remediation separately.
 Use imperative, sentence-case commit subjects, for example “Preserve composer
 drafts when closing preferences.” Keep the PR focused. Explain the problem and
 resulting behavior, link the relevant issue, and list validation commands,
-results, and limits. For terminal layout changes, include reviewed screenshots
-made with synthetic content and describe keyboard/resize checks required by
-`DESIGN.md`. Documentation-only changes do not need screenshots. Review
+results, and limits. For terminal layout changes, describe the keyboard, resize,
+terminal-size, and monochrome/ASCII checks required by `DESIGN.md`. Review
 `git diff` and `git diff --cached` before committing to confirm the intended scope
 and absence of private material.

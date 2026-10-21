@@ -135,10 +135,6 @@ are distinct from Hindsight readiness. This diagnostics slice preserves the
 existing retry policy: it does not introduce recovery budgets, set-aside batches,
 or progress past the oldest unresolved evidence.
 
-![Main conversation with a synthetic maintenance warning](images/maintenance-main.png)
-![Synthetic attempt details at 80 by 24](images/maintenance-history.png)
-![Synthetic monochrome ASCII details at 60 by 18](images/maintenance-history-mono.png)
-
 `uv run eidolon doctor` reports auxiliary routing separately from Hindsight
 connectivity. With the service running, it also includes maintenance diagnostics:
 task state, latest attempt, last successful execution, elapsed time, and available

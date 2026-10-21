@@ -244,7 +244,7 @@ timing, available usage, next action/time, last success, and saved note comparis
 Reasons remain visible after a later retry succeeds. Older attempts with no
 recorded reason say so; unknown usage is never shown as zero. See the
 [auxiliary failure guide](AUXILIARY_MODEL.md#diagnose-and-recover) for diagnostic
-categories, history retention, screenshots, and current retry-policy limits.
+categories, history retention, and current retry-policy limits.
 
 ## Proposal format and retries
 
