@@ -440,6 +440,7 @@ async def test_attempt_history_is_bounded_and_aggregates_survive_pruning(tmp_pat
         assert status["model_calls"] == 105
         stage = next(row for row in status["stages"] if row["stage"] == "continuity")
         assert stage["usage_totals"] == {"prompt_tokens": 1260}
+        assert stage["attempt_counts"] == {"failed": 105}
         assert status["latest_attempt"]["elapsed_seconds"] >= 0
 
 
@@ -556,3 +557,212 @@ async def test_recall_preferences_do_not_interrupt_unrelated_maintenance(tmp_pat
         assert not closed.is_set() and s.continuity_worker is worker
         assert s.store.auxiliary_route()["revision"] == revision
         await s._cancel_continuity()
+
+
+async def test_safe_attempt_reasons_survive_success_and_restart(tmp_path, monkeypatch):
+    from eidolon.storage import Store
+    from test_memory_maintenance import Provider
+
+    hostile = "PRIVATE prompt response sk-synthetic https://private.invalid/?credential=secret"
+    async with room(tmp_path, monkeypatch) as (s, client, _, _):
+        s.store.complete_turn(s.current_session["id"], "Synthetic project.", "Acknowledged.")
+        s.continuity_worker.provider = Provider(result=hostile)
+        await client.request("memory_refresh")
+        if s._continuity_task is not None:
+            await asyncio.wait_for(s._continuity_task, 5)
+        status = (await client.request("status"))["maintenance"]
+        assert status["unresolved"]["recovering"] == 1
+        task_id = status["latest_attempt"]["task_id"]
+        failed = (await client.request("memory_continuity_run", task_id=task_id))["attempts"][0]
+        assert failed["reason"] == {
+            "version": 1, "code": "validation.output_json",
+            "explanation": "The model did not return a valid JSON object.",
+        }
+        assert failed["usage"] is None
+        assert failed["elapsed_seconds"] >= 0
+        s.continuity_worker.provider = Provider()
+        await client.request("memory_refresh")
+        if s._continuity_task is not None:
+            await asyncio.wait_for(s._continuity_task, 5)
+        detail = await client.request("memory_continuity_run", task_id=task_id)
+        assert [a["outcome"] for a in detail["attempts"]] == ["committed", "failed"]
+        assert detail["attempts"][1]["reason"] == failed["reason"]
+        assert detail["attempt_counts"] == {"committed": 1, "failed": 1}
+        assert detail["last_successful_at"]
+        assert detail["next_action"] == "complete"
+        assert detail["next_retry_at"] is None
+        assert hostile not in json.dumps(detail)
+        assert (await client.request("status"))["maintenance"]["unresolved"]["total"] == 0
+        path = s.store.path
+    reopened = Store(path)
+    try:
+        assert reopened.maintenance_attempts(task_id)[1]["reason"] == failed["reason"]
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("status_code,code,condition", [
+    (400, "configuration", "configuration_attention"),
+    (401, "authentication", "configuration_attention"),
+    (403, "authentication", "configuration_attention"),
+    (429, "rate_or_credit_limit", "recovering"),
+    (503, "unavailable", "recovering"),
+])
+async def test_hostile_provider_bodies_never_become_maintenance_diagnostics(
+    tmp_path, monkeypatch, status_code, code, condition,
+):
+    import httpx
+    from eidolon.providers import OpenAIProvider
+
+    hostile = "PRIVATE prompt response credential https://private.invalid/?key=synthetic"
+    async with room(tmp_path, monkeypatch) as (s, client, _, _):
+        s.store.complete_turn(s.current_session["id"], "Synthetic project.", "Acknowledged.")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(status_code, text=hostile)
+        )) as http:
+            s.continuity_worker.provider = OpenAIProvider(
+                s._auxiliary_execution.profile(), client=http,
+            )
+            await client.request("memory_refresh")
+            if s._continuity_task:
+                await asyncio.wait_for(s._continuity_task, 5)
+        status = (await client.request("status"))["maintenance"]
+        assert status["unresolved"][condition] == 1
+        task_id = status["latest_attempt"]["task_id"]
+        detail = await client.request("memory_continuity_run", task_id=task_id)
+        assert detail["attempts"][0]["reason"]["code"] == code
+        assert detail["reason"]["code"] == code
+        assert detail["next_action"] == "refresh"  # Automatic maintenance is off.
+        assert detail["next_retry_at"] is None
+        attempts = await client.request("maintenance_attempts", task_id=task_id)
+        assert hostile not in json.dumps([status, detail, attempts])
+        assert s.store.continuity_state()["watermark"] == 0
+
+
+@pytest.mark.parametrize("kind", ["exception", "timeout", "output_limit", "validation"])
+async def test_attempt_causes_are_typed_and_never_copy_exception_text(tmp_path, monkeypatch, kind):
+    from eidolon.memory.continuity import ContinuityValidationError
+    from eidolon.providers.openai import ProviderOutputLimitError
+    from test_memory_maintenance import Provider
+
+    hostile = "[red]PRIVATE[/red] https://private.invalid/?credential=secret \x1b[2J"
+    failures = {
+        "exception": (RuntimeError(hostile), "unknown"),
+        "timeout": (TimeoutError(hostile), "timeout"),
+        "output_limit": (ProviderOutputLimitError(hostile), "validation.output_tokens"),
+        "validation": (ContinuityValidationError(hostile), "validation.unsupported"),
+    }
+    failure, code = failures[kind]
+    async with room(tmp_path, monkeypatch) as (s, client, _, _):
+        s.store.complete_turn(s.current_session["id"], "Synthetic project.", "Acknowledged.")
+        s.continuity_worker.provider = Provider(failure=failure)
+        await client.request("memory_refresh")
+        if s._continuity_task:
+            await asyncio.wait_for(s._continuity_task, 5)
+        status = (await client.request("status"))["maintenance"]
+        assert status["latest_attempt"]["reason"]["code"] == code
+        assert hostile not in json.dumps(status)
+
+
+async def test_new_success_preserves_an_older_unresolved_condition(tmp_path, monkeypatch):
+    from test_memory_maintenance import Provider
+
+    async with room(tmp_path, monkeypatch) as (s, client, _, _):
+        s.store.complete_turn(s.current_session["id"], "Synthetic first project.", "Acknowledged.")
+        s.continuity_worker.provider = Provider()
+        await client.request("memory_refresh")
+        if s._continuity_task:
+            await asyncio.wait_for(s._continuity_task, 5)
+        older_id = s.store.maintenance_status()["latest_attempt"]["task_id"]
+        # Existing optional stages can remain unresolved after continuity commits.
+        s.store.fail_maintenance_stage(older_id, "reflection", "PRIVATE old diagnostic",
+                                       reason_code="unavailable")
+        s.store.complete_turn(s.current_session["id"], "Synthetic second project.", "Acknowledged.")
+        await client.request("memory_refresh")
+        if s._continuity_task:
+            await asyncio.wait_for(s._continuity_task, 5)
+        status = (await client.request("status"))["maintenance"]
+        assert status["latest_attempt"]["outcome"] == "committed"
+        assert status["latest_attempt"]["task_id"] != older_id
+        assert status["unresolved"]["recovering"] == status["unresolved"]["total"] == 1
+        assert "PRIVATE" not in json.dumps(status)
+        detail = await client.request("memory_continuity_run", task_id=older_id)
+        assert detail["unresolved_conditions"][0]["stage"] == "reflection"
+        assert detail["unresolved_conditions"][0]["reason"]["code"] == "unavailable"
+
+
+async def test_v9_history_upgrade_keeps_missing_causes_unknown(tmp_path, monkeypatch):
+    from eidolon.storage import Store
+
+    async with room(tmp_path, monkeypatch) as (s, _, _, _):
+        s.store.complete_turn(s.current_session["id"], "Synthetic project.", "Acknowledged.")
+        inputs = s.store.continuity_inputs()
+        task = s.store.create_maintenance_task(inputs, expected_revision=0, control_revision=0)
+        attempt = s.store.start_maintenance_attempt(task["id"], s._auxiliary_execution.provenance())
+        s.store.finish_maintenance_attempt(attempt, "failed")
+        s.store.fail_maintenance_stage(task["id"], "continuity", "PRIVATE legacy exception")
+        path = s.store.path
+        # Recreate the v9 diagnostic schema, including a legacy error without a cause.
+        with s.store.db:
+            s.store.db.execute("ALTER TABLE maintenance_attempts DROP COLUMN reason")
+            s.store.db.execute("ALTER TABLE maintenance_stages DROP COLUMN reason")
+            s.store.db.execute("ALTER TABLE maintenance_stages DROP COLUMN attempt_counts")
+            s.store.db.execute("PRAGMA user_version=9")
+    reopened = Store(path)
+    try:
+        assert reopened.migration_backup_path and ".pre-v10-" in str(reopened.migration_backup_path)
+        assert reopened.maintenance_attempts(task["id"])[0]["reason"] is None
+        stage = reopened.get_maintenance_stage(task["id"])
+        assert stage["reason"] is None
+        assert stage["attempt_counts"] == {"failed": 1}
+        assert reopened.pending_maintenance_task()["inputs"] == inputs
+        assert reopened.continuity_state()["watermark"] == 0
+        assert reopened.maintenance_status()["unresolved"]["recovering"] == 1
+    finally:
+        reopened.close()
+
+
+async def test_automatic_retry_time_and_configuration_warnings_resolve_independently(
+    tmp_path, monkeypatch,
+):
+    from datetime import datetime, timezone
+    from test_memory_maintenance import Provider
+
+    async with room(tmp_path, monkeypatch) as (s, client, _, _):
+        await client.request("save_preferences", preferences={"continuity_enabled": True})
+        s.store.complete_turn(s.current_session["id"], "Synthetic project.", "Acknowledged.")
+        provider = Provider(result="invalid JSON")
+        s.continuity_worker.provider = provider
+        await client.request("memory_refresh")
+        if s._continuity_task:
+            await asyncio.wait_for(s._continuity_task, 5)
+        status = (await client.request("status"))["maintenance"]
+        task_id = status["latest_attempt"]["task_id"]
+        detail = await client.request("memory_continuity_run", task_id=task_id)
+        assert detail["next_action"] == "retry_scheduled"
+        remaining = (datetime.fromisoformat(detail["next_retry_at"])
+                     - datetime.now(timezone.utc)).total_seconds()
+        assert 20 < remaining <= 30  # Existing first-failure backoff.
+        assert not await s.continuity_worker.run_once()
+        assert len(provider.calls) == 1
+        # An externally edited connection adds its own condition to the older failed batch.
+        saved = load_config(s.configuration)
+        saved.auxiliary = AuxiliaryModelConfig(
+            mode="separate", provider="missing", model="synthetic",
+        )
+        save_config(saved, s.configuration)
+        await s._refresh_auxiliary()
+        status = (await client.request("status"))["maintenance"]
+        assert status["unresolved"]["configuration_attention"] == 1
+        assert status["unresolved"]["recovering"] == 1
+        detail = await client.request("memory_continuity_run", task_id=task_id)
+        assert detail["next_action"] == "configure" and detail["next_retry_at"] is None
+        await select(s, mode="inherit")
+        status = (await client.request("status"))["maintenance"]
+        assert status["unresolved"]["configuration_attention"] == 0
+        assert status["unresolved"]["recovering"] == 1
+        s.continuity_worker.provider = Provider()
+        await client.request("memory_refresh")
+        if s._continuity_task:
+            await asyncio.wait_for(s._continuity_task, 5)
+        assert (await client.request("status"))["maintenance"]["unresolved"]["total"] == 0

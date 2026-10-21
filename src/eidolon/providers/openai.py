@@ -17,6 +17,12 @@ import httpx
 class ProviderError(RuntimeError):
     """An actionable provider/network failure, without request credentials."""
 
+    def __init__(self, message: str, *, category: str = "unavailable") -> None:
+        super().__init__(message)
+        self.category = category if category in {
+            "unavailable", "authentication", "rate_or_credit_limit", "timeout",
+        } else "unavailable"
+
 
 class ProviderCapabilityError(ProviderError):
     """The selected profile does not support a requested capability."""
@@ -70,7 +76,10 @@ class OpenAIProvider:
                 raise ValueError("Missing header credential")
             return headers
         except Exception:
-            raise ProviderError("Provider credential is unavailable; check its Keychain or environment reference.") from None
+            raise ProviderError(
+                "Provider credential is unavailable; check its Keychain or environment reference.",
+                category="authentication",
+            ) from None
 
     def _endpoint(self, resource: str) -> str:
         parts = urlsplit(self.config.endpoint)
@@ -336,7 +345,12 @@ class OpenAIProvider:
                         hint = " Check the app-owned credential reference."
                     elif response.status_code == 429:
                         hint = " The provider rate or credit limit was reached; retry later."
-                    raise ProviderError(f"Provider returned HTTP {response.status_code}.{hint}")
+                    raise ProviderError(
+                        f"Provider returned HTTP {response.status_code}.{hint}",
+                        category=("authentication" if response.status_code in (401, 403) else
+                                  "rate_or_credit_limit" if response.status_code == 429 else
+                                  "unavailable"),
+                    )
                 async for line in response.aiter_lines():
                     if not line:
                         for event in decode(data_lines):
@@ -368,7 +382,7 @@ class OpenAIProvider:
                 yield {"type": "tool_call", "call": call}
             yield {"type": "finish", "reason": finish}
         except httpx.TimeoutException as exc:
-            raise ProviderError("Provider timed out; retry this turn.") from exc
+            raise ProviderError("Provider timed out; retry this turn.", category="timeout") from exc
         except httpx.HTTPError as exc:
             raise ProviderError("Provider connection failed; check endpoint and connectivity.") from exc
         finally:

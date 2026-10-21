@@ -49,7 +49,7 @@ from eidolon.ui.requests import RequestInspector
 from eidolon.ui.models import ConnectScreen, ModelScreen, ProviderMenuState
 from eidolon.ui.preferences import PreferencesScreen, PreferencesState
 from eidolon.ui.skills import SkillsScreen, SkillsState
-from eidolon.ui.status import status_line
+from eidolon.ui.status import maintenance_indicator, status_line
 from eidolon.ui.themes import ThemeDraft, ThemeScreen
 
 
@@ -418,7 +418,10 @@ class RoomApp(App):
     def render_status(self):
         show_details = (self.config.preferences.show_service_status
                         and bool(self.config.preferences.status_components))
-        self.query_one("#service-status", Static).display = show_details or bool(self.status.get("agent_mode"))
+        self.query_one("#service-status", Static).display = (
+            show_details or bool(self.status.get("agent_mode"))
+            or bool(maintenance_indicator(self.status))
+        )
         if not self.status:
             return
         editor = self.active_editor
@@ -571,7 +574,11 @@ class RoomApp(App):
             self.preferences_saved,
         )
 
-    def open_memory(self) -> None:
+    def open_memory(self, *, runs: bool = False) -> None:
+        if runs:
+            self.memory_state.category = "continuity"
+            self.memory_state.life_section = "history"
+            self.memory_state.query = ""
         if not isinstance(self.screen, MemoryScreen):
             self.action_open_tab("room")
             self.push_screen(MemoryScreen(self.client, self.memory_state, self.session_id))
@@ -1101,8 +1108,8 @@ class RoomApp(App):
                         self.set_notice("")
                         self.enter_room()
                 self.render_attachments()
-            elif name == "memory":
-                self.open_memory()
+            elif name in {"memory", "runs"}:
+                self.open_memory(runs=name == "runs")
             elif name == "agent":
                 if argument.casefold() not in {"", "on", "off"}:
                     raise ValueError("Use /agent to toggle, /agent on, or /agent off.")

@@ -22,6 +22,7 @@ from eidolon.images import ImageStore, MAX_UPLOAD_BYTES
 from eidolon.mcp import MCPManager
 from eidolon.memory import HindsightMemory, OutboxDispatcher
 from eidolon.memory.maintenance import ContinuityWorker
+from eidolon.memory.diagnostics import model_label, public_attempt, read_reason, safe_usage
 from eidolon.memory.recovery import ManagedMemoryService
 from eidolon.providers import OpenAIProvider, ProviderError
 from eidolon.providers.routing import (
@@ -351,12 +352,56 @@ class RoomService:
             "model_context": {"provider": profile.name, "model": profile.model,
                               "context_window": profile.context_window_for()},
             "auxiliary": self.auxiliary_status(),
+            "maintenance": self.maintenance_status(),
             "memory": self.memory.last_error or self.memory_status,
             "avatar": avatar_status,
             "outbox": outbox,
             "busy": self.generation_lock.locked(), "error": self.service_error,
             "agent_mode": self.tools.agent_mode,
         }
+
+    def maintenance_status(self) -> dict:
+        """Safe diagnostics for both chat polling and the memory inspector."""
+        raw = self.continuity_worker.status
+        auxiliary = self.auxiliary_status()
+        auxiliary = {**auxiliary, "model": model_label(auxiliary.get("model")),
+                     "provider": model_label(auxiliary.get("provider"))}
+        unresolved = dict(raw["unresolved"])
+        if auxiliary.get("configuration_error"):
+            unresolved["configuration_attention"] += 1
+            unresolved["total"] += 1
+        if self._continuity_runtime_error:
+            unresolved["recovering"] += 1
+            unresolved["total"] += 1
+        stages = [self.maintenance_stage(row) for row in raw["stages"]]
+        last = raw.get("last_successful_execution")
+        return {**raw, "stages": stages, "unresolved": unresolved,
+                "latest_attempt": public_attempt(raw.get("latest_attempt")),
+                "last_successful_execution": public_attempt(last),
+                "error": "Current life needs attention. Open Run history." if unresolved["total"]
+                         else None,
+                "auxiliary": auxiliary,
+                "running": self._continuity_task is not None,
+                "runtime_error": self._continuity_runtime_error,
+                "automatic": self.config.memory.continuity_enabled}
+
+    def maintenance_stage(self, row: dict) -> dict:
+        """Describe current scheduling honestly without changing retry eligibility."""
+        completed = row["status"] == "completed"
+        auxiliary = self.auxiliary_status()
+        can_run = auxiliary.get("mode") != "disabled" and not auxiliary.get("configuration_error")
+        automatic = self.config.memory.continuity_enabled and can_run
+        next_action = ("complete" if completed else "configure" if not can_run else
+                       "retry_scheduled" if automatic and row.get("next_retry_at") else
+                       "automatic_check" if automatic else "refresh")
+        return {**{key: row.get(key) for key in (
+            "task_id", "stage", "status", "attempts", "model_calls", "attempt_counts",
+            "updated_at", "change_count", "unresolved_count",
+        )}, "reason": None if completed else read_reason(row.get("reason")),
+            "usage": safe_usage(row.get("usage")),
+            "usage_totals": safe_usage(row.get("usage_totals")),
+            "next_action": next_action,
+            "next_retry_at": row.get("next_retry_at") if automatic and not completed else None}
 
     def memory_state(self, session_id: str | None = None) -> dict:
         """Private, bounded inspection data; reading never triggers recall or retention."""
@@ -412,11 +457,7 @@ class RoomService:
                 "max_notes": self.config.memory.continuity_max_notes,
                 "history": history,
                 "maintenance": {
-                    **self.continuity_worker.status,
-                    "auxiliary": self.auxiliary_status(),
-                    "running": self._continuity_task is not None,
-                    "runtime_error": self._continuity_runtime_error,
-                    "automatic": self.config.memory.continuity_enabled,
+                    **self.maintenance_status(),
                     "use_in_replies": (self.config.memory.enabled
                                        and self.config.memory.continuity_use_enabled),
                     "batch_exchanges": self.config.memory.continuity_batch_exchanges,
@@ -441,7 +482,7 @@ class RoomService:
         except ProviderError as exc:
             provider_status = str(exc)
         return {"provider": provider_status, "memory": self.memory_status,
-                "auxiliary": {**self.auxiliary_status(), **self.continuity_worker.status},
+                "auxiliary": {**self.auxiliary_status(), **self.maintenance_status()},
                 "mcp": self.mcp.status(), "avatar": self.avatar.status(),
                 "outbox": self.store.outbox_status(), "prompts": list(self.config.prompts)}
 
@@ -1083,7 +1124,19 @@ class RoomService:
             # hashes, or other provenance repeated for every historical version.
             fields = {"category", "content", "state", "event_at", "expires_at", "follow_up_at",
                       "observed_at", "last_mention_at", "promise_owner", "promise_kind"}
-            return {**run, "changes": [{
+            saved_stage = self.store.get_maintenance_stage(task_id)
+            if saved_stage is None:
+                return None
+            stage = self.maintenance_stage(saved_stage)
+            if run["status"] == "running":
+                stage.update(next_action="running", next_retry_at=None)
+            return {**stage, **run,
+                    "attempts": [public_attempt(a)
+                                 for a in self.store.maintenance_attempts(task_id)],
+                    "last_successful_at": self.store.maintenance_status()["last_successful_at"],
+                    "unresolved_conditions": [self.maintenance_stage(condition)
+                        for condition in self.store.maintenance_conditions(task_id)],
+                    "changes": [{
                 "after": {key: value for key, value in change["after"].items() if key in fields},
                 "before": ({key: value for key, value in change["before"].items() if key in fields}
                            if change["before"] is not None else None),
@@ -1259,7 +1312,8 @@ class RoomService:
             task_id = params.get("task_id")
             if not isinstance(task_id, str) or len(task_id) > 100:
                 raise ValueError("Choose a maintenance task")
-            return {"attempts": self.store.maintenance_attempts(task_id)}
+            return {"attempts": [public_attempt(a)
+                                 for a in self.store.maintenance_attempts(task_id)]}
         if method == "select_model":
             return await self._select_model(params)
         if method in {"select_provider", "save_theme", "save_settings"}:

@@ -18,6 +18,7 @@ from eidolon.memory.coordinator import (
     CONTEXT_PREFIX, CONTEXT_SUFFIX, CONTINUITY_PREFIX, render_record,
 )
 from eidolon.memory.models import MemoryRecord
+from eidolon.memory.diagnostics import model_label, read_reason, safe_usage
 from eidolon.ui.forms import FormModal
 from eidolon.ui.memory_notes import (
     NOTE_CATEGORIES, NOTE_IMPORTANCE, NoteDeleteScreen, NoteEditorScreen,
@@ -126,6 +127,8 @@ def run_summary(row: dict) -> str:
     if row.get("status") == "completed" and type(count) is int:
         summary += (" · No changes" if count == 0 else
                     f" · {count} {'note' if count == 1 else 'notes'} updated")
+    if row.get("status") == "completed" and row.get("unresolved_count"):
+        summary += " · Needs attention"
     return summary
 
 
@@ -162,13 +165,75 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
     descriptions = {
         "pending": "This refresh is waiting to continue.",
         "running": "Current life notes are being refreshed in the background.",
-        "failed": "This refresh couldn't finish. Try Refresh current life again.",
+        "failed": "This refresh couldn't finish. Existing notes are preserved.",
         "interrupted": "This refresh was paused so the conversation could continue.",
     }
     parts = ([] if compact else
              [local_time(row.get("updated_at", ""), timezone_name) + " · " + run_summary(row)])
-    if row.get("status") in descriptions:
+    reason = read_reason(row.get("reason"))
+    if row.get("status") in descriptions and not reason:
         parts.append(descriptions[row["status"]])
+    if reason:
+        parts.append(reason["explanation"])
+    if "attempts" in row and isinstance(row["attempts"], list):
+        action = {
+            "complete": "Complete; no retry needed.",
+            "running": "Refreshing now; foreground work has priority.",
+            "configure": "Check the auxiliary model in /preferences, then refresh current life.",
+            "retry_scheduled": "Automatic retry after " + local_time(
+                row.get("next_retry_at"), timezone_name) + "; foreground work has priority.",
+            "automatic_check": "Waiting for the next automatic maintenance check.",
+            "refresh": "Use Refresh current life to retry.",
+        }.get(row.get("next_action"), "Next action unavailable.")
+        parts.append("Next: " + action)
+        parts.append("Last successful maintenance: " + (
+            local_time(row["last_successful_at"], timezone_name) if row.get("last_successful_at")
+            else "unavailable"))
+        total = row.get("model_calls", len(row["attempts"]))
+        counts = row.get("attempt_counts") or {}
+        totals = ", ".join(f"{counts[key]} {label}" for key, label in (
+            ("failed", "failed"), ("committed", "succeeded"), ("interrupted", "interrupted"),
+            ("stale", "outdated"), ("configuration_error", "configuration rejected"),
+        ) if counts.get(key))
+        parts.append(f"Attempt history · {total} requests · newest first"
+                     + (" · " + totals if totals else ""))
+        totals_usage = safe_usage(row.get("usage_totals"))
+        if totals_usage:
+            parts.append("Recorded usage across attempts (unknown usage excluded): " +
+                         ", ".join(f"{key}: {value}" for key, value in totals_usage.items()))
+        if total > len(row["attempts"]):
+            parts.append("Only the latest 100 attempts are retained; aggregate counts include "
+                         "older requests. Older outcomes may be unavailable after an upgrade.")
+        for index, attempt in enumerate(row["attempts"], 1):
+            outcome = {"committed": "Succeeded", "failed": "Failed", "interrupted": "Interrupted",
+                       "configuration_error": "Configuration rejected", "stale": "Outdated",
+                       "running": "Running"}.get(attempt.get("outcome"), "Unavailable")
+            elapsed = attempt.get("elapsed_seconds")
+            duration = f"{elapsed:.1f}s" if type(elapsed) in {int, float} else "Timing unavailable"
+            date = local_time(attempt.get("started_at"), timezone_name)
+            detail = [f"{index}. {outcome} · " + date,
+                      "Model: " + model_label(attempt.get("model")) + " · " + duration]
+            if attempt.get("ended_at"):
+                detail.append("Ended: " + local_time(attempt["ended_at"], timezone_name))
+            cause = read_reason(attempt.get("reason"))
+            if cause:
+                detail.append(cause["explanation"])
+            elif attempt.get("outcome") not in {"committed", "running"}:
+                detail.append("No safe cause was recorded for this attempt.")
+            usage = safe_usage(attempt.get("usage"))
+            detail.append("Usage: " + (", ".join(f"{key}: {value}" for key, value in usage.items())
+                                      if usage else "unavailable"))
+            parts.append("\n".join(detail))
+        if not row["attempts"]:
+            parts.append("No per-attempt details were recorded for this run.")
+    for condition in row.get("unresolved_conditions", []):
+        if condition.get("stage") == "continuity":
+            continue  # The run's primary cause is already shown above.
+        label = {"summary": "Summary", "reflection": "Reflection"}.get(condition.get("stage"),
+                                                                         "Maintenance")
+        cause = read_reason(condition.get("reason"))
+        parts.append(label + " still needs attention: " + (
+            cause["explanation"] if cause else "No safe cause was recorded."))
     if "changes" not in row:
         parts.append("Note updates have not been loaded yet.")
     elif not row["changes"]:
@@ -384,8 +449,10 @@ class MemoryScreen(FormModal):
                     "maintenance:" + stage["task_id"]: (
                         local_time(stage.get("updated_at", ""), self.app.config.timezone)
                         + " · " + run_summary(stage), stage,
-                    ) for stage in sorted(stages, key=lambda row: row.get("updated_at") or "",
-                                          reverse=True)
+                    ) for stage in sorted(stages, key=lambda row: (
+                        bool(row.get("unresolved_count") or row.get("status") == "failed"),
+                        row.get("updated_at") or "",
+                    ), reverse=True)
                     if stage.get("task_id") and stage.get("stage") == "continuity"
                 }, "maintenance_stages")
             rows = {}
@@ -410,7 +477,10 @@ class MemoryScreen(FormModal):
 
     def inspection_rows(self, rows: dict, collection: str) -> dict:
         omitted = (self.state.snapshot or {}).get("inspection_omitted", {})
-        if omitted.get(collection):
+        maintenance_omitted = (collection == "maintenance_stages" and
+            (self.state.snapshot or {}).get("continuity", {}).get("maintenance", {}).get(
+                "stages_omitted"))
+        if omitted.get(collection) or maintenance_omitted:
             rows["inspection-limit"] = ("More entries are saved than this view can show.", {})
         return rows
 
@@ -515,7 +585,9 @@ class MemoryScreen(FormModal):
 
     @staticmethod
     def run_version(row: dict) -> tuple:
-        return row.get("status"), row.get("updated_at"), row.get("change_count")
+        return (row.get("status"), row.get("updated_at"), row.get("change_count"),
+                row.get("model_calls"), row.get("next_action"), row.get("next_retry_at"),
+                row.get("unresolved_count"))
 
     @work(exclusive=True, group="memory-read", exit_on_error=False)
     async def read_selection(self, key: str, *, reset_scroll: bool = True) -> None:
@@ -582,7 +654,15 @@ class MemoryScreen(FormModal):
             return
         maintenance = (self.state.snapshot or {}).get("continuity", {}).get("maintenance", {})
         auxiliary = maintenance.get("auxiliary", {})
-        if maintenance.get("running"):
+        unresolved = maintenance.get("unresolved") or {}
+        if unresolved.get("total"):
+            message = ("Current life needs configuration attention. Check /preferences." if
+                       unresolved.get("configuration_attention") else
+                       "Current life has evidence set aside. Open Run history." if
+                       unresolved.get("set_aside") else
+                       "Current life is recovering. Open Run history for causes and next steps.")
+            self.status(message, problem=True)
+        elif maintenance.get("running"):
             self.status("Refreshing current life in the background…")
         elif auxiliary.get("mode") == "disabled":
             self.status("Choose an auxiliary model in /preferences to refresh.", problem=True)

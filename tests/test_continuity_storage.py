@@ -62,7 +62,7 @@ def test_v8_upgrade_has_consistent_backup_and_preserves_exchange_identities(tmp_
         store.db.execute("PRAGMA user_version=6")
     upgraded = Store(path)  # Original connection still has its WAL open.
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 10
         assert upgraded.continuity_inputs() == [original]
         assert upgraded.pending_outbox()[0] == outbox
         assert upgraded.migration_backup_path.stat().st_mode & 0o777 == 0o600
@@ -559,3 +559,22 @@ def test_repeated_terminal_updates_keep_claim_and_latest_transition_with_older_h
         assert item["sources"][0]["exchange_id"] == source["id"]
         assert item["sources"][1]["exchange_id"] == fresh["id"]
     assert len(store.continuity_history("interview")) == 13
+
+
+def test_old_unresolved_run_stays_discoverable_beyond_recent_history(store):
+    source = exchange(store)
+    task = task_for(store, [source])
+    commit(store, task, [{"op": "no_change", "expected_revision": 0}])
+    store.fail_maintenance_stage(task["id"], "reflection", "PRIVATE legacy diagnostic",
+                                 reason_code="unavailable")
+    for index in range(101):
+        source = exchange(store, text=f"Synthetic later project {index}.")
+        later = task_for(store, [source])
+        commit(store, later, [{"op": "no_change", "expected_revision": 0}])
+    status = store.maintenance_status()
+    assert len(status["stages"]) == 300
+    assert status["unresolved"]["total"] == 1
+    older = next(stage for stage in status["stages"]
+                 if stage["task_id"] == task["id"] and stage["stage"] == "continuity")
+    assert older["status"] == "completed" and older["unresolved_count"] == 1
+    assert status["stages_omitted"] == 6

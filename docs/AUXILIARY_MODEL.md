@@ -112,8 +112,32 @@ reply path. For the separate image analyst, see [Providers](PROVIDERS.md#use-ima
 
 `/memory` → **Current life** shows refresh status and actionable notices. Choose
 **Run history**, then Enter on a run, to review its outcome and saved note changes.
-Use **Refresh current life** to retry eligible work after correcting settings.
-The memory UI does not expose the full attempt diagnostics.
+`/runs` opens Run history directly, and Ctrl+P lists the same command. A quiet
+**Life: recovering**, **Life: needs retry**, or **Life: check settings** indicator
+near the composer appears while maintenance has unresolved trouble. It remains
+visible even when optional service-status components are hidden. Automatic work
+never adds retry messages to chat or moves focus.
+
+Run details show each retained attempt's safe cause, effective model, start/end
+time, duration, and numeric usage when the provider supplies it. They also show
+aggregate outcomes, recorded usage across attempts, the next action or earliest
+automatic retry time, last successful maintenance, and existing before/after note
+comparisons. Unknown usage stays unavailable; recorded totals exclude unknown
+usage and should not be treated as complete billing totals. Foreground work can
+delay a scheduled retry beyond the displayed time. With automatic updates off,
+use **Refresh current life** after correcting settings.
+
+A successful retry preserves earlier failed attempts. Warnings represent all
+unresolved conditions, so a newer success clears only the condition it resolves.
+Runs with unresolved conditions appear first in Run history, even when their
+continuity update finished. An unrelated older failure remains visible. Connection/configuration warnings
+are distinct from Hindsight readiness. This diagnostics slice preserves the
+existing retry policy: it does not introduce recovery budgets, set-aside batches,
+or progress past the oldest unresolved evidence.
+
+![Main conversation with a synthetic maintenance warning](images/maintenance-main.png)
+![Synthetic attempt details at 80 by 24](images/maintenance-history.png)
+![Synthetic monochrome ASCII details at 60 by 18](images/maintenance-history-mono.png)
 
 `uv run eidolon doctor` reports auxiliary routing separately from Hindsight
 connectivity. With the service running, it also includes maintenance diagnostics:
@@ -148,11 +172,30 @@ Only one auxiliary request runs at a time, and foreground conversations retain
 priority even across different endpoints. Closing a stream does not prove the
 server has released compute resources.
 
-Attempt details are bounded to the latest 100 per task/stage; the internal service
-RPC `maintenance_attempts` exposes that history. Diagnostics retain hashes,
-provider/model identifiers, safe request options, and numeric counters without
-copying transcripts, raw responses, endpoint credentials, headers, or reference
-contents. Aggregate call/usage counts and committed provenance survive pruning.
+Attempt details are bounded to the latest 100 per task/stage. Schema v10 adds a
+versioned application-owned reason (category and safe explanation) to attempts
+and unresolved stages. Older history keeps missing reasons unavailable; migration
+does not infer a cause from its last error string. Lifetime outcome counts are
+seeded from retained old attempts, so already-pruned historical outcomes remain
+unknown. Total call counts and available usage remain intact. Migration takes a
+private SQLite snapshot as described in [Recovery](RECOVERY.md#automatic-sqlite-snapshots).
+
+The service `status` and `memory_state` contracts expose aggregate `unresolved`
+counts independent of the bounded recent-stage list, plus `last_successful_at`.
+`memory_continuity_run` returns attempts, outcome counts, next action/time,
+unresolved conditions, and note comparisons; `maintenance_attempts` returns the
+same safe attempt representation. Unknown reasons and usage are null. Attempt
+reasons survive restarts. Aggregate outcome and usage counts survive pruning;
+individual attempt details do not.
+The `set_aside` count is zero under the current retry policy.
+
+Raw prompts, proposals, responses, arbitrary exception text, credentials, URLs,
+and full provenance are excluded from failure details. Reasons come from a
+versioned allowlist, including typed authentication, rate/credit, configuration,
+output-limit, timeout, and validation categories. Models are shown as bounded
+identifiers; malformed or URL-shaped labels are unavailable. Private internal
+storage still retains route/execution hashes and safe request options.
+Aggregate call/usage/outcome counts and committed provenance survive pruning.
 The separate numeric request log is described in [Prompt caching](PROMPT_CACHING.md).
 
 [Routing tests](../tests/test_model_routing.py),

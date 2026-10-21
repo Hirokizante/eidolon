@@ -43,11 +43,11 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 9:
+        if version > 10:
             self.db.close()
             raise ValueError("This database requires a newer Eidolon version")
         self.migration_backup_path: Path | None = None
-        if version < 9 and self.db.execute(
+        if version < 10 and self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone():
             # SQLite's backup API captures a consistent snapshot, including WAL
@@ -58,7 +58,7 @@ class Store:
             backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_dir.chmod(0o700)
             stamp = datetime.now(dt_timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v9-{stamp}.sqlite3"
+            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v10-{stamp}.sqlite3"
             with sqlite3.connect(self.migration_backup_path) as backup:
                 self.db.backup(backup)
             self.migration_backup_path.chmod(0o600)
@@ -209,17 +209,46 @@ class Store:
             for column in ("usage_totals", "committed_execution"):
                 if column not in stage_columns:
                     self.db.execute(f"ALTER TABLE maintenance_stages ADD COLUMN {column} TEXT")
-            # Interrupted streams may have incurred usage. Preserve unknown counters.
-            self.db.execute(
-                "UPDATE maintenance_attempts SET outcome='interrupted',ended_at=? "
-                "WHERE outcome='running'", (utc_now(),),
-            )
+            attempt_columns = {row["name"] for row in self.db.execute(
+                "PRAGMA table_info(maintenance_attempts)"
+            )}
+            if "reason" not in attempt_columns:
+                self.db.execute("ALTER TABLE maintenance_attempts ADD COLUMN reason TEXT")
+            if "reason" not in stage_columns:
+                self.db.execute("ALTER TABLE maintenance_stages ADD COLUMN reason TEXT")
+            if "attempt_counts" not in stage_columns:
+                self.db.execute("ALTER TABLE maintenance_stages ADD COLUMN attempt_counts TEXT")
+                # Old pruned outcomes are unknowable; model_calls retains their total.
+                stages = self.db.execute("SELECT task_id,stage FROM maintenance_stages").fetchall()
+                for row in stages:
+                    counts = {a["outcome"]: a["n"] for a in self.db.execute(
+                        "SELECT outcome,count(*) AS n FROM maintenance_attempts "
+                        "WHERE task_id=? AND stage=? AND outcome!='running' GROUP BY outcome",
+                        (row["task_id"], row["stage"]),
+                    )}
+                    self.db.execute(
+                        "UPDATE maintenance_stages SET attempt_counts=? "
+                        "WHERE task_id=? AND stage=?",
+                        (json.dumps(counts), row["task_id"], row["stage"]),
+                    )
+            # A running attempt observed on restart was interrupted, not a model failure.
+            for row in self.db.execute(
+                "SELECT id FROM maintenance_attempts WHERE outcome='running'"
+            ).fetchall():
+                self._finish_maintenance_attempt(row["id"], "interrupted",
+                                                 reason_code="interrupted")
+                self.db.execute(
+                    "UPDATE maintenance_stages SET reason=(SELECT reason FROM maintenance_attempts "
+                    "WHERE id=?) WHERE (task_id,stage)=(SELECT task_id,stage FROM "
+                    "maintenance_attempts WHERE id=?) AND status!='completed' AND reason IS NULL",
+                    (row["id"], row["id"]),
+                )
             if version < 6:
                 self.db.execute(
                     "UPDATE outbox SET review_state='pending' WHERE status!='completed' "
                     "AND generation_id IN (SELECT id FROM generations WHERE memory_eligible IS NULL)"
                 )
-            self.db.execute("PRAGMA user_version=9")
+            self.db.execute("PRAGMA user_version=10")
         self.db.commit()
         self.path.chmod(0o600)
 
@@ -840,12 +869,38 @@ class Store:
         result = dict(row)
         for key in ("input_ids", "inputs"):
             result[key] = json.loads(result[key])
-        result["stages"] = {stage["stage"]: {**dict(stage), "usage": json.loads(stage["usage"])
-                                           if stage["usage"] else None}
+        result["stages"] = {stage["stage"]: self._stage_row(stage)
                             for stage in self.db.execute(
                                 "SELECT * FROM maintenance_stages WHERE task_id=?", (task_id,),
                             )}
         return result
+
+    @staticmethod
+    def _stage_row(row: sqlite3.Row | dict) -> dict:
+        from ..memory.diagnostics import read_reason
+        result = dict(row)
+        for key in ("usage", "usage_totals", "committed_execution", "reason", "attempt_counts"):
+            result[key] = json.loads(result[key]) if result.get(key) else None
+        result["attempt_counts"] = result["attempt_counts"] or {}
+        result["reason"] = read_reason(result["reason"])
+        return result
+
+    def get_maintenance_stage(self, task_id: str, stage: str = "continuity") -> dict | None:
+        with self._lock:
+            row = self.db.execute(
+                "SELECT s.*,(SELECT count(*) FROM maintenance_stages problem "
+                "WHERE problem.task_id=s.task_id AND problem.status='failed') AS unresolved_count "
+                "FROM maintenance_stages s WHERE task_id=? AND stage=?", (task_id, stage),
+            ).fetchone()
+            return self._stage_row(row) if row else None
+
+    def maintenance_conditions(self, task_id: str) -> list[dict]:
+        """Unresolved stages remain inspectable alongside a successful continuity patch."""
+        with self._lock:
+            return [self._stage_row(row) for row in self.db.execute(
+                "SELECT * FROM maintenance_stages WHERE task_id=? AND status='failed' "
+                "ORDER BY stage", (task_id,),
+            )]
 
     def create_maintenance_task(self, inputs: list[dict], *, scope: str = "real_life",
                                  expected_revision: int, control_revision: int,
@@ -977,7 +1032,9 @@ class Store:
             return self._maintenance_task(row["id"]) if row else None
 
     def fail_maintenance_stage(self, task_id: str, stage: str, error: str,
-                                next_retry_at: str | None = None) -> None:
+                                next_retry_at: str | None = None, *,
+                                reason_code: str | None = None) -> None:
+        from ..memory.diagnostics import safe_reason
         if stage not in {"continuity", "summary", "reflection"}:
             raise ValueError("Invalid maintenance stage")
         retry_at = self._continuity_time(next_retry_at)
@@ -985,8 +1042,10 @@ class Store:
             self._maintenance_task(task_id)
             self.db.execute(
                 "UPDATE maintenance_stages SET status='failed',attempts=attempts+1,error=?,"
-                "next_retry_at=?,updated_at=? WHERE task_id=? AND stage=? AND status!='completed'",
-                (str(error)[:1000], retry_at, utc_now(), task_id, stage),
+                "next_retry_at=?,updated_at=?,reason=? WHERE task_id=? AND stage=? "
+                "AND status!='completed'",
+                (str(error)[:1000], retry_at, utc_now(), json.dumps(safe_reason(reason_code)),
+                 task_id, stage),
             )
 
     def maintenance_status(self, scope: str = "real_life") -> dict:
@@ -994,9 +1053,12 @@ class Store:
             stages = [dict(row) for row in self.db.execute(
                 "SELECT s.*,t.scope,t.input_watermark,(SELECT count(*) FROM continuity_history h "
                 "WHERE h.task_id=s.task_id AND h.scope=t.scope AND h.change_origin='automatic') "
-                "AS change_count FROM maintenance_stages s "
+                "AS change_count,(SELECT count(*) FROM maintenance_stages problem "
+                "WHERE problem.task_id=s.task_id AND problem.status='failed') AS unresolved_count "
+                "FROM maintenance_stages s "
                 "JOIN maintenance_tasks t ON t.id=s.task_id WHERE t.scope=? "
-                "ORDER BY t.input_watermark DESC,s.stage LIMIT 300", (scope,),
+                "ORDER BY (unresolved_count>0) DESC,t.input_watermark DESC,s.stage LIMIT 300",
+                (scope,),
             )]
             counts = {row["status"]: row["count"] for row in self.db.execute(
                 "SELECT s.status,count(*) AS count FROM maintenance_stages s "
@@ -1021,12 +1083,29 @@ class Store:
                 "SELECT a.* FROM maintenance_attempts a JOIN maintenance_tasks t ON t.id=a.task_id "
                 "WHERE t.scope=? ORDER BY a.started_at DESC LIMIT 1", (scope,),
             ).fetchone()
-        for stage in stages:
-            stage["committed_execution"] = (json.loads(stage["committed_execution"])
-                                              if stage["committed_execution"] else None)
-            stage["usage_totals"] = json.loads(stage["usage_totals"]) if stage["usage_totals"] else None
-            stage["usage"] = json.loads(stage["usage"]) if stage["usage"] else None
+            unresolved = {"recovering": 0, "configuration_attention": 0, "set_aside": 0}
+            from ..memory.diagnostics import problem_state, read_reason
+            for row in self.db.execute(
+                "SELECT coalesce(s.reason,a.reason) FROM maintenance_stages s "
+                "JOIN maintenance_tasks t ON t.id=s.task_id "
+                "LEFT JOIN maintenance_attempts a ON a.id=(SELECT id FROM maintenance_attempts "
+                "WHERE task_id=s.task_id AND stage=s.stage "
+                "ORDER BY started_at DESC,id DESC LIMIT 1) "
+                "WHERE t.scope=? AND (s.status='failed' OR "
+                "s.status='pending' AND a.outcome='interrupted')", (scope,),
+            ):
+                unresolved[problem_state(read_reason(json.loads(row[0]) if row[0] else None))] += 1
+            unresolved["total"] = sum(unresolved.values())
+            successful = self.db.execute(
+                "SELECT max(s.updated_at) FROM maintenance_stages s JOIN maintenance_tasks t "
+                "ON t.id=s.task_id WHERE t.scope=? "
+                "AND s.stage='continuity' AND s.status='completed'",
+                (scope,),
+            ).fetchone()[0]
+        stages = [self._stage_row(stage) for stage in stages]
         return {"counts": counts, "pending": counts.get("pending", 0) + counts.get("failed", 0),
+                "unresolved": unresolved, "last_successful_at": successful,
+                "stages_omitted": max(0, sum(counts.values()) - len(stages)),
                 "model_calls": model_calls, "error": error[0] if error else None, "stages": stages,
                 "last_successful_execution": json.loads(last[0]) if last else None,
                 "latest_attempt": self._attempt_row(latest)}
@@ -1110,7 +1189,10 @@ class Store:
     def _attempt_row(row) -> dict | None:
         if row is None:
             return None
-        return {**dict(row), "provenance": json.loads(row["provenance"]),
+        from ..memory.diagnostics import read_reason
+        return {**dict(row),
+                "reason": read_reason(json.loads(row["reason"]) if row["reason"] else None),
+                "provenance": json.loads(row["provenance"]),
                 "usage": json.loads(row["usage"]) if row["usage"] else None}
 
     def get_maintenance_attempt(self, attempt_id: str) -> dict | None:
@@ -1126,7 +1208,9 @@ class Store:
                 "ORDER BY started_at DESC,id DESC LIMIT 100", (task_id, stage),
             )]
 
-    def _finish_maintenance_attempt(self, attempt_id: str, outcome: str) -> None:
+    def _finish_maintenance_attempt(self, attempt_id: str, outcome: str, *,
+                                    reason_code: str | None = None) -> None:
+        from ..memory.diagnostics import safe_reason
         if outcome not in {"committed", "failed", "interrupted", "stale", "configuration_error"}:
             raise ValueError("Invalid auxiliary attempt outcome")
         attempt = self.get_maintenance_attempt(attempt_id)
@@ -1136,13 +1220,26 @@ class Store:
         elapsed = (datetime.fromisoformat(stamp)
                    - datetime.fromisoformat(attempt["started_at"])).total_seconds()
         self.db.execute(
-            "UPDATE maintenance_attempts SET outcome=?,ended_at=?,elapsed_seconds=? WHERE id=?",
-            (outcome, stamp, max(0, elapsed), attempt_id),
+            "UPDATE maintenance_attempts SET outcome=?,ended_at=?,elapsed_seconds=?,reason=? "
+            "WHERE id=?",
+            (outcome, stamp, max(0, elapsed), json.dumps(safe_reason(reason_code)), attempt_id),
         )
 
-    def finish_maintenance_attempt(self, attempt_id: str, outcome: str) -> None:
+        row = self.db.execute(
+            "SELECT attempt_counts FROM maintenance_stages WHERE task_id=? AND stage=?",
+            (attempt["task_id"], attempt["stage"]),
+        ).fetchone()
+        counts = json.loads(row[0] or "{}")
+        counts[outcome] = counts.get(outcome, 0) + 1
+        self.db.execute(
+            "UPDATE maintenance_stages SET attempt_counts=? WHERE task_id=? AND stage=?",
+            (json.dumps(counts), attempt["task_id"], attempt["stage"]),
+        )
+
+    def finish_maintenance_attempt(self, attempt_id: str, outcome: str, *,
+                                   reason_code: str | None = None) -> None:
         with self._lock, self.db:
-            self._finish_maintenance_attempt(attempt_id, outcome)
+            self._finish_maintenance_attempt(attempt_id, outcome, reason_code=reason_code)
 
     def record_maintenance_usage(self, task_id: str, stage: str = "continuity", *,
                                   usage: dict | None = None, called: bool = False,
@@ -1442,7 +1539,8 @@ class Store:
                 (new_revision, task["input_watermark"], scope),
             )
             self.db.execute(
-                "UPDATE maintenance_stages SET status='completed',attempts=attempts+1,error=NULL,"
+                "UPDATE maintenance_stages SET status='completed',attempts=attempts+1,"
+                "error=NULL,reason=NULL,"
                 "next_retry_at=NULL,committed_revision=?,updated_at=? WHERE task_id=? AND stage='continuity'",
                 (new_revision, utc_now(), task_id),
             )

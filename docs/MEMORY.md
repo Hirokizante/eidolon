@@ -164,7 +164,11 @@ additional memory-tool results actually sent on later provider rounds. It is
 evidence of supplied context, not proof that a memory caused particular words.
 
 Choose **Current life** for **Notes**, **Run history**, **Refresh current life**,
-and **Create note**. Enter opens details, Ctrl+F searches visible content, Ctrl+L
+and **Create note**. `/runs` opens Run history directly with safe per-attempt
+causes, model, timing, available numeric usage, next action, and note comparisons.
+A quiet Life indicator near the composer links to `/runs` while any maintenance
+condition remains unresolved; later success does not erase earlier attempt history.
+Enter opens details, Ctrl+F searches visible content, Ctrl+L
 reloads the view, and Esc returns to the list and then the conversation. Loaded
 details remain readable during a service outage. Lists are bounded and report
 when more entries exist than the view can show. Source IDs and full diagnostic

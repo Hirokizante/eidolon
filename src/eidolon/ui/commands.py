@@ -38,6 +38,7 @@ COMMANDS = (
     Command("history", "Browse past rooms; Enter to read", "alt+2"),
     Command("skills", "Create, edit, and turn companion skills on or off", "alt+3"),
     Command("activity", "Read tool results and response activity", "alt+4"),
+    Command("runs", "Review current-life attempts, safe failure causes and note changes"),
     Command("memory", "View memories sent with replies and current life notes"),
     Command("agent", "Toggle agent mode for file editing and commands", arguments="[on|off]"),
     Command("prompts", "Edit a prompt file", "alt+5", "[name]"),
@@ -215,6 +216,7 @@ class HelpScreen(ModalScreen):
             "for that reply only.\n\n"
             "`/memory` shows the memories sent with each request. Current life has separate "
             "Notes and Run history sections, with Refresh current life on the main screen. "
+            "`/runs` opens Run history directly, including safe failure causes and retry status. "
             "In Notes, **Ctrl+N** creates a note with your chosen label. Open a note, then "
             "**Ctrl+E** edits or **Ctrl+D** deletes with confirmation. **Ctrl+S** saves; "
             "**Esc** keeps an unsaved draft. User-created notes are marked and protected "

@@ -101,6 +101,7 @@ class ContinuityValidationError(ValueError):
     def __init__(self, message: str, *, code: str = "unsupported") -> None:
         super().__init__(message)
         # Never persist arbitrary exception text, source text, or model output.
+        self.code = code if code in self.REASONS else "unsupported"
         self.public_reason = self.REASONS.get(code, message if message in self.DETAILS else
                                              "The proposed update did not pass validation.")
 

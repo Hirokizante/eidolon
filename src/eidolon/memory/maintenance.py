@@ -511,13 +511,14 @@ class ContinuityWorker:
                                             code="output_json")
         return proposal
 
-    def _failed(self, task: dict, *, reason: str, immediate: bool = False) -> None:
+    def _failed(self, task: dict, *, reason: str, reason_code: str,
+                immediate: bool = False) -> None:
         stage = task.get("stages", {}).get("continuity", {})
         attempts = stage.get("attempts", 0)
         delay = 0 if immediate else min(3600, 30 * 2 ** min(attempts, 7))
         retry = (datetime.now(dt_timezone.utc) + timedelta(seconds=delay)).isoformat()
         self.store.fail_maintenance_stage(task["id"], "continuity", reason,
-                                          next_retry_at=retry)
+                                          next_retry_at=retry, reason_code=reason_code)
         self._last_result = reason
 
     async def run_once(self, *, force: bool = False) -> bool:
@@ -531,6 +532,7 @@ class ContinuityWorker:
         self._active_task = asyncio.current_task()
         task = None
         outcome = "failed"
+        reason_code = None
         try:
             # Capture before tokenizer initialization can yield. Budgeting and
             # inference share these names; saved evidence keeps its own attribution.
@@ -649,45 +651,57 @@ class ContinuityWorker:
             return True
         except asyncio.CancelledError:
             outcome = "interrupted"
+            reason_code = "interrupted"
             if task:
                 self._failed(task, reason="Auxiliary request interrupted; retry pending",
-                             immediate=True)
+                             reason_code=reason_code, immediate=True)
             raise
         except ContinuityValidationError as exc:
+            reason_code = "validation." + exc.code
             if task:
-                self._failed(task, reason=validation_failure_notice(exc.public_reason))
+                self._failed(task, reason=validation_failure_notice(exc.public_reason),
+                             reason_code=reason_code)
             return False
         except TimeoutError as exc:
+            reason_code = "thinking_timeout" if isinstance(exc, _ThinkingTimeout) else "timeout"
             if task:
                 self._failed(task, reason=THINKING_TIMEOUT_NOTICE if isinstance(exc, _ThinkingTimeout)
-                             else "Maintenance provider timed out; retry pending")
+                             else "Maintenance provider timed out; retry pending",
+                             reason_code=reason_code)
             return False
         except Exception as exc:
             from eidolon.providers.openai import (
                 ProviderCapabilityError, ProviderError, ProviderOutputLimitError,
             )
             if task:
+                reason_code = "unknown"
                 reason = "Maintenance unavailable or state changed; retry pending"
                 if isinstance(exc, ProviderCapabilityError):
                     outcome = "configuration_error"
+                    reason_code = "configuration"
                     reason = ("Auxiliary request rejected; check the model ID, output-token field "
                               "and reasoning effort in Preferences. Retry pending.")
                 elif isinstance(exc, ProviderOutputLimitError):
+                    reason_code = "validation.output_tokens"
                     reason = validation_failure_notice(
                         ContinuityValidationError.REASONS["output_tokens"])
                 elif isinstance(exc, ProviderError):
+                    reason_code = exc.category
                     reason = ("Auxiliary provider unavailable; check its connection, credentials "
                               "and model ID. Retry pending.")
                 elif self.execution is not None and self.store.auxiliary_route()["revision"] != (
                     self.execution.routing_revision
                 ):
                     outcome = "stale"
+                    reason_code = "stale"
                     reason = "Auxiliary routing changed; retry pending"
-                self._failed(task, reason=reason, immediate=outcome == "stale")
+                self._failed(task, reason=reason, reason_code=reason_code,
+                             immediate=outcome == "stale")
             return False
         finally:
             if self._attempt_id is not None:
-                self.store.finish_maintenance_attempt(self._attempt_id, outcome)
+                self.store.finish_maintenance_attempt(self._attempt_id, outcome,
+                                                      reason_code=reason_code)
             self._attempt_id = None
             self._attempt_identity = None
             self._active_task = None

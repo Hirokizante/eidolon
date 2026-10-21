@@ -235,6 +235,17 @@ they can use `sources: []` because they retain the note's previous evidence and
 do not claim the situation ended. Tests use synthetic model responses and do not establish that a
 particular selected model produces faithful prose or improves answer quality.
 
+## Failure explanations
+
+A quiet Life indicator near the composer points to `/runs` while an unresolved
+condition needs retry or configuration attention. `/runs` and `/memory` →
+Current life → Run history show safe per-attempt explanations alongside model,
+timing, available usage, next action/time, last success, and saved note comparisons.
+Reasons remain visible after a later retry succeeds. Older attempts with no
+recorded reason say so; unknown usage is never shown as zero. See the
+[auxiliary failure guide](AUXILIARY_MODEL.md#diagnose-and-recover) for diagnostic
+categories, history retention, screenshots, and current retry-policy limits.
+
 ## Proposal format and retries
 
 Maintenance expects a JSON object containing an `operations` array of 1–24 entries.

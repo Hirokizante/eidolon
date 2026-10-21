@@ -50,6 +50,16 @@ def truncate(value: str, width: int, *, ascii: bool) -> str:
     return text.plain + marker if width > 0 else ""
 
 
+def maintenance_indicator(status: dict) -> str:
+    unresolved = (status.get("maintenance") or {}).get("unresolved") or {}
+    if not unresolved.get("total"):
+        return ""
+    state = ("check settings" if unresolved.get("configuration_attention") else
+             "evidence set aside" if unresolved.get("set_aside") else
+             "recovering" if status.get("maintenance", {}).get("automatic") else "needs retry")
+    return f"Life: {state} /runs"
+
+
 def status_line(profile: ProviderConfig, components: list[str], status: dict, *,
                 width: int, ascii: bool = False, unsaved: bool = False,
                 colors: Mapping[str, str | None] | None = None, no_color: bool = False) -> Text:
@@ -117,7 +127,10 @@ def status_line(profile: ProviderConfig, components: list[str], status: dict, *,
         return f"{bar} {count}"
 
     selected = [name for name in components if name in COMPONENT_LABELS]
-    prefix = [Text("Agent mode", style="bold")] if status.get("agent_mode") else []
+    problem = maintenance_indicator(status)
+    prefix = [Text(problem, style=color("warning"))] if problem else []
+    if status.get("agent_mode"):
+        prefix.append(Text("Agent mode", style="bold"))
     if unsaved:
         prefix.append(Text("Unsaved (Ctrl+S)"))
     separator = Text(" | ", no_wrap=True, overflow="crop")

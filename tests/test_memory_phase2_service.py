@@ -21,7 +21,9 @@ class Worker:
 
     @property
     def status(self):
-        return {"pending": 1, "error": None, "stages": []}
+        return {"pending": 1, "error": None, "stages": [], "unresolved": {
+            "recovering": 0, "configuration_attention": 0, "set_aside": 0, "total": 0,
+        }}
 
     async def run_once(self, *, force=False):
         self.calls.append(force)
@@ -221,6 +223,9 @@ async def test_continuity_run_keeps_all_note_versions_within_the_socket_allowanc
         monkeypatch.setattr(service.store, "continuity_run_changes", lambda task_id: {
             "status": "completed", "updated_at": "2026-10-14T04:00:00+00:00",
             "changes": [{"after": note, "before": note, "created": False} for _ in range(32)],
+        })
+        monkeypatch.setattr(service.store, "get_maintenance_stage", lambda task_id: {
+            "status": "completed", "task_id": task_id, "stage": "continuity",
         })
         run = await client.request("memory_continuity_run", task_id="synthetic-large-run")
         assert len(run["changes"]) == 32

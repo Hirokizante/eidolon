@@ -1093,3 +1093,96 @@ async def test_memory_dismissal_preserves_the_conversation_reading_position():
         await pilot.press("escape")
         await pilot.pause()
         assert conversation.scroll_y == position
+
+
+@pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
+async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_draft(
+    size, monkeypatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("EIDOLON_ASCII", "1")
+
+    class ProblemClient(MemoryClient):
+        async def request(self, method, **params):
+            result = await super().request(method, **params)
+            if method == "status":
+                result["maintenance"] = self.memory["continuity"]["maintenance"]
+            if method == "memory_continuity_run":
+                result.update(attempts=[{
+                    "outcome": "failed", "started_at": "2026-10-14T04:00:00+00:00",
+                    "ended_at": "2026-10-14T04:00:03+00:00", "elapsed_seconds": 3,
+                    "model": "synthetic-small", "usage": {"prompt_tokens": 42},
+                    "reason": {"version": 1, "code": "validation.output_json",
+                               "explanation": DIAGNOSTIC}, "exception": DIAGNOSTIC,
+                }], model_calls=2, attempt_counts={"failed": 1, "committed": 1},
+                    next_action="complete", last_successful_at="2026-10-14T04:01:00+00:00")
+            return result
+
+    client = ProblemClient()
+    client.memory["continuity"]["maintenance"]["unresolved"] = {
+        "recovering": 1, "configuration_attention": 0, "set_aside": 0, "total": 1,
+    }
+    client.memory["continuity"]["maintenance"]["automatic"] = True
+    client.memory["continuity"]["maintenance"]["stages"][0]["unresolved_count"] = 1
+    config = AppConfig()
+    config.preferences.show_service_status = False
+    client.configuration = config.model_dump(mode="json")
+    app = RoomApp(config, client=client)
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.load_text("Draft 雨 café")
+        composer.selection = Selection((0, 1), (0, 4))
+        selection = composer.selection
+        indicator = app.query_one("#service-status", Static)
+        assert indicator.display and "/runs" in str(indicator.render())
+        assert "recovering" in str(indicator.render())
+        await pilot.press("ctrl+p")
+        await pilot.press("r", "u", "n", "s", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, MemoryScreen)
+        screen = app.screen
+        assert screen.state.life_section == "history"
+        assert "Needs attention" in screen.query_one(DataTable).get_row(
+            "maintenance:synthetic-task")[0].plain
+        screen.query_one(DataTable).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        text = detail_text(screen)
+        assert "The model did not return a valid JSON object." in text
+        assert "synthetic-small" in text and "prompt_tokens: 42" in text
+        assert "3.0s" in text and "Attempt history" in text
+        assert "Previous version" in text and OLD_NOTE_TEXT in text
+        assert DIAGNOSTIC not in text
+        scroll = screen.query_one("#memory-detail-scroll", VerticalScroll)
+        scroll.scroll_end(animate=False)
+        await pilot.pause()
+        scroll_y = scroll.scroll_y
+        screen.action_reload(quiet=True)
+        await pilot.pause()
+        assert scroll.scroll_y == scroll_y and app.focused is scroll
+        await pilot.resize_terminal(40, 10)
+        await pilot.pause()
+        assert screen.has_class("too-small")
+        await pilot.resize_terminal(*size)
+        await pilot.pause()
+        await pilot.press("escape", "escape")
+        assert app.focused is composer and composer.text == "Draft 雨 café"
+        assert composer.selection == selection
+        client.memory["continuity"]["maintenance"]["unresolved"]["total"] = 0
+        app.refresh_status()
+        await pilot.pause()
+        assert not indicator.display
+
+
+def test_run_details_tolerates_hostile_numeric_usage_without_replaying_diagnostics():
+    text = run_details({
+        "status": "failed", "changes": [], "attempts": [{
+            "outcome": "failed", "model": "https://private.invalid/?credential=synthetic",
+            "reason": {"version": 999, "code": "unavailable", "explanation": DIAGNOSTIC},
+            "usage": {"prompt_tokens": 10 ** 400, DIAGNOSTIC: 42},
+        }],
+    }, "UTC")
+    assert "Usage: unavailable" in text
+    assert "Model: Unavailable" in text
+    assert "private.invalid" not in text and DIAGNOSTIC not in text
