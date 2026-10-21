@@ -74,6 +74,7 @@ def sse(text, *, finish="stop", usage=None):
     (httpx.Response(200, text=sse("[]")), "malformed"),
     (httpx.Response(200, text=sse('{"operations": []}')), "validation_rejection"),
     (httpx.Response(200, text=sse("{partial", finish="length")), "truncated"),
+    (httpx.Response(200, text=sse('{"operations":[', finish=None)), "truncated"),
     (httpx.Response(422, text="synthetic rejected options"), "provider_rejection"),
     (httpx.Response(401, text="synthetic private provider error"), "provider_rejection"),
     (httpx.Response(429, text="synthetic private rate error"), "provider_rejection"),
@@ -142,6 +143,7 @@ async def test_report_versions_workload_and_records_each_independent_sample(tmp_
                                                provider_config=None, repetitions=2))
     report = json.loads(path.read_text())
     assert report["schema_version"] == 1
+    assert report["identity"]["model"] == "scripted-fixture-v1"
     assert report["recovery_enabled"] is False
     assert len(report["application"]["revision"]) == 40
     assert len(report["workload_sha256"]) == 64
