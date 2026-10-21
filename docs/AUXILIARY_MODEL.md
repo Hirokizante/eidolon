@@ -195,11 +195,42 @@ Emotion expiry remains application policy. Only whitespace and one complete
 outer JSON Markdown fence are tolerated locally. Duplicate keys, commentary,
 partial JSON, and substantive repairs are rejected; streams must finish cleanly.
 
-Capacity-only reviews and legacy classification/conversion keep their existing
-full operation contract and specialized scheduling. Ordinary requests omit their
-task switches and classification instructions, and require new batch evidence
-for substantive changes. Legacy conversion can follow after ordinary evidence
-has been processed; it is not a required extra stage of every ordinary success.
+Capacity-only reviews use `current-life-capacity-v1`, with at most 24 operations:
+
+```json
+{"operations":[{"op":"archive","note_ref":"n1","decision_reason":"This topic has less continuing relevance than the others."}]}
+```
+
+The compiler supplies `archive_reason: capacity` and preserves the saved note's
+prose, evidence, attribution, category, scope and metadata. A pass can only reduce
+the existing excess, across bounded passes if needed. Protected notes still count
+toward the cap. Admissions, classification, rewrites, replacements and claimed
+topic completion are rejected in this task.
+
+Legacy classification/conversion uses `current-life-legacy-v1`. Its `target_refs`
+names at most four eligible notes whose complete original exchanges fit the batch.
+Other displayed notes are read-only context. Conversion looks like:
+
+```json
+{"operations":[{"op":"upsert","note_ref":"n1","topic":"Interview preparation","importance":"moderate","content":"The user's interview is approaching; practice remains undecided."}]}
+```
+
+For a narrative note awaiting topic/importance classification, omit `content`;
+the compiler retains its exact existing wording. For an extractive note, narrative
+`content` is required. The app supplies **all** saved sources, category, scope,
+revision, narrative format and derived origin. Saved date, expiry and promise
+metadata remains unchanged, including emotion expiry. New notes, unnamed or
+protected targets, dropped sources, metadata changes and terminal transitions
+are rejected. Both specialized tasks permit sole `no_change`, use the same frozen
+snapshot compiler and atomic commit checks, and have concise task-specific examples
+and safe correction feedback.
+
+Ordinary requests omit specialized task switches and classification instructions,
+and require new batch evidence for substantive changes. Capacity review precedes
+legacy conversion when no new evidence is pending. Legacy conversion is not a
+required extra stage of every ordinary success. Completed specialized work is not
+redispatched automatically, including after restart. An explicit refresh may
+reconsider a completed no-change pass; unfinished retries retain their task identity.
 Attempt provenance hashes the effective instructions and versioned schema for
 the actual task. Requests still use prompt-only JSON over the existing plain
 provider stream; this contract does not claim provider-enforced JSON or schemas.

@@ -172,12 +172,12 @@ class ScriptedProvider:
         document = json.loads(messages[-1]["content"])
         response = self.response
         if document.get("contract"):
-            response = ordinary_fixture_response(response, document)
+            response = compact_fixture_response(response, document)
         yield {"type": "token", "text": json.dumps(response)}
         yield {"type": "finish", "reason": "stop"}
 
 
-def ordinary_fixture_response(response: dict, document: dict) -> dict:
+def compact_fixture_response(response: dict, document: dict) -> dict:
     """Bind the historical synthetic fixture's judgments to current wire refs.
 
     This is fixture preparation only; live responses always go unchanged to the
@@ -203,7 +203,13 @@ def ordinary_fixture_response(response: dict, document: dict) -> dict:
             operation.pop("promise_kind")
             source = next(source for source in original["sources"] if source["role"] == owner)
             operation["promise_source"] = refs[source["exchange_id"], owner]
-        if operation["op"] == "no_change":
+        if document["contract"] == "current-life-capacity-v1":
+            operation = {key: value for key, value in operation.items()
+                         if key in {"op", "note_ref", "decision_reason"}}
+        elif document["contract"] == "current-life-legacy-v1":
+            operation = {key: value for key, value in operation.items()
+                         if key in {"op", "note_ref", "topic", "importance", "content"}}
+        elif operation["op"] == "no_change":
             operation.pop("sources")
         operations.append(operation)
     return {"operations": operations}

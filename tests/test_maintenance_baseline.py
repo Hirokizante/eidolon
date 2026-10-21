@@ -232,7 +232,7 @@ async def test_unsafe_protected_edit_is_rejected_and_last_valid_note_survives(tm
         source = document["exchanges"][0]
         operation = baseline.upsert({"topic": item["topic"], "content": "Unsupported edit."}, source)
         operation.update(item_id=item["id"], expected_revision=item["revision"])
-        operation = baseline.ordinary_fixture_response({"operations": [operation]}, document)["operations"][0]
+        operation = baseline.compact_fixture_response({"operations": [operation]}, document)["operations"][0]
         return httpx.Response(200, text=sse(json.dumps({"operations": [operation]})))
     row = await baseline.evaluate_case(case, sources, tmp_path / "protected", AppConfig(),
                                        live=True, transport=httpx.MockTransport(handler))

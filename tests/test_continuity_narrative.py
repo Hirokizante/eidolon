@@ -183,8 +183,9 @@ async def test_existing_extractive_notes_are_rewritten_without_new_chats(store):
     assert context.manifest["omitted"][0]["reason"] == "awaiting model-written narrative summary"
 
     def rewrite(document):
-        assert document["rewrite_existing"]
-        assert document["legacy_rewrite_ids"] == [old["id"]]
+        assert document["contract"] == "current-life-legacy-v1"
+        assert [item["id"] for item in document["items"]
+                if item["note_ref"] in document["target_refs"]] == [old["id"]]
         row = document["exchanges"][0]
         return proposal(narrative(row, item_id=old["id"], expected_revision=old["revision"]))
 
@@ -216,12 +217,13 @@ async def test_pending_new_chats_finish_before_separate_legacy_conversion(
     prose = "The user's interview is approaching; practice is still undecided."
 
     def rewrite(document):
-        if document.get("contract"):
+        if document.get("contract") == "current-life-ordinary-v1":
             assert "legacy_rewrite_ids" not in document
             assert [row["exchange_id"] for row in document["exchanges"]] == [fresh["exchange_id"]]
             return {"operations": [{"op": "no_change", "expected_revision": document["snapshot_revision"]}]}
-        assert document["rewrite_existing"]
-        assert document["legacy_rewrite_ids"] == [old["id"]]
+        assert document["contract"] == "current-life-legacy-v1"
+        assert [item["id"] for item in document["items"]
+                if item["note_ref"] in document["target_refs"]] == [old["id"]]
         supplied = document["items"][0]
         assert supplied["sources"][0]["document_id"] == old["sources"][0]["document_id"]
         assert document["exchanges"][0]["user_content"] == old["sources"][0]["excerpt"]

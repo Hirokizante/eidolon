@@ -133,7 +133,7 @@ async def test_specialized_service_conversion_records_its_effective_contract(tmp
         note = legacy(service.store)
 
         def convert(doc):
-            assert doc["rewrite_existing"]
+            assert doc["contract"] == "current-life-legacy-v1"
             return {"operations": [{
                 "op": "upsert", "item_id": note["id"], "expected_revision": note["revision"],
                 "topic": "Interview preparation", "importance": "moderate", "category": "thread",

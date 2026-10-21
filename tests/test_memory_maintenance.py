@@ -47,7 +47,7 @@ class Provider:
 
 
 def compact_fixture(proposal, document):
-    """Express existing scripted semantic cases in the ordinary wire contract.
+    """Express existing scripted semantic cases in the task's wire contract.
 
     Leave invalid bookkeeping in place so the strict compact schema rejects it;
     production never accepts or repairs the old response format.
@@ -95,6 +95,18 @@ def compact_fixture(proposal, document):
             op["op"] = "archive"
             for field in ("category", "topic", "importance"):
                 op.pop(field, None)
+        if document["contract"] == "current-life-capacity-v1" and item:
+            if op.get("archive_reason") == "capacity":
+                op.pop("archive_reason")
+            if op.get("content") == item.get("content"):
+                op.pop("content")
+            if op.get("sources") == []:
+                op.pop("sources")
+        if document["contract"] == "current-life-legacy-v1" and item:
+            if op.get("category") == item.get("category"):
+                op.pop("category")
+            if op.get("sources") == [source["source_ref"] for source in item["sources"]]:
+                op.pop("sources")
         operations.append(op)
     return {**proposal, "operations": operations}
 

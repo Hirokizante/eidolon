@@ -207,7 +207,7 @@ async def test_lowered_limit_triggers_deliberate_cleanup_without_new_exchanges(s
     before = store.continuity_state()
 
     def choose(document):
-        assert document["review_existing"] and document["exchanges"] == []
+        assert document["contract"] == "current-life-capacity-v1" and document["exchanges"] == []
         assert document["active_count"] == 3 and document["max_notes"] == 2
         return {"operations": [{"op": "archive", "item_id": low["id"],
                                  "expected_revision": low["revision"], "sources": [],
@@ -275,8 +275,9 @@ async def test_legacy_narratives_get_deliberate_metadata_without_replaying_chat(
     assert provisional["metadata_pending"]
 
     def classify(document):
-        assert document["rewrite_existing"]
-        assert document["legacy_rewrite_ids"] == [note["id"]]
+        assert document["contract"] == "current-life-legacy-v1"
+        assert [item["id"] for item in document["items"]
+                if item["note_ref"] in document["target_refs"]] == [note["id"]]
         original = document["exchanges"][0]
         return {"operations": [narrative(
             original, note["content"], topic="Creative project", importance="high",
@@ -302,7 +303,8 @@ async def test_legacy_classification_is_bounded_and_preserves_existing_notes_acr
     before = store.continuity_state()
 
     def classify(document):
-        targets = document["legacy_rewrite_ids"]
+        targets = [item["id"] for item in document["items"]
+                   if item["note_ref"] in document["target_refs"]]
         assert 1 <= len(targets) <= 4
         items = {item["id"]: item for item in document["items"]}
         task_ids = {row["exchange_id"] for row in document["exchanges"]}

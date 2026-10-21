@@ -208,19 +208,19 @@ the focused field in their border so scrolling never leaves an unexplained value
 
 ### Automatic notes
 
-The model returns `topic`, `importance`, `content_format: narrative`, `origin: derived`,
-prose `content`, and source identities. It can cite both speakers without repeating their messages
-in its output. The application attaches each complete original message, including
+For ordinary updates, the model returns `topic`, `importance`, category, prose
+`content`, and request-local source references. It can cite both speakers without
+repeating their messages in its output. The application supplies narrative format,
+derived origin, revisions and source identities and attaches each complete original message, including
 messages longer than the old 4,000-character note limit. Evidence remains available
 through private service inspection and revision history; it is not copied into the dialogue
 continuity prompt.
 
 Updates may reuse the target note's supporting originals, which the worker supplies
 alongside the existing summary and new exchanges. Updates must also cite the
-current task's evidence. A format-only conversion of an open legacy note may use
-its complete existing evidence during a new-exchange batch, preserving its category,
-scope and optional metadata. This prevents a pending batch from blocking conversion
-of notes that the reply context cannot use yet. Sources from unrelated notes or an
+current task's evidence. A separate legacy conversion pass uses all of a named
+note's existing evidence and preserves its category, scope and optional metadata.
+Sources from unrelated notes or an
 unseen older speaker cannot be attached. Upserts retain only the explicitly cited
 current support, up to eight messages; earlier revisions keep superseded evidence.
 Source eligibility, complete snapshots, locks, scope and revisions are rechecked at
@@ -248,12 +248,14 @@ categories, history retention, and current retry-policy limits.
 
 ## Proposal format and retries
 
-Maintenance expects a JSON object containing an `operations` array of 1–24 entries.
-Each entry uses the exact key `op` (`upsert`, `archive`, or `no_change`; legacy `resolve`
-also archives)
-and an integer `expected_revision`. The prompt includes a complete format example
-and distinguishes input fields such as `id` and `revision` from output fields
-`item_id` and `expected_revision`.
+Maintenance expects a JSON object containing an `operations` array. Each entry
+uses the exact key `op` (`upsert`, `archive`, or `no_change`, depending on the task).
+Ordinary and capacity tasks allow 1–24 entries; legacy tasks allow 1–4. Task-specific
+prompts provide complete examples. The model uses request-local `note_ref` and,
+for ordinary evidence changes, `sources` references. The application supplies
+item IDs and expected revisions from its captured snapshot. See the
+[request contracts](AUXILIARY_MODEL.md#developer-reference-routing-and-provenance)
+for complete response shapes.
 
 A missing or invalid `op` produces specific correction instructions for the next
 retry, including after a service restart. Unknown fields and invalid evidence still
@@ -273,11 +275,12 @@ the auxiliary model timed out while thinking and directs the user to `/preferenc
 Disable thinking for a gateway that supports it, or increase the auxiliary timeout.
 Only a progress flag is retained; reasoning text is never emitted or stored.
 
-Over-limit reviews focus on capacity archives before legacy classification runs.
-Capacity and replacement archives need only the target ID, revision, reason,
-decision explanation and `sources: []`; they preserve saved prose and evidence
-without requiring a new narrative summary. Closure archives still require fresh
-topic-matched evidence.
+Over-limit reviews permit only capacity archives before legacy classification runs.
+Their responses need only `op: archive`, `note_ref` and `decision_reason`; the app
+supplies the capacity reason and preserves all saved note data. They may remove
+no more than the existing excess and cannot change protected notes, add notes or
+claim topics concluded. Ordinary replacement archives remain paired with their
+admissions. Closure archives still require fresh topic-matched evidence.
 
 A completed legacy conversion returning `no_change` is held until the current-life
 state changes or the user requests another refresh. Automatic ticks never dispatch
@@ -303,8 +306,10 @@ deliberate title and rating from their originals on the next maintenance pass, e
 when their content already uses narrative prose. Each conversion pass targets at
 most four notes whose complete source exchanges fit its input batch. Already
 narrative notes keep their established prose during classification; the model
-assigns topic/importance and omits optional date and promise fields so they stay
-unchanged. Classification preserves identity,
+assigns topic/importance and omits content. The app supplies every saved source
+and preserves category, scope and optional date, expiry and promise fields.
+Only the explicitly named eligible targets may change; new notes, unrelated
+updates and archives reject the whole pass. Classification preserves identity,
 source evidence, optional metadata, history, and the exchange watermark. Protected
 notes keep their provisional metadata until the user edits it. This compatibility
 upgrade needs no database schema migration.

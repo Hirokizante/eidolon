@@ -36,6 +36,13 @@ class ContinuityValidationError(ValueError):
     REASONS = {
         "reference": "Use only the note_ref and source_refs supplied in this request.",
         "schema": "The model returned malformed continuity operations.",
+        "capacity_task": "Capacity review permits only archive with note_ref and decision_reason, "
+                         "or sole no_change. Archive only unprotected active notes and no more "
+                         "than the existing excess; all saved note fields are preserved.",
+        "legacy_task": "Legacy work permits only upsert with a supplied target_ref as note_ref, "
+                       "topic, importance and conversion content, or sole no_change. Omit content "
+                       "for existing narrative notes; preserve their wording. Sources, category, "
+                       "scope and optional metadata are supplied by the app. No new notes or archives.",
         "schema_op": "Each operation must use the JSON key op with a value of upsert, resolve, "
                      "archive or no_change. Do not name this key operation, action or type.",
         "source": "Evidence must copy a complete original message with its correct source identity.",
