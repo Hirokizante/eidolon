@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "mode": "scripted",
+  "workload": "eidolon-maintenance-first-attempt-v1",
+  "workload_sha256": "6bb0d0abcdfc8da426867651a38d590b372a54887a49433b0382aa0f41a8751a",
+  "production_revision": "6fac2fadf1097f4b32405da379cfdcdf75aefd35",
+  "production_source_sha256": {
+    "src/eidolon/memory/__init__.py": "af990e36f2a4c797e2b0713762c0b07bc2b672e7b8049b993b3bc2a092a64253",
+    "src/eidolon/memory/continuity.py": "26d32beed0e5dd606262d80ff1ae59b123deed114c9c697d0a2534d2c25d4205",
+    "src/eidolon/memory/coordinator.py": "55f61c295a4122085ebe9ad053372c65668a1b63c02e0a2da909194091ca60a2",
+    "src/eidolon/memory/hindsight.py": "e316d45f2198fb8d6f04685c9ed13fe77d4eb281900335aed490cd37b71b9019",
+    "src/eidolon/memory/maintenance.py": "87cce21a6f19f27b51b27702a0704a14d69dc2c9ff2a8d3fd38c1529f0a5a3e7",
+    "src/eidolon/memory/models.py": "2975e35558f98671bb7682a60121f0bf5b0e4a5b18777101391f2cd574eeee6d",
+    "src/eidolon/memory/query.py": "6343f4e09cc40c6b3650593d5e2ca258cd16757125afa31eac961713c2df4012",
+    "src/eidolon/memory/recovery.py": "e15f99409fa9e15f94d8a0c9122dfbcc7314be17c924709aa734e1a900a81aba",
+    "src/eidolon/memory/runtime.py": "3c6576642d680d3af2627c5eb834d3721988e4642892ec0e2b72661cf05c2e4d",
+    "src/eidolon/storage/store.py": "eb79eb7f04d3786bd5813dda1d5c52042d67a00466df11e6e325ae79df77fa81",
+    "src/eidolon/providers/openai.py": "0a1b68d39ff494ef4af3073df25b081ba536fbfe20dc1d149b41f2bf7d56d91d",
+    "src/eidolon/providers/routing.py": "1841065c973e7684e54c48c975bd4053bc37e0ae85a475c07b5a7a0fe5be9529",
+    "src/eidolon/providers/context.py": "30775f00a9838dbd844d33a4ab8c18f5274839e38b9fa6b548d25aef67053936",
+    "src/eidolon/providers/metrics.py": "05efa0670019f92fc91ef8bc340c889c9ec8ae953ca53ef96d36cf209c0e9e1a",
+    "src/eidolon/config.py": "bc82b8dfe8f5b80e16a036c85fc560a3ef20dfc9b4982d69c86e2737c9e8509e",
+    "uv.lock": "6407533cb62c75255fcb4a69361677ab8f4d452d82a3e0bfdc468b67e7b784f2"
+  },
+  "recovery_enabled": false,
+  "samples": 17,
+  "requests": 17,
+  "outcomes": {
+    "accepted_change": 10,
+    "accepted_no_change": 6,
+    "malformed": 0,
+    "empty": 0,
+    "truncated": 0,
+    "provider_rejection": 0,
+    "provider_failure": 0,
+    "validation_rejection": 1,
+    "unresolved": 0
+  },
+  "expectation_matches": 16,
+  "useful_faithful_rate": null,
+  "unsafe_rate": null,
+  "usage": null,
+  "cost": null,
+  "note": "Reviewed synthetic aggregate only. No live model trial. Scripted outcomes do not establish model reliability. Latency excluded because it is machine-specific. Production source files are unchanged by the evaluator implementation. Desired expectations remain independent of baseline limitations.",
+  "cases": [
+    {
+      "case_id": "admission",
+      "category": "admissions",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "correction",
+      "category": "updates",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "closure",
+      "category": "closures",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "small-talk",
+      "category": "justified_no_change",
+      "outcome": "accepted_no_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "authored-protection",
+      "category": "protected_notes",
+      "outcome": "accepted_no_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "learned-lock",
+      "category": "protected_notes",
+      "outcome": "accepted_no_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "replacement",
+      "category": "capacity_replacement",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "capacity-review",
+      "category": "capacity_replacement",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "equal-capacity",
+      "category": "capacity_replacement",
+      "outcome": "accepted_no_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "legacy-conversion",
+      "category": "legacy_work",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "supported-metadata",
+      "category": "metadata",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "uncertain-admission",
+      "category": "uncertainty",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "negated-closure",
+      "category": "uncertainty",
+      "outcome": "accepted_no_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "speaker-ownership",
+      "category": "attribution",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "fiction-boundary",
+      "category": "attribution",
+      "outcome": "accepted_no_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "paraphrased-update",
+      "category": "paraphrases",
+      "outcome": "accepted_change",
+      "expectation_match": true
+    },
+    {
+      "case_id": "paraphrased-closure",
+      "category": "paraphrases",
+      "outcome": "validation_rejection",
+      "expectation_match": false
+    }
+  ]
+}
