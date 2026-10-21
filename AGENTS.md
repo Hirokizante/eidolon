@@ -50,12 +50,18 @@ Keep credentials, custom prompts, databases, and exports out of Git. Runtime sta
 
 ### Issue tracker
 
-Read [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) when creating, fetching, or updating GitHub issues or specifications.
+Use GitHub Issues for engineering tasks and specifications. Read
+[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) when creating,
+fetching, or updating issues or specifications.
 
 ### Triage labels
 
-Read [docs/agents/triage-labels.md](docs/agents/triage-labels.md) when assigning GitHub issue triage labels.
+Use the five default triage labels. Read
+[docs/agents/triage-labels.md](docs/agents/triage-labels.md) when assigning
+or changing GitHub issue triage labels.
 
 ### Domain docs
 
-Use a single-context layout: root `GLOSSARY.md` and `docs/adr/`. Read [docs/agents/domain.md](docs/agents/domain.md) before exploring the codebase with engineering skills. Domain files are created when needed and may be absent.
+Use a single-context layout: root `GLOSSARY.md` and `docs/adr/`. Read
+[docs/agents/domain.md](docs/agents/domain.md) before exploring the codebase
+with engineering skills. Domain files are created when needed and may be absent.
