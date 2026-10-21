@@ -104,7 +104,7 @@ async def test_silent_no_change_is_accepted_but_does_not_satisfy_useful_admissio
     fixture, sources, _ = workload
     row = await baseline.evaluate_case(fixture["cases"][0], sources, tmp_path / "no-change",
         AppConfig(), live=True, transport=httpx.MockTransport(lambda request: httpx.Response(
-            200, text=sse('{"operations":[{"op":"no_change","expected_revision":0}]}',
+            200, text=sse('{"operations":[{"op":"no_change"}]}',
                 usage={"prompt_tokens": 100, "completion_tokens": 25}))))
     assert row["outcome"] == "accepted_no_change"
     assert not row["expectation_match"]
@@ -117,9 +117,15 @@ async def test_silent_no_change_is_accepted_but_does_not_satisfy_useful_admissio
     assert reviewed["summary"]["reviewed_verdicts"]["unresolved"] == 1
 
 
-async def test_pre_dispatch_input_limit_is_unresolved_without_a_request(tmp_path, workload):
+async def test_compact_request_fits_8000_characters_but_large_source_remains_unresolved(tmp_path, workload):
     fixture, sources, _ = workload
     config = AppConfig(auxiliary=AuxiliaryModelConfig(context_chars=8000))
+    fitting = await baseline.evaluate_case(fixture["cases"][0], sources, tmp_path / "fitting", config)
+    assert fitting["outcome"] == "accepted_change"
+    assert fitting["requests"] == 1
+    sources = copy.deepcopy(sources)
+    source_id = fixture["cases"][0]["inputs"][0]
+    sources[source_id]["user"] += " Synthetic preparation detail." * 1000
     row = await baseline.evaluate_case(fixture["cases"][0], sources, tmp_path / "limit", config)
     assert row["outcome"] == "unresolved"
     assert row["requests"] == row["provider_invocations"] == 0
@@ -226,6 +232,7 @@ async def test_unsafe_protected_edit_is_rejected_and_last_valid_note_survives(tm
         source = document["exchanges"][0]
         operation = baseline.upsert({"topic": item["topic"], "content": "Unsupported edit."}, source)
         operation.update(item_id=item["id"], expected_revision=item["revision"])
+        operation = baseline.ordinary_fixture_response({"operations": [operation]}, document)["operations"][0]
         return httpx.Response(200, text=sse(json.dumps({"operations": [operation]})))
     row = await baseline.evaluate_case(case, sources, tmp_path / "protected", AppConfig(),
                                        live=True, transport=httpx.MockTransport(handler))
@@ -251,7 +258,7 @@ async def test_live_cost_estimate_uses_only_reported_tokens_and_explicit_prices(
     monkeypatch.setattr(baseline, "read_profile", lambda *args, **kwargs: AppConfig())
     monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda: httpx.MockTransport(
         lambda request: httpx.Response(200, text=sse(
-            '{"operations":[{"op":"no_change","expected_revision":0}]}',
+            '{"operations":[{"op":"no_change"}]}',
             usage={"prompt_tokens": 100, "completion_tokens": 25}))))
     path = await baseline.run(argparse.Namespace(mode="live", allow_real_model=True,
         provider_config=None, repetitions=1, input_usd_per_million=10, output_usd_per_million=20))

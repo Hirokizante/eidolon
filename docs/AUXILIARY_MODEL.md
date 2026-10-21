@@ -157,6 +157,53 @@ compare candidates with synthetic evidence before relying on them.
 
 ## Developer reference: routing and provenance
 
+Ordinary evidence maintenance uses the versioned `current-life-ordinary-v1`
+proposal contract in [proposals.py](../src/eidolon/memory/proposals.py).
+The model chooses substantive changes in one request: topic, importance,
+category, prose, supporting sources, and closure/replacement decisions.
+It returns `{"operations":[...]}` with 1–24 explicit operations. A new note is:
+
+```json
+{"operations":[{"op":"upsert","topic":"Interview preparation","importance":"moderate","category":"thread","content":"The user's interview is approaching; practice remains undecided.","sources":["s1"]}]}
+```
+
+Updates add `note_ref`, keeping the existing topic. Closures use `op: archive`,
+`note_ref`, `archive_reason`, `decision_reason`, supported prose in `content`,
+and new evidence in `sources`. A replacement pairs an archive with reason
+`replaced` and empty sources (no prose) with a new upsert's `replaces_ref` and
+tradeoff reason. Legitimate no-change is exactly
+`{"operations":[{"op":"no_change"}]}`. It means no useful supported change was
+warranted, rather than a fallback for an invalid operation.
+
+Note references (`n1`, etc.) and source references (`s1`, etc.) are bounded and
+local to the displayed request; reusing them from another request is unsupported.
+The compiler captures independent copies of the displayed reference tables,
+source exchanges, and note snapshot before awaiting the model. It supplies item
+IDs, expected revisions, scope, narrative format, derived origin, original source
+identity, complete excerpts, and source-based timestamps. Attribution remains
+attached to the original evidence; current display names never relabel it.
+Unknown references, incomplete operations, protected-note changes, unsupported
+transitions, invalid replacements, and stale transactional snapshots reject the
+entire proposal. Invalid operations are never dropped to produce a success.
+
+The app offers verified date-literal and promise-kind candidates from complete
+originals. Candidates establish eligibility, not relevance: the model chooses
+`event_at`/`follow_up_at` or a cited `promise_source` when it belongs to that note.
+The compiler supplies the promise speaker and kind; it does not schedule actions.
+When metadata is unavailable or uncertain, supported details remain in prose.
+Emotion expiry remains application policy. Only whitespace and one complete
+outer JSON Markdown fence are tolerated locally. Duplicate keys, commentary,
+partial JSON, and substantive repairs are rejected; streams must finish cleanly.
+
+Capacity-only reviews and legacy classification/conversion keep their existing
+full operation contract and specialized scheduling. Ordinary requests omit their
+task switches and classification instructions, and require new batch evidence
+for substantive changes. Legacy conversion can follow after ordinary evidence
+has been processed; it is not a required extra stage of every ordinary success.
+Attempt provenance hashes the effective instructions and versioned schema for
+the actual task. Requests still use prompt-only JSON over the existing plain
+provider stream; this contract does not claim provider-enforced JSON or schemas.
+
 [Routing](../src/eidolon/providers/routing.py) resolves immutable execution snapshots.
 Changes to the configured route advance a persisted monotonic revision, close old
 work, and preserve original task/evidence identity. A→B→A still rejects results from

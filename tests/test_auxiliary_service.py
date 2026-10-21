@@ -339,9 +339,8 @@ async def test_switch_during_stream_closes_and_retries_original_task(tmp_path, m
         assert attempts[0]["outcome"] == "interrupted" and attempts[0]["usage"] is None
         class CompleteProvider:
             async def stream(self, messages, **kwargs):
-                data = json.loads(messages[1]["content"])
                 yield {"type": "token", "text": json.dumps({"operations": [{
-                    "op": "no_change", "expected_revision": data["snapshot_revision"],
+                    "op": "no_change",
                 }]})}
                 yield {"type": "usage", "usage": {"prompt_tokens": 10, "completion_tokens": 2,
                                                    "private": "must not be retained"}}

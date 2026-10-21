@@ -70,7 +70,7 @@ class AuxiliaryExecution:
 
 
 def resolve_auxiliary(config: AppConfig, revision: int = 0) -> AuxiliaryExecution | None:
-    from eidolon.memory.maintenance import MAINTENANCE_INSTRUCTIONS
+    from eidolon.memory.proposals import ORDINARY_CONTRACT, ORDINARY_INSTRUCTIONS, OrdinaryProposal
 
     role = config.auxiliary
     if role.mode == "disabled":
@@ -138,9 +138,9 @@ def resolve_auxiliary(config: AppConfig, revision: int = 0) -> AuxiliaryExecutio
         options["thinking_mode"] = role.thinking_mode
     options.update(context_chars=chars, context_window=profile.context_window_for(),
                    timeout_seconds=role.timeout_seconds, stream_usage=stream_usage)
-    prompt_hash = hashlib.sha256(MAINTENANCE_INSTRUCTIONS.encode()).hexdigest()
-    schema_hash = digest({"contract": "continuity-operations", "version": 2,
-                          "content_format": "narrative"})
+    prompt_hash = hashlib.sha256(ORDINARY_INSTRUCTIONS.encode()).hexdigest()
+    schema_hash = digest({"contract": ORDINARY_CONTRACT,
+                          "schema": OrdinaryProposal.model_json_schema()})
     route = configured_route_fingerprint(config)
     execution = digest({"route": route, "options": options,
                         "prompt": prompt_hash, "schema": schema_hash})

@@ -50,6 +50,11 @@ capacity, legacy conversion, optional date/promise metadata, uncertainty,
 negation, attribution, fiction, and paraphrased developments. Each case includes
 a written rubric and desired state checks independent of the scripted answer.
 Fixture-local references bind to real source and note identities at runtime.
+For ordinary maintenance, the scripted adapter translates those historical
+fixture identities into the current request-local proposal references. It keeps
+the fixture's substantive judgments and expectations unchanged. Live responses
+receive no such translation. Capacity reviews and legacy conversions retain
+their existing contract, and reports record each actual task's prompt/schema hashes.
 
 The report records workload hashes, the tested Git revision, dirty status,
 hashes of relevant application/evaluator files and `uv.lock`, exact model and
@@ -67,7 +72,7 @@ rejected paraphrased closure deliberately retains its desired closure expectatio
 There was no live-model trial, and no safety/usefulness rate is inferred from
 this reference. It excludes machine-specific latency and private paths.
 
-This issue adds no production maintenance changes or frozen production prompts.
+The original baseline issue added no production maintenance changes or frozen prompts.
 To reproduce a historical trial, use a separate checkout of the report's clean
 application revision, sync its lockfile, and use a new synthetic home. Preserve
 the original report and inputs. A dirty run additionally requires the exact

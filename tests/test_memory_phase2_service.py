@@ -349,10 +349,8 @@ async def test_service_worker_interruption_retries_original_evidence_without_new
             async def stream(self, messages, **kwargs):
                 started.set()
                 await release.wait()
-                data = json.loads(messages[1]["content"])
                 yield {"type": "token", "text": json.dumps({"operations": [{
-                    "op": "no_change", "expected_revision": data["snapshot_revision"],
-                    "sources": [],
+                    "op": "no_change",
                 }]})}
                 yield {"type": "finish", "reason": "stop"}
         service.continuity_worker.provider = MaintenanceProvider()

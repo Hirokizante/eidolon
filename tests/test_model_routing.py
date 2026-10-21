@@ -210,18 +210,14 @@ async def test_existing_72_probe_corpus_keeps_evidence_identical_across_routes(t
                     async def stream(self, messages, **kwargs):
                         document = json.loads(messages[-1]["content"])
                         operations = [{
-                            "op": "upsert", "expected_revision": 0, "category": "thread",
+                            "op": "upsert", "category": "thread",
                             "topic": " ".join(row["user_content"].split())[:100],
                             "importance": "moderate",
                             "content": "Synthetic summary: " + row["user_content"],
-                            "origin": "derived", "content_format": "narrative",
-                            "scope": "real_life", "sources": [{
-                                "exchange_id": row["exchange_id"], "document_id": row["document_id"],
-                                "role": "user", "origin": "user_statement", "excerpt": row["user_content"],
-                            }],
+                            "sources": [row["source_refs"]["user"]],
                         } for row in document["exchanges"] if not source_is_fictional(row["user_content"])]
                         yield {"type": "token", "text": json.dumps({"operations": operations or [{
-                            "op": "no_change", "expected_revision": document["snapshot_revision"],
+                            "op": "no_change",
                         }]})}
                         yield {"type": "finish", "reason": "stop"}
                 worker = ContinuityWorker(store, ScriptedProvider(), execution=execution,

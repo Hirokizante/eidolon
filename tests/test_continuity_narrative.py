@@ -13,7 +13,7 @@ from eidolon.providers.openai import OpenAIProvider
 from eidolon.providers.routing import configured_route_fingerprint, resolve_auxiliary
 from eidolon.storage import Store
 
-from test_memory_maintenance import Provider
+from test_memory_maintenance import Provider, compact_fixture
 
 
 @pytest.fixture
@@ -203,7 +203,7 @@ async def test_existing_extractive_notes_are_rewritten_without_new_chats(store):
     assert len(provider.calls) == 1
 
 
-async def test_pending_new_chats_can_convert_legacy_notes_using_their_original_sources(
+async def test_pending_new_chats_finish_before_separate_legacy_conversion(
     store, tmp_path,
 ):
     from eidolon.engine import ConversationEngine
@@ -216,11 +216,15 @@ async def test_pending_new_chats_can_convert_legacy_notes_using_their_original_s
     prose = "The user's interview is approaching; practice is still undecided."
 
     def rewrite(document):
-        assert not document["rewrite_existing"]
+        if document.get("contract"):
+            assert "legacy_rewrite_ids" not in document
+            assert [row["exchange_id"] for row in document["exchanges"]] == [fresh["exchange_id"]]
+            return {"operations": [{"op": "no_change", "expected_revision": document["snapshot_revision"]}]}
+        assert document["rewrite_existing"]
         assert document["legacy_rewrite_ids"] == [old["id"]]
-        assert [row["exchange_id"] for row in document["exchanges"]] == [fresh["exchange_id"]]
         supplied = document["items"][0]
-        assert supplied["sources"][0]["excerpt"] == old["sources"][0]["excerpt"]
+        assert supplied["sources"][0]["document_id"] == old["sources"][0]["document_id"]
+        assert document["exchanges"][0]["user_content"] == old["sources"][0]["excerpt"]
         return proposal(narrative(
             fresh, prose, item_id=old["id"], expected_revision=old["revision"],
             sources=[{key: old["sources"][0][key] for key in
@@ -229,6 +233,9 @@ async def test_pending_new_chats_can_convert_legacy_notes_using_their_original_s
 
     summarizer = Provider(transform=rewrite)
     worker = ContinuityWorker(store, summarizer)
+    assert await worker.run_once(force=True)
+    assert store.continuity_state()["watermark"] == fresh["id"]
+    assert store.continuity_state()["items"][0]["content"] == old["content"]
     assert await worker.run_once(force=True)
     after = store.continuity_state()
     assert after["watermark"] == fresh["id"]
@@ -240,7 +247,7 @@ async def test_pending_new_chats_can_convert_legacy_notes_using_their_original_s
     assert item["event_at"] == old["event_at"]
     assert item["observed_at"] == old["observed_at"]
     assert len(store.continuity_history(old["id"])) == 2
-    assert len(summarizer.calls) == 1
+    assert len(summarizer.calls) == 2
     assert not await worker.run_once(force=True)
 
     current = store.create_session(kind="chat")["id"]
@@ -483,7 +490,8 @@ async def test_narrative_is_generated_by_the_configured_model(store, mode, expec
     def respond(request):
         payload = json.loads(request.content)
         requests.append(payload)
-        content = json.dumps(proposal(narrative(row, prose)))
+        document = json.loads(payload["messages"][-1]["content"])
+        content = json.dumps(compact_fixture(proposal(narrative(row, prose)), document))
         event = {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
         return httpx.Response(200, text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n")
 
@@ -496,8 +504,8 @@ async def test_narrative_is_generated_by_the_configured_model(store, mode, expec
                         if message["role"] == "system")
     assert "user_content contains the user role's messages" in instructions
     assert "assistant_content contains the assistant role's messages" in instructions
-    assert "user/user_statement and assistant/assistant_statement" in instructions
     document = json.loads(requests[0]["messages"][-1]["content"])
+    assert set(document["exchanges"][0]["source_refs"]) == {"user", "assistant"}
     assert document["current_identity"] == config.identity.model_dump()
     assert document["exchanges"][0]["user_content"] == row["user"]
     assert document["exchanges"][0]["assistant_content"] == row["assistant"]

@@ -10,7 +10,8 @@ from eidolon.config import IdentityConfig
 from eidolon.memory.continuity import (
     THINKING_TIMEOUT_NOTICE, ContinuityValidationError, active_items, same_topic,
 )
-from eidolon.memory.maintenance import MAINTENANCE_INSTRUCTIONS, ContinuityWorker
+from eidolon.memory.maintenance import ContinuityWorker
+from eidolon.memory.proposals import ORDINARY_INSTRUCTIONS
 from eidolon.providers.context import ContextBudget
 from eidolon.storage.store import Store
 
@@ -36,11 +37,66 @@ class Provider:
         if result is None:
             result = {"operations": [{"op": "no_change",
                                       "expected_revision": document["snapshot_revision"]}]}
+        if document.get("contract") and isinstance(result, dict):
+            result = compact_fixture(result, document)
         yield {"type": "token", "text": result if isinstance(result, str) else json.dumps(result)}
         if self.usage:
             yield {"type": "usage", "usage": self.usage}
         if self.finish:
             yield {"type": "finish", "reason": self.finish}
+
+
+def compact_fixture(proposal, document):
+    """Express existing scripted semantic cases in the ordinary wire contract.
+
+    Leave invalid bookkeeping in place so the strict compact schema rejects it;
+    production never accepts or repairs the old response format.
+    """
+    items = {item["id"]: item for item in document["items"]}
+    sources = {}
+    for item in document["items"]:
+        for source in item.get("sources", []):
+            sources[(source["exchange_id"], source["document_id"], source["role"],
+                     source["origin"])] = (source["source_ref"], source.get("excerpt"))
+    for row in document["exchanges"]:
+        for role, ref in row["source_refs"].items():
+            sources[(row["exchange_id"], row["document_id"], role, role + "_statement")] = (
+                ref, row[role + "_content"])
+    operations = []
+    for original in proposal.get("operations", []):
+        op = dict(original)
+        item = items.get(op.get("item_id"))
+        expected = (document["snapshot_revision"] if op.get("op") == "no_change" else
+                    item["revision"] if item else 0)
+        if op.get("expected_revision") == expected:
+            op.pop("expected_revision")
+        if "item_id" in op:
+            op["note_ref"] = items.get(op.pop("item_id"), {}).get("note_ref", "n999")
+        if "replaces_item_id" in op:
+            op["replaces_ref"] = items.get(op.pop("replaces_item_id"), {}).get("note_ref", "n999")
+        for field, known in (("content_format", "narrative"), ("origin", "derived"),
+                             ("scope", document["scope"])):
+            if op.get(field) == known:
+                op.pop(field)
+        refs = []
+        for source in op.get("sources", []):
+            key = tuple(source.get(field) for field in ("exchange_id", "document_id", "role", "origin"))
+            ref, excerpt = sources.get(key, ("s9999", None))
+            refs.append(ref if source.get("excerpt", excerpt) == excerpt else "s9999")
+        op["sources"] = refs
+        if op.get("op") == "no_change" and not refs:
+            op.pop("sources")
+        if "promise_owner" in op and op.get("promise_kind") in {"conversation", "scheduled"}:
+            owner = op.pop("promise_owner")
+            op.pop("promise_kind")
+            op["promise_source"] = next((ref for key, (ref, _) in sources.items()
+                                         if key[2] == owner and ref in refs), "s9999")
+        if op.get("op") in {"resolve", "archive"}:
+            op["op"] = "archive"
+            for field in ("category", "topic", "importance"):
+                op.pop(field, None)
+        operations.append(op)
+    return {**proposal, "operations": operations}
 
 
 def add(store, text="My creative project is unfinished.", *, retain=True, kind="chat",
@@ -120,7 +176,7 @@ async def test_maintenance_serializes_participant_names_as_data_with_stable_role
     worker = ContinuityWorker(store, provider, **options)
     assert await worker.run_once(force=True)
     messages = provider.calls[0]
-    assert messages[0] == {"role": "system", "content": MAINTENANCE_INSTRUCTIONS}
+    assert messages[0] == {"role": "system", "content": ORDINARY_INSTRUCTIONS}
     document = json.loads(messages[-1]["content"])
     assert document["current_identity"] == (names or IdentityConfig().model_dump())
     assert "current_identity.user_name" in messages[0]["content"]
@@ -288,6 +344,9 @@ async def test_worker_leaves_user_created_notes_unchanged_when_model_targets_the
         assert supplied["user_created"] and supplied["locked"]
         proposal = learn(document)
         proposal["operations"][0].update(op=action, item_id=note["id"], expected_revision=1)
+        if action != "upsert":
+            proposal["operations"][0].update(archive_reason="completed",
+                                             decision_reason="The project finished.")
         return proposal
 
     worker = ContinuityWorker(store, Provider(transform=revise))

@@ -34,6 +34,7 @@ class ContinuityValidationError(ValueError):
     """An unsupported proposal; none of the batch should be committed."""
 
     REASONS = {
+        "reference": "Use only the note_ref and source_refs supplied in this request.",
         "schema": "The model returned malformed continuity operations.",
         "schema_op": "Each operation must use the JSON key op with a value of upsert, resolve, "
                      "archive or no_change. Do not name this key operation, action or type.",
@@ -724,6 +725,38 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
         normalized.append(result)
     validate_note_capacity(normalized, state.get("items", []), max_notes=max_notes, scope=scope)
     return normalized
+
+
+def optional_metadata_candidates(source: dict, row: dict, *, timezone: str = "UTC") -> dict:
+    """Offer literals and commitment kinds that pass the existing evidence policy.
+
+    Candidates establish eligibility only. The model must still choose which
+    date/commitment belongs to the note rather than treating any mention as an event.
+    """
+    original = _source_text(row, source["role"])
+    citation = ContinuitySource.model_validate({**source, "excerpt": original})
+    candidates: dict = {}
+    dates = []
+    for value in dict.fromkeys(re.findall(
+        r"\b(?:\d{4}-\d{2}-\d{2}|today|tomorrow|yesterday)\b", original, re.IGNORECASE,
+    )):
+        try:
+            _supported_date(value, [citation], {row["exchange_id"]: row}, timezone)
+        except ContinuityValidationError:
+            continue
+        dates.append(value)
+    if dates:
+        candidates["dates"] = dates
+    for kind in ("conversation", "scheduled"):
+        try:
+            validate_transition_evidence({
+                "op": "upsert", "content": original, "sources": [citation.model_dump()],
+                "promise_owner": source["role"], "promise_kind": kind,
+            })
+        except ContinuityValidationError:
+            continue
+        candidates["promise_kind"] = kind
+    return candidates
 
 
 def active_items(items: list[dict], *, now: datetime | str | None = None,

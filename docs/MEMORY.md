@@ -155,6 +155,13 @@ restoring the intended service, not making a replacement bank. Readiness flags
 do not repair failed credentials, unavailable inference, or incompatible APIs.
 Current-life update failures are separate from Hindsight readiness and do not
 block ordinary replies.
+Ordinary updates ask the auxiliary model for a compact proposal with local note
+and evidence references. Eidolon supplies bookkeeping and validates the whole
+proposal before committing it. An invalid or stale proposal preserves existing
+notes and leaves its evidence pending. Legacy conversion and capacity-only review
+remain separate maintenance tasks. See the
+[request contract](AUXILIARY_MODEL.md#developer-reference-routing-and-provenance)
+for the model's judgments, optional metadata, and local formatting tolerance.
 
 ## Inspect context and current life
 

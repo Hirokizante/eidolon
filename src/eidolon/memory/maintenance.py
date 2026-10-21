@@ -7,6 +7,7 @@ All database calls finish before an awaited provider operation starts.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 from contextlib import aclosing
@@ -18,15 +19,21 @@ from uuid import uuid4
 from eidolon.config import IdentityConfig
 from eidolon.providers.context import ContextBudget, TokenCounter
 from eidolon.providers.metrics import measured_stream
+from eidolon.providers.routing import digest
 
 from .continuity import (
     DEFAULT_MAX_NOTES, IMPORTANCE_RANK, MAX_NOTES, THINKING_TIMEOUT_NOTICE,
-    ContinuityValidationError, Scope,
+    ContinuityProposal, ContinuityValidationError, Scope,
     active_items, aware_time, needs_note_metadata, validate_operations,
 )
+from .proposals import ORDINARY_INSTRUCTIONS, OrdinaryRequest, parse_proposal
 
 
 LEGACY_REWRITE_BATCH_NOTES = 4
+
+
+def _uses_ordinary_contract(task_id: str) -> bool:
+    return not task_id.startswith(("narrative:", "review:"))
 
 
 MAINTENANCE_INSTRUCTIONS = """You maintain Current Life for the user and their companion.
@@ -365,8 +372,13 @@ class ContinuityWorker:
                 break
 
         def messages() -> list[dict]:
-            return [{"role": "system", "content": MAINTENANCE_INSTRUCTIONS},
-                    {"role": "user", "content": json.dumps(document, ensure_ascii=False)}]
+            ordinary = _uses_ordinary_contract(task["id"])
+            payload = (OrdinaryRequest(document, inputs=task["inputs"], state=state,
+                                       scope=self.scope, timezone=self.timezone,
+                                       max_notes=self.max_notes).document if ordinary else document)
+            return [{"role": "system", "content": (ORDINARY_INSTRUCTIONS if ordinary
+                                                    else MAINTENANCE_INSTRUCTIONS)},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 
         if self.counter is None:
             self.counter = TokenCounter(self.model)
@@ -451,12 +463,17 @@ class ContinuityWorker:
                 return rows
         return [evidence[key] for key in sorted(ids)]
 
-    async def _propose(self, task: dict, state: dict) -> dict:
+    async def _propose(self, task: dict, state: dict) -> list[dict]:
         chunks: list[str] = []
         size = 0
         finished = False
         reasoning_seen = False
         messages = self._messages(task, state)
+        request = None
+        if _uses_ordinary_contract(task["id"]):
+            request = OrdinaryRequest(json.loads(messages[-1]["content"]), inputs=task["inputs"],
+                                      state=state, scope=self.scope, timezone=self.timezone,
+                                      max_notes=self.max_notes)
         record = getattr(self.store, "record_request_metrics", None)
         try:
             async with (
@@ -501,6 +518,8 @@ class ContinuityWorker:
         if not finished:
             raise ContinuityValidationError("The maintenance stream did not finish cleanly",
                                             code="output_incomplete")
+        if request is not None:
+            return request.compile(parse_proposal("".join(chunks)))
         try:
             proposal = json.loads("".join(chunks))
         except (ValueError, TypeError):
@@ -509,7 +528,10 @@ class ContinuityWorker:
         if not isinstance(proposal, dict):
             raise ContinuityValidationError("The maintenance output is not an object",
                                             code="output_json")
-        return proposal
+        return validate_operations(proposal, inputs=task["inputs"], state=state,
+                                   scope=self.scope, timezone=self.timezone,
+                                   supporting_inputs=state["source_exchanges"],
+                                   require_narrative=True, max_notes=self.max_notes)
 
     def _failed(self, task: dict, *, reason: str, reason_code: str,
                 immediate: bool = False) -> None:
@@ -629,16 +651,24 @@ class ContinuityWorker:
                 self._last_result = "already claimed"
                 return False
             if self.execution is not None:
+                provenance = self.execution.provenance()
+                if not _uses_ordinary_contract(task["id"]):
+                    provenance["prompt_hash"] = hashlib.sha256(
+                        MAINTENANCE_INSTRUCTIONS.encode()).hexdigest()
+                    provenance["schema_hash"] = digest({
+                        "contract": "continuity-operations-v2",
+                        "schema": ContinuityProposal.model_json_schema(),
+                    })
+                    provenance["execution_fingerprint"] = digest({
+                        "execution": provenance["execution_fingerprint"],
+                        "prompt": provenance["prompt_hash"], "schema": provenance["schema_hash"],
+                    })
                 self._attempt_id = self.store.start_maintenance_attempt(
-                    task["id"], self.execution.provenance(),
+                    task["id"], provenance,
                 )
             else:
                 self.store.record_maintenance_usage(task["id"], "continuity", called=True)
-            proposal = await self._propose(task, state)
-            operations = validate_operations(proposal, inputs=task["inputs"], state=state,
-                                             scope=self.scope, timezone=self.timezone,
-                                             supporting_inputs=state["source_exchanges"],
-                                             require_narrative=True, max_notes=self.max_notes)
+            operations = await self._propose(task, state)
             if self.commit_result is not None:
                 await self.commit_result(self.execution, self._attempt_id, task, state, operations)
             else:

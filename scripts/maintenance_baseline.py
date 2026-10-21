@@ -169,8 +169,44 @@ class ScriptedProvider:
 
     async def stream(self, messages: list[dict], **kwargs: Any) -> AsyncIterator[dict]:
         yield {"type": "request", "endpoint": "scripted://offline"}
-        yield {"type": "token", "text": json.dumps(self.response)}
+        document = json.loads(messages[-1]["content"])
+        response = self.response
+        if document.get("contract"):
+            response = ordinary_fixture_response(response, document)
+        yield {"type": "token", "text": json.dumps(response)}
         yield {"type": "finish", "reason": "stop"}
+
+
+def ordinary_fixture_response(response: dict, document: dict) -> dict:
+    """Bind the historical synthetic fixture's judgments to current wire refs.
+
+    This is fixture preparation only; live responses always go unchanged to the
+    production parser and compiler. Historical workload files remain immutable.
+    """
+    notes = {item["id"]: item["note_ref"] for item in document["items"]}
+    refs = {(source["exchange_id"], source["role"]): source["source_ref"]
+            for item in document["items"] for source in item.get("sources", [])}
+    refs.update({(row["exchange_id"], role): ref
+                 for row in document["exchanges"] for role, ref in row["source_refs"].items()})
+    operations = []
+    for original in response["operations"]:
+        operation = {key: value for key, value in original.items()
+                     if key not in {"expected_revision", "content_format", "origin", "scope"}}
+        if "item_id" in operation:
+            operation["note_ref"] = notes[operation.pop("item_id")]
+        if "replaces_item_id" in operation:
+            operation["replaces_ref"] = notes[operation.pop("replaces_item_id")]
+        operation["sources"] = [refs[source["exchange_id"], source["role"]]
+                                for source in original.get("sources", [])]
+        if "promise_owner" in operation:
+            owner = operation.pop("promise_owner")
+            operation.pop("promise_kind")
+            source = next(source for source in original["sources"] if source["role"] == owner)
+            operation["promise_source"] = refs[source["exchange_id"], owner]
+        if operation["op"] == "no_change":
+            operation.pop("sources")
+        operations.append(operation)
+    return {"operations": operations}
 
 
 class SingleDispatchTransport(httpx.AsyncBaseTransport):
