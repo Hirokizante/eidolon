@@ -1,0 +1,772 @@
+{
+  "version": 1,
+  "id": "eidolon-maintenance-first-attempt-v1",
+  "synthetic": true,
+  "companion_sha256": "37a38fc47f41041313331d92bf5213b098b8ce6660826cb0089c1e6c26f51717",
+  "extra_sources": [
+    {
+      "id": "anniversary",
+      "timestamp": "2026-02-18T10:00:00+08:00",
+      "user": "Our anniversary celebration is approaching. This shared anniversary is deeply important to our relationship.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "legacy-project",
+      "timestamp": "2026-02-18T10:00:00+08:00",
+      "user": "My creative project is unfinished.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "dated-promise",
+      "timestamp": "2026-02-18T10:00:00+08:00",
+      "user": "I promise to bring the map draft tomorrow.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "uncertain-promise",
+      "timestamp": "2026-02-18T10:00:00+08:00",
+      "user": "I might bring the map draft tomorrow if I finish. I have not promised to do so.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "not-finished",
+      "timestamp": "2026-02-18T10:00:00+08:00",
+      "user": "My Ember Library interview is not finished; I might finish the interview tomorrow.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "deadline-paraphrase",
+      "timestamp": "2026-02-18T10:00:00+08:00",
+      "user": "For Atlas Night, the submission cutoff has shifted to February 9. That replaces our previous date.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    },
+    {
+      "id": "interview-paraphrase",
+      "timestamp": "2026-02-18T10:00:00+08:00",
+      "user": "That meeting at Ember Library? All wrapped up; they offered me the catalog assistant role.",
+      "assistant": "I hear you.",
+      "scope": "real_life"
+    }
+  ],
+  "cases": [
+    {
+      "id": "admission",
+      "category": "admissions",
+      "inputs": [
+        "interview-open"
+      ],
+      "notes": [],
+      "scripted": {
+        "operations": [
+          {
+            "op": "upsert",
+            "expected_revision": 0,
+            "topic": "Interview preparation",
+            "importance": "moderate",
+            "category": "thread",
+            "content": "The user's Ember Library interview is on January 3. They want short encouragement when they mention it.",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life",
+            "sources": [
+              {
+                "exchange_id": "$interview-open.exchange_id",
+                "document_id": "$interview-open.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Interview preparation",
+          "state": "open",
+          "atoms": [
+            [
+              "Ember Library"
+            ],
+            [
+              "January 3"
+            ],
+            [
+              "encouragement"
+            ]
+          ]
+        }
+      ],
+      "rubric": "Admit the upcoming interview with the stated encouragement preference; preserve nervousness without inventing a diagnosis or a scheduled action."
+    },
+    {
+      "id": "correction",
+      "category": "updates",
+      "inputs": [
+        "deadline-correction"
+      ],
+      "notes": [
+        {
+          "key": "deadline",
+          "source": "deadline-old",
+          "topic": "Atlas Night",
+          "content": "The Atlas Night project deadline is February 5."
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "upsert",
+            "expected_revision": "$deadline.revision",
+            "topic": "Atlas Night",
+            "importance": "moderate",
+            "category": "thread",
+            "content": "The Atlas Night project deadline is February 8; February 5 was mistaken.",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life",
+            "sources": [
+              {
+                "exchange_id": "$deadline-correction.exchange_id",
+                "document_id": "$deadline-correction.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ],
+            "item_id": "$deadline.id"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Atlas Night",
+          "state": "open",
+          "atoms": [
+            [
+              "February 8"
+            ],
+            [
+              "mistaken"
+            ]
+          ]
+        }
+      ],
+      "rubric": "Update the existing Atlas Night note to February 8, qualify the earlier date as mistaken, and do not duplicate the topic."
+    },
+    {
+      "id": "closure",
+      "category": "closures",
+      "inputs": [
+        "interview-resolved"
+      ],
+      "notes": [
+        {
+          "key": "interview",
+          "source": "interview-open",
+          "topic": "Interview preparation",
+          "content": "The user's Ember Library interview is upcoming."
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "archive",
+            "item_id": "$interview.id",
+            "expected_revision": "$interview.revision",
+            "archive_reason": "completed",
+            "decision_reason": "The original evidence supports this decision.",
+            "sources": [
+              {
+                "exchange_id": "$interview-resolved.exchange_id",
+                "document_id": "$interview-resolved.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ],
+            "content": "$interview.content",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Interview preparation",
+          "state": "archived",
+          "atoms": [],
+          "archive_reason": "completed"
+        }
+      ],
+      "rubric": "Archive interview preparation based on the explicit completed interview. Do not invent a continuing interview check-in."
+    },
+    {
+      "id": "small-talk",
+      "category": "justified_no_change",
+      "inputs": [
+        "noise-weather"
+      ],
+      "notes": [],
+      "scripted": {
+        "operations": [
+          {
+            "op": "no_change",
+            "expected_revision": "$revision",
+            "sources": []
+          }
+        ]
+      },
+      "expected": [],
+      "rubric": "The violet fog exercise is fictional one-off practice and warrants no current-life note."
+    },
+    {
+      "id": "authored-protection",
+      "category": "protected_notes",
+      "inputs": [
+        "promise-attribution"
+      ],
+      "notes": [
+        {
+          "key": "authored",
+          "topic": "Map draft",
+          "content": "Keep the map draft as an authored reminder.",
+          "protected": true
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "no_change",
+            "expected_revision": "$revision",
+            "sources": []
+          }
+        ]
+      },
+      "expected": [],
+      "rubric": "Never edit or archive the authored locked Map draft note, even if the exchange develops its subject. Avoid a duplicate."
+    },
+    {
+      "id": "learned-lock",
+      "category": "protected_notes",
+      "inputs": [
+        "deadline-correction"
+      ],
+      "notes": [
+        {
+          "key": "locked",
+          "source": "deadline-old",
+          "topic": "Atlas Night",
+          "content": "The Atlas Night project deadline is February 5.",
+          "locked": true
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "no_change",
+            "expected_revision": "$revision",
+            "sources": []
+          }
+        ]
+      },
+      "expected": [],
+      "rubric": "Preserve the locked learned note and do not create a duplicate to work around its lock."
+    },
+    {
+      "id": "replacement",
+      "category": "capacity_replacement",
+      "inputs": [
+        "anniversary"
+      ],
+      "notes": [
+        {
+          "key": "low",
+          "source": "headphones",
+          "topic": "Study ritual",
+          "content": "The user wears amber headphones while sketching maps.",
+          "importance": "low"
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "archive",
+            "item_id": "$low.id",
+            "expected_revision": "$low.revision",
+            "archive_reason": "replaced",
+            "decision_reason": "The original evidence supports this decision.",
+            "sources": []
+          },
+          {
+            "op": "upsert",
+            "expected_revision": 0,
+            "topic": "Our anniversary",
+            "importance": "high",
+            "category": "thread",
+            "content": "The user and companion have an upcoming shared anniversary celebration.",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life",
+            "sources": [
+              {
+                "exchange_id": "$anniversary.exchange_id",
+                "document_id": "$anniversary.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ],
+            "replaces_item_id": "$low.id",
+            "decision_reason": "The anniversary is more consequential than the routine study ritual."
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Study ritual",
+          "state": "archived",
+          "atoms": [],
+          "archive_reason": "replaced"
+        },
+        {
+          "topic": "Our anniversary",
+          "state": "open",
+          "atoms": [
+            [
+              "anniversary"
+            ]
+          ],
+          "importance": "high"
+        }
+      ],
+      "rubric": "At capacity, admit the high-importance anniversary only with an atomic explicit replacement of the low-importance ritual. Preserve evidence on the archived ritual.",
+      "max_notes": 1
+    },
+    {
+      "id": "capacity-review",
+      "category": "capacity_replacement",
+      "inputs": [],
+      "notes": [
+        {
+          "key": "low",
+          "source": "headphones",
+          "topic": "Study ritual",
+          "content": "The user wears amber headphones while sketching maps.",
+          "importance": "low"
+        },
+        {
+          "key": "interview",
+          "source": "interview-open",
+          "topic": "Interview preparation",
+          "content": "The user's Ember Library interview is upcoming."
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "archive",
+            "item_id": "$low.id",
+            "expected_revision": "$low.revision",
+            "archive_reason": "capacity",
+            "decision_reason": "The original evidence supports this decision.",
+            "sources": []
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Study ritual",
+          "state": "archived",
+          "atoms": [],
+          "archive_reason": "capacity"
+        }
+      ],
+      "rubric": "With two active notes and a cap of one, archive only one eligible lower-importance note for capacity; preserve the interview.",
+      "max_notes": 1
+    },
+    {
+      "id": "equal-capacity",
+      "category": "capacity_replacement",
+      "inputs": [
+        "deadline-old"
+      ],
+      "notes": [
+        {
+          "key": "interview",
+          "source": "interview-open",
+          "topic": "Interview preparation",
+          "content": "The user's Ember Library interview is upcoming."
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "no_change",
+            "expected_revision": "$revision",
+            "sources": []
+          }
+        ]
+      },
+      "expected": [],
+      "rubric": "At capacity, do not evict an equally important interview for a moderate project deadline or silently exceed the cap.",
+      "max_notes": 1
+    },
+    {
+      "id": "legacy-conversion",
+      "category": "legacy_work",
+      "inputs": [],
+      "notes": [
+        {
+          "key": "legacy",
+          "source": "legacy-project",
+          "topic": "Creative project",
+          "content": "My creative project is unfinished.",
+          "legacy": true
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "upsert",
+            "expected_revision": "$legacy.revision",
+            "topic": "Creative project",
+            "importance": "moderate",
+            "category": "thread",
+            "content": "The user's creative project remains unfinished.",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life",
+            "sources": [
+              {
+                "exchange_id": "$legacy-project.exchange_id",
+                "document_id": "$legacy-project.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ],
+            "item_id": "$legacy.id"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Creative project",
+          "state": "open",
+          "atoms": [
+            [
+              "unfinished"
+            ]
+          ],
+          "content_format": "narrative",
+          "origin": "derived"
+        }
+      ],
+      "rubric": "Convert the existing extractive note using all original evidence, preserving category and scope. No duplicate or invented development."
+    },
+    {
+      "id": "supported-metadata",
+      "category": "metadata",
+      "inputs": [
+        "dated-promise"
+      ],
+      "notes": [],
+      "scripted": {
+        "operations": [
+          {
+            "op": "upsert",
+            "expected_revision": 0,
+            "topic": "Map draft",
+            "importance": "moderate",
+            "category": "thread",
+            "content": "The user promised to bring the map draft on February 19.",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life",
+            "sources": [
+              {
+                "exchange_id": "$dated-promise.exchange_id",
+                "document_id": "$dated-promise.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ],
+            "promise_owner": "user",
+            "promise_kind": "conversation",
+            "event_at": "tomorrow"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Map draft",
+          "state": "open",
+          "atoms": [
+            [
+              "map draft"
+            ]
+          ],
+          "promise_owner": "user",
+          "promise_kind": "conversation",
+          "event_at": "2026-02-18T16:00:00+00:00"
+        }
+      ],
+      "rubric": "Derive February 19 from the February 18 source in Asia/Manila; preserve first-person ownership. This conversational promise does not schedule a reminder."
+    },
+    {
+      "id": "uncertain-admission",
+      "category": "uncertainty",
+      "inputs": [
+        "uncertain-promise"
+      ],
+      "notes": [],
+      "scripted": {
+        "operations": [
+          {
+            "op": "upsert",
+            "expected_revision": 0,
+            "topic": "Map draft",
+            "importance": "moderate",
+            "category": "thread",
+            "content": "The user might bring the map draft tomorrow if it is finished; this remains undecided.",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life",
+            "sources": [
+              {
+                "exchange_id": "$uncertain-promise.exchange_id",
+                "document_id": "$uncertain-promise.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Map draft",
+          "state": "open",
+          "atoms": [
+            [
+              "might"
+            ],
+            [
+              "undecided"
+            ]
+          ],
+          "promise_owner": null,
+          "promise_kind": null,
+          "event_at": null
+        }
+      ],
+      "rubric": "Preserve the tentative unfinished draft plan in prose, omit date/promise metadata, and never turn a conditional intention into a promise."
+    },
+    {
+      "id": "negated-closure",
+      "category": "uncertainty",
+      "inputs": [
+        "not-finished"
+      ],
+      "notes": [
+        {
+          "key": "interview",
+          "source": "interview-open",
+          "topic": "Interview preparation",
+          "content": "The user's Ember Library interview is upcoming."
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "no_change",
+            "expected_revision": "$revision",
+            "sources": []
+          }
+        ]
+      },
+      "expected": [],
+      "rubric": "Neither negated completion nor a future possibility supports closing the interview. Existing ongoing state already covers it; no change is justified."
+    },
+    {
+      "id": "speaker-ownership",
+      "category": "attribution",
+      "inputs": [
+        "promise-attribution"
+      ],
+      "notes": [],
+      "scripted": {
+        "operations": [
+          {
+            "op": "upsert",
+            "expected_revision": 0,
+            "topic": "Map draft",
+            "importance": "moderate",
+            "category": "thread",
+            "content": "The user promised to bring the map draft next time. The companion offered title brainstorming when it arrives; no reminder has been scheduled.",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life",
+            "sources": [
+              {
+                "exchange_id": "$promise-attribution.exchange_id",
+                "document_id": "$promise-attribution.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              },
+              {
+                "exchange_id": "$promise-attribution.exchange_id",
+                "document_id": "$promise-attribution.document_id",
+                "role": "assistant",
+                "origin": "assistant_statement"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Map draft",
+          "state": "open",
+          "atoms": [
+            [
+              "user promised"
+            ],
+            [
+              "companion"
+            ],
+            [
+              "no reminder"
+            ]
+          ],
+          "source_roles": [
+            "user",
+            "assistant"
+          ],
+          "promise_kind": null
+        }
+      ],
+      "rubric": "Distinguish the user draft promise from the companion title offer; neither is a completed action or a scheduled reminder. Preserve both speakers as evidence."
+    },
+    {
+      "id": "fiction-boundary",
+      "category": "attribution",
+      "inputs": [
+        "fiction-dragon"
+      ],
+      "notes": [],
+      "scripted": {
+        "operations": [
+          {
+            "op": "no_change",
+            "expected_revision": "$revision",
+            "sources": []
+          }
+        ]
+      },
+      "expected": [],
+      "rubric": "The dragon roleplay is explicitly fictional; do not turn it into real-life ownership or a real-life ongoing situation."
+    },
+    {
+      "id": "paraphrased-update",
+      "category": "paraphrases",
+      "inputs": [
+        "deadline-paraphrase"
+      ],
+      "notes": [
+        {
+          "key": "deadline",
+          "source": "deadline-old",
+          "topic": "Atlas Night",
+          "content": "The Atlas Night project deadline is February 5."
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "upsert",
+            "expected_revision": "$deadline.revision",
+            "topic": "Atlas Night",
+            "importance": "moderate",
+            "category": "thread",
+            "content": "The Atlas Night submission cutoff is now February 9; the earlier deadline has been replaced.",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life",
+            "sources": [
+              {
+                "exchange_id": "$deadline-paraphrase.exchange_id",
+                "document_id": "$deadline-paraphrase.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ],
+            "item_id": "$deadline.id"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Atlas Night",
+          "state": "open",
+          "atoms": [
+            [
+              "February 9"
+            ]
+          ]
+        }
+      ],
+      "rubric": "Recognize submission cutoff as the existing deadline topic; update in place with the corrected date."
+    },
+    {
+      "id": "paraphrased-closure",
+      "category": "paraphrases",
+      "inputs": [
+        "interview-paraphrase"
+      ],
+      "notes": [
+        {
+          "key": "interview",
+          "source": "interview-open",
+          "topic": "Interview preparation",
+          "content": "The user's Ember Library interview is upcoming."
+        }
+      ],
+      "scripted": {
+        "operations": [
+          {
+            "op": "archive",
+            "item_id": "$interview.id",
+            "expected_revision": "$interview.revision",
+            "archive_reason": "completed",
+            "decision_reason": "The original evidence supports this decision.",
+            "sources": [
+              {
+                "exchange_id": "$interview-paraphrase.exchange_id",
+                "document_id": "$interview-paraphrase.document_id",
+                "role": "user",
+                "origin": "user_statement"
+              }
+            ],
+            "content": "$interview.content",
+            "content_format": "narrative",
+            "origin": "derived",
+            "scope": "real_life"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "topic": "Interview preparation",
+          "state": "archived",
+          "atoms": [],
+          "archive_reason": "completed"
+        }
+      ],
+      "rubric": "Resolve the reference to the earlier interview and ordinary-language completion. Archive that topic without inventing a new open interview. Rejection is a measured baseline limitation."
+    }
+  ]
+}

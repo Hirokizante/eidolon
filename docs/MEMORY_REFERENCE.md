@@ -296,6 +296,11 @@ not remove its synthetic bank or set `verified`/`retain_enabled` for you.
 
 ### Retrieval and prompt benchmarks
 
+For an opt-in Current Life evaluation through the production maintenance worker
+and local storage, see [First-attempt Current Life baseline](MAINTENANCE_BASELINE.md).
+It provides offline scripted checks and explicitly enabled, synthetic real-model
+trials with recovery disabled, usage measurements, and human quality review.
+
 [`scripts/memory_baseline.py`](../scripts/memory_baseline.py) measures the current
 engine's retrieval and actual prompt assembly against the repository's
 [synthetic fixture](../tests/fixtures/memory_baseline_companion.json). It copies
