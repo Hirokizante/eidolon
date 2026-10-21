@@ -10,10 +10,13 @@ from test_ui import FakeClient
 
 
 class AuxiliaryClient(FakeClient):
+    test_result = {"ok": True, "notice": "Contract passed (prompt JSON). "
+                   "Quality and enforcement untested."}
+
     async def request(self, method, **params):
         if method == "test_auxiliary_model":
             self.calls.append((method, params))
-            return {"ok": True, "notice": "Synthetic connection test passed."}
+            return self.test_result
         if method == "list_models":
             self.calls.append((method, params))
             return {"models": [], "error": "Offline; use a manual model ID."}
@@ -145,7 +148,7 @@ async def test_inherited_auxiliary_picker_edits_limits_without_changing_binding(
         for selector in ("#model-provider", "#model-filter", "#model-options", "#model-id",
                          "#model-effort", "#model-connect"):
             assert picker.query_one(selector).disabled
-        assert picker.query_one("#model-effort", Select).value == ("low" if dialogue_effort else "")
+        assert picker.query_one("#model-effort", Select).value == "medium"
         picker.query_one("#model-context-size", Input).value = ""
         picker.query_one("#model-max-response", Input).value = "4096"
         await pilot.press("ctrl+s")
@@ -298,11 +301,57 @@ async def test_auxiliary_resize_floor_validation_and_synthetic_test():
         await pilot.press("enter")
         await pilot.pause()
         assert "passed" in str(aux.query_one(".form-status", Static).render())
+        assert aux.query_one(".form-status", Static).display
         assert app.client.calls[-1][1]["auxiliary"]["max_output_tokens"] == 8192
         assert app.client.calls[-1][1]["auxiliary"]["thinking_mode"] == "disabled"
         assert not any(method.startswith("save_") for method, _ in app.client.calls)
         assert app.screen is aux
         assert app.config.auxiliary.max_output_tokens == 4096
+
+
+@pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
+@pytest.mark.parametrize("connected", [True, False])
+async def test_contract_feedback_preserves_preference_and_composer_drafts(size, connected, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("EIDOLON_ASCII", "1")
+    client = AuxiliaryClient()
+    notice = ("Connected; contract failed. Check model options and output limits."
+              if connected else "No provider response. Check connection, model options and capacity.")
+    client.test_result = {"ok": False, "connected": connected,
+                          "contract_compatible": False, "notice": notice, "output_mode": "prompt"}
+    app = RoomApp(AppConfig(), client=client)
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.load_text("Draft 漢字 🌸 é")
+        composer.selection = Selection((0, 1), (0, 4))
+        selection = composer.selection
+        app.open_preferences()
+        await pilot.pause()
+        prefs = app.screen
+        prefs.query_one("#preference-category", Select).value = "auxiliary"
+        await pilot.pause()
+        prefs.query_one("#aux-timeout_seconds", Input).value = "45"
+        prefs.query_one("#aux-test", Button).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        status = prefs.query_one(".form-status", Static)
+        assert notice in str(status.render()) and status.has_class("problem")
+        dialog = prefs.query_one(".form-dialog")
+        assert status.display or notice in str(dialog.border_subtitle)
+        for button in prefs.query(".form-actions Button"):
+            if button.display:
+                assert button.region.bottom <= dialog.content_region.bottom
+        assert app.screen is prefs and app.focused is prefs.query_one("#aux-test", Button)
+        assert prefs.query_one("#aux-timeout_seconds", Input).value == "45"
+        assert not any(method.startswith("save_") for method, _ in client.calls)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.focused is composer and composer.text == "Draft 漢字 🌸 é"
+        assert composer.selection == selection
+        app.open_preferences()
+        await pilot.pause()
+        assert float(app.screen.query_one("#aux-timeout_seconds", Input).value) == 45
 
 
 async def test_discard_restores_auxiliary_and_other_preferences_from_saved_configuration():

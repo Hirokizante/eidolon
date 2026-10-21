@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 
 from .continuity import ContinuityValidationError
+from .proposals import CONTRACT_VERSIONS
+from eidolon.providers.maintenance import CAPABILITY_SOURCES, OUTPUT_MODES
 
 
 REASON_VERSION = 1
@@ -71,8 +73,15 @@ def safe_usage(value: dict | None) -> dict | None:
 def public_attempt(attempt: dict | None) -> dict | None:
     if attempt is None:
         return None
+    provenance = attempt.get("provenance", {})
+    output = {key: provenance.get(key) if provenance.get(key) in values else None
+              for key, values in {
+                  "output_mode": OUTPUT_MODES,
+                  "contract": CONTRACT_VERSIONS,
+                  "capability_source": CAPABILITY_SOURCES,
+              }.items()}
     return {**{key: attempt.get(key) for key in (
         "id", "task_id", "stage", "started_at", "ended_at", "outcome", "elapsed_seconds",
     )}, "reason": read_reason(attempt.get("reason")),
         "model": model_label(attempt.get("provenance", {}).get("model")),
-        "usage": safe_usage(attempt.get("usage")), "output_mode": "plain"}
+        "usage": safe_usage(attempt.get("usage")), **output}

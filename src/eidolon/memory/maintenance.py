@@ -19,7 +19,8 @@ from uuid import uuid4
 from eidolon.config import IdentityConfig
 from eidolon.providers.context import ContextBudget, TokenCounter
 from eidolon.providers.metrics import measured_stream
-from eidolon.providers.routing import digest
+from eidolon.providers.maintenance import MaintenanceOutput
+from eidolon.providers.routing import AuxiliaryExecution, digest
 
 from .continuity import (
     DEFAULT_MAX_NOTES, IMPORTANCE_RANK, MAX_NOTES, THINKING_TIMEOUT_NOTICE,
@@ -60,6 +61,49 @@ def numeric_usage(usage: Any) -> dict[str, int | float]:
 
 class _ThinkingTimeout(TimeoutError):
     """The request deadline expired during reasoning before any answer text."""
+
+
+async def synthetic_maintenance_test(provider: Any, execution: AuxiliaryExecution) -> dict:
+    """One explicit inference through production assembly/validation, with no store.
+
+    Fixed names, times and evidence never consult the installation's identity,
+    notes, conversations or memory. Nothing is committed, even on success.
+    """
+    from .proposals import ORDINARY_CONTRACT
+
+    worker = ContinuityWorker(None, provider, timeout=execution.timeout_seconds,
+                              max_input_chars=execution.context_chars)
+    task = {"id": "synthetic-test", "scope": "real_life", "inputs": [{
+        "exchange_id": 1, "document_id": "synthetic-project", "scope": "real_life",
+        "created_at": "2026-01-01T12:00:00+00:00",
+        "user_created_at": "2026-01-01T12:00:00+00:00",
+        "assistant_created_at": "2026-01-01T12:00:01+00:00",
+        "user_content": "My creative project is unfinished. I want to return to it later.",
+        "assistant_content": "We can return to the creative project later.",
+        "identity": {"user_name": "You", "companion_name": "Companion"},
+    }]}
+    state = {"items": [], "source_exchanges": [], "revision": 0,
+             "control_revision": 0, "active_count": 0}
+    output = worker._output(task["id"])
+    result = {"ok": False, "connected": False, "contract_compatible": False,
+              "contract": ORDINARY_CONTRACT, "output_mode": "prompt",
+              "capability_source": "unknown"}
+    if output is not None:
+        result.update(output.provenance())
+    try:
+        async with asyncio.timeout(execution.timeout_seconds):
+            worker.counter = await asyncio.to_thread(TokenCounter, worker.model)
+            await worker._propose(task, state, output=output)
+        result.update(ok=True, contract_compatible=True)
+        label = {"json_schema": "schema", "json_object": "JSON", "prompt": "prompt JSON"}[
+            result["output_mode"]]
+        result["notice"] = (f"Contract passed ({label}). Quality and enforcement untested.")
+    except Exception:
+        result["notice"] = ("Connected; contract failed. Check model options and output limits."
+                            if worker.connected else "No provider response. Check connection, "
+                            "model options and capacity.")
+    result["connected"] = worker.connected
+    return result
 
 
 class ContinuityWorker:
@@ -105,6 +149,11 @@ class ContinuityWorker:
         self._task_id: str | None = None
         self._last_result = "idle"
         self._attempt_id: str | None = None
+        self.connected = False
+
+    def _output(self, task_id: str) -> MaintenanceOutput | None:
+        factory = getattr(self.provider, "maintenance_output", None)
+        return factory(task_id) if factory else None
 
     @property
     def status(self) -> dict:
@@ -217,7 +266,9 @@ class ContinuityWorker:
                 chars = sum(len(json.dumps(message, ensure_ascii=False)) for message in assembled)
                 if chars > self.max_input_chars:
                     return False
-            return self.budget.fits(self.counter.request(assembled))
+            output = self._output(task["id"])
+            return self.budget.fits(self.counter.request(
+                assembled, response_format=output.response_format if output else None))
 
         if not fits():
             raise ContinuityValidationError("The complete source batch exceeds the input allowance",
@@ -293,7 +344,8 @@ class ContinuityWorker:
                 return rows
         return [evidence[key] for key in sorted(ids)]
 
-    async def _propose(self, task: dict, state: dict) -> list[dict]:
+    async def _propose(self, task: dict, state: dict, *,
+                       output: MaintenanceOutput | None = None) -> list[dict]:
         chunks: list[str] = []
         size = 0
         finished = False
@@ -304,11 +356,13 @@ class ContinuityWorker:
                                state=state, scope=self.scope, timezone=self.timezone,
                                max_notes=self.max_notes)
         record = getattr(self.store, "record_request_metrics", None)
+        output = output or self._output(task["id"])
+        options = {"output": output} if output is not None else {}
         try:
             async with (
                 asyncio.timeout(self.timeout),
                 aclosing(measured_stream(
-                    self.provider.stream(messages, tools=None, presentation="plain"),
+                    self.provider.stream(messages, tools=None, presentation="plain", **options),
                     record=partial(record, role="auxiliary", provider=getattr(
                         getattr(self.provider, "config", None), "name", "unknown"),
                         model=self.model, task_id=task["id"], attempt_id=self._attempt_id)
@@ -316,6 +370,8 @@ class ContinuityWorker:
                 )) as stream,
             ):
                 async for event in stream:
+                    if event.get("type") in {"response", "token", "progress", "usage", "finish"}:
+                        self.connected = True
                     if event.get("type") == "progress" and event.get("phase") == "reasoning":
                         reasoning_seen = True
                     elif event.get("type") == "token":
@@ -331,7 +387,7 @@ class ContinuityWorker:
                         raise ContinuityValidationError("Maintenance cannot call tools")
                     elif event.get("type") == "usage":
                         counts = numeric_usage(event.get("usage"))
-                        if counts:
+                        if counts and self.store is not None:
                             self.store.record_maintenance_usage(
                                 task["id"], "continuity", usage=counts,
                                 attempt_id=self._attempt_id)
@@ -464,24 +520,33 @@ class ContinuityWorker:
             if claim and not claim(task["id"], "continuity"):
                 self._last_result = "already claimed"
                 return False
+            output = self._output(task["id"])
             if self.execution is not None:
                 provenance = self.execution.provenance()
+                original_output = {key: provenance.get(key) for key in
+                                   ("contract", "output_mode", "capability_source",
+                                    "provider_schema_hash")}
+                if output is not None:
+                    provenance.update(output.provenance())
                 contract, instructions, schema, _ = task_contract(task["id"])
+                provenance["contract"] = contract
                 provenance["prompt_hash"] = hashlib.sha256(instructions.encode()).hexdigest()
                 provenance["schema_hash"] = digest({
                     "contract": contract, "schema": schema.model_json_schema(),
                 })
-                if task["id"].startswith(("narrative:", "review:")):
+                if (task["id"].startswith(("narrative:", "review:"))
+                        or any(provenance[key] != value for key, value in original_output.items())):
                     provenance["execution_fingerprint"] = digest({
                         "execution": provenance["execution_fingerprint"],
                         "prompt": provenance["prompt_hash"], "schema": provenance["schema_hash"],
+                        "output": output.provenance() if output else original_output,
                     })
                 self._attempt_id = self.store.start_maintenance_attempt(
                     task["id"], provenance,
                 )
             else:
                 self.store.record_maintenance_usage(task["id"], "continuity", called=True)
-            operations = await self._propose(task, state)
+            operations = await self._propose(task, state, output=output)
             if self.commit_result is not None:
                 await self.commit_result(self.execution, self._attempt_id, task, state, operations)
             else:

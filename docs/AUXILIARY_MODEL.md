@@ -15,7 +15,7 @@ for connection setup; memory activation and evidence policy remain separate.
 
    | Label | Configuration | Behavior |
    | --- | --- | --- |
-   | Follow dialogue model | `inherit` (default) | Uses the dialogue connection/model and compatible generation options, with bounded auxiliary output and conditional low reasoning effort |
+   | Follow dialogue model | `inherit` (default) | Uses the dialogue connection/model, bounded auxiliary output, and explicit reasoning/thinking controls |
    | Choose a separate model | `separate` | Uses a saved connection and an independent exact model ID with its own request options |
    | Off | `disabled` | Stops automatic and manual auxiliary inference; preserves existing notes, pending inputs, and attempt history |
 
@@ -34,9 +34,16 @@ another dialogue model. Saving a connection is a separate persistence action;
 editing a shared endpoint or credential affects every role using that connection.
 Selecting a separate auxiliary model does not change the dialogue model.
 
-The optional Test sends a fixed synthetic request asking for `OK`. It checks
-connection/request compatibility, not note quality, and writes no conversation,
-memory, or maintenance task. Run it while foreground generation is idle; otherwise
+The optional Test sends one fixed, wholly synthetic creative-project exchange
+through production maintenance request assembly, output controls, stream handling,
+and the local proposal validator. It reports provider connectivity separately
+from maintenance-contract compatibility and shows the effective output mode.
+An `OK` reply, empty output, refusal, incomplete stream, or invalid proposal fails
+the contract check even when the endpoint responds successfully. Valid no-change
+is permitted by the real contract; passing does not establish a useful admission,
+note quality, reliability across tasks, schema enforcement, speed, or cost.
+Test reads no personal evidence or configured names and writes no conversation,
+memory, request metrics, or maintenance task. Run it while foreground generation is idle; otherwise
 it asks you to retry. It cancels existing maintenance before testing and can itself
 be interrupted for foreground work. Test does not save the draft.
 
@@ -64,16 +71,18 @@ reduce supported reasoning effort or increase Max Response Length within the bou
 Only configure thinking controls on endpoints that accept them; a reasoning effort
 such as `none` does not itself guarantee that a gateway disables thinking.
 
-A separate request uses plain text with no tools. It takes credentials, headers,
+A separate request uses the maintenance output contract with no tools. It takes credentials, headers,
 and transport from the saved connection, plus only its own generation options
 and the connection's explicit `stream_options` override. It does not copy dialogue
 temperature, stops, personality, or presentation settings. Null reasoning effort
 omits that parameter. Exactly one output-token field is sent.
 
-Follow dialogue mode preserves compatible dialogue parameters, caps its output
-at the auxiliary limit, and uses `low` effort only when the dialogue profile had
-reasoning effort configured. A configured auxiliary thinking mode overrides the
-inherited thinking option independently. Reserved protocol overrides, multiple
+Follow dialogue mode caps output at the auxiliary limit and preserves only the
+output-token field, reasoning effort, thinking controls, and explicit stream-usage
+options. Dialogue stops, temperature, top-p, and unrelated vendor parameters are
+excluded. It does not force temperature to zero or disable reasoning. Explicit
+auxiliary reasoning/thinking settings override the inherited controls independently.
+The picker shows the effective read-only reasoning effort. Reserved protocol overrides, multiple
 output-limit fields, or inherited `max_output_tokens` cause a configuration error.
 The app does not silently remove rejected semantic options or switch models.
 
@@ -81,6 +90,72 @@ Both modes request streamed usage by default. A saved connection override such
 as `parameters: {stream_options: {include_usage: false}}` is honored. Missing
 usage remains unknown, including after interruption. See
 [Prompt assembly and diagnostics](PROMPT_CACHING.md).
+
+## Output constraints and route-specific guarantees
+
+Maintenance output is independent of dialogue/avatar presentation and its
+`structured_verified` flag. Selection prefers a verified enforced schema, then
+supported JSON-object mode, then the compact prompt-only JSON contract. The local
+validator and atomic evidence checks run in every mode. JSON mode constrains JSON
+syntax; it does not enforce the maintenance schema or semantic correctness.
+
+Unknown routes remain prompt-only. Model names, inventories, successful HTTP
+responses, and a passing Test never establish enforcement. There are no automatic
+paid capability probes. An operator can record **independently verified** support
+in private configuration on the saved connection, for example:
+
+```yaml
+maintenance_output_support:
+  - endpoint: https://api.example.com/v1
+    model: example-summary-model
+    transport: chat_completions_stream
+    reasoning_effort: null
+    thinking_mode: null
+    json_schema: enforced  # unknown | enforced | unsupported | ignored
+    json_object: true     # true | false | null (unknown)
+```
+
+This field belongs under the relevant `providers` entry, alongside `parameters`.
+It is an operator assertion, reported as `configured_verification`; the app does
+not claim to have measured it. Keep the default empty list until documentation and
+independent route verification justify stronger controls. Endpoint, exact model ID,
+streaming Chat Completions transport, and effective reasoning/thinking mode must
+match. A changed endpoint/model/mode or conflicting records use prompt-only output.
+Set `json_schema: unsupported` or `ignored` to retain known negative evidence across
+service restarts. The optional Test never edits these records or saves its draft.
+
+The schema uses a conservative provider subset: closed objects, required nullable
+optional fields, enums and nested `anyOf` variants. Length, count, reference,
+evidence, protection and transition rules remain local. Null optional fields mean
+omission; missing required substantive fields are never repaired. Token planning
+includes the effective response-format schema overhead.
+
+Anthropic's native OpenAI compatibility endpoint uses prompt-only output because
+it documents ignored `response_format` controls. OpenRouter constrained requests
+require upstream parameter support via `provider.require_parameters: true`.
+Other gateways require their own exact-route verification; a model's native API
+support does not imply gateway support. No endpoint, model, beta transport, or user
+resource limit is changed to obtain constrained output. See the primary references:
+[OpenAI's supported schema subset](https://developers.openai.com/api/docs/guides/structured-outputs),
+[DeepSeek JSON output](https://api-docs.deepseek.com/guides/json_mode/),
+[Anthropic compatibility](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk),
+and [OpenRouter structured output](https://openrouter.ai/docs/guides/features/structured-outputs)
+(checked 2026-10-21).
+
+An explicit machine-readable unsupported-format error is remembered across
+auxiliary adapter replacements and Tests during the current service lifetime
+(bounded to 128 route configurations). It permits a lower supported output mode
+on a later attempt, with `provider_rejected` provenance, and never triggers an
+immediate hidden retry. Generic rejected options, schema errors, refusals, and
+successful responses do not alter capability evidence. Semantic options such as
+reasoning are never silently removed to rescue a rejected request. Restart clears
+this temporary negative cache; update the private support record for durable
+unsupported/ignored settings.
+
+Service status and new attempt details report `output_mode` (`json_schema`,
+`json_object`, or `prompt`), contract version, and capability source. Private
+attempt provenance also hashes the effective provider response format separately
+from the full local schema. Earlier attempts without these fields stay unknown.
 
 This private configuration fragment assumes a saved connection named `local`:
 
@@ -232,8 +307,8 @@ required extra stage of every ordinary success. Completed specialized work is no
 redispatched automatically, including after restart. An explicit refresh may
 reconsider a completed no-change pass; unfinished retries retain their task identity.
 Attempt provenance hashes the effective instructions and versioned schema for
-the actual task. Requests still use prompt-only JSON over the existing plain
-provider stream; this contract does not claim provider-enforced JSON or schemas.
+the actual task, plus its effective output controls as described above. The
+existing streaming Chat Completions transport is retained for every mode.
 
 [Routing](../src/eidolon/providers/routing.py) resolves immutable execution snapshots.
 Changes to the configured route advance a persisted monotonic revision, close old

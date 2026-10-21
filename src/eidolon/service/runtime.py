@@ -7,7 +7,7 @@ import os
 import signal
 import time
 import uuid
-from contextlib import aclosing, asynccontextmanager, suppress
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,10 +21,11 @@ from eidolon.engine import ConversationEngine
 from eidolon.images import ImageStore, MAX_UPLOAD_BYTES
 from eidolon.mcp import MCPManager
 from eidolon.memory import HindsightMemory, OutboxDispatcher
-from eidolon.memory.maintenance import ContinuityWorker
+from eidolon.memory.maintenance import ContinuityWorker, synthetic_maintenance_test
 from eidolon.memory.diagnostics import model_label, public_attempt, read_reason, safe_usage
 from eidolon.memory.recovery import ManagedMemoryService
 from eidolon.providers import OpenAIProvider, ProviderError
+from eidolon.providers.maintenance import OutputSupportCache, maintenance_output
 from eidolon.providers.routing import (
     AuxiliaryConfigurationError, configured_route_fingerprint, resolve_auxiliary,
 )
@@ -94,6 +95,7 @@ class RoomService:
         self.generation_lock = asyncio.Lock()
         self._settings_lock = asyncio.Lock()
         self._auxiliary_reload_lock = asyncio.Lock()
+        self._output_support_cache = OutputSupportCache()
         self._auxiliary_applying = False
         self._skills_lock = asyncio.Lock()
         self._agent_mode_lock = asyncio.Lock()
@@ -159,6 +161,7 @@ class RoomService:
             self._auxiliary_error = str(exc)
         execution = self._auxiliary_execution
         provider = (OpenAIProvider(execution.profile(), timeout=execution.timeout_seconds,
+                                   output_support_cache=self._output_support_cache,
                                    stream_usage=execution.stream_usage) if execution else None)
         self.continuity_worker = ContinuityWorker(
             self.store, provider, timezone=config.timezone,
@@ -224,7 +227,13 @@ class RoomService:
 
     def auxiliary_status(self) -> dict:
         execution = self._auxiliary_execution
+        output = None
+        if execution:
+            profile = execution.profile()
+            output = maintenance_output(profile, "ordinary", self._output_support_cache.rejected(profile))
         return {"mode": self._auxiliary_source.auxiliary.mode,
+                **({key: value for key, value in output.provenance().items()
+                    if key != "provider_schema_hash"} if output else {}),
                 "provider": execution.provider if execution else self._auxiliary_source.auxiliary.provider,
                 "model": execution.model if execution else self._auxiliary_source.auxiliary.model,
                 "context_window": execution.context_window if execution else None,
@@ -576,7 +585,7 @@ class RoomService:
         if existing:
             # Connection forms carry full older profiles, but do not edit these fields.
             for field in {"models", "model_metadata", "parameters", "presentation", "structured_verified",
-                          "post_history"}:
+                          "post_history", "maintenance_output_support"}:
                 merged[field] = existing_values[field]
             if values.get("model", existing.model) != existing.model and "context_window" not in values:
                 merged["context_window"] = None
@@ -856,24 +865,10 @@ class RoomService:
 
                 async def run_test():
                     provider = OpenAIProvider(execution.profile(), timeout=execution.timeout_seconds,
+                                              output_support_cache=self._output_support_cache,
                                               stream_usage=execution.stream_usage)
                     try:
-                        text = ""
-                        finished = False
-                        async with asyncio.timeout(execution.timeout_seconds), aclosing(provider.stream([
-                            {"role": "system", "content": "Synthetic connection test. Reply with exactly OK."},
-                            {"role": "user", "content": "Please reply OK."},
-                        ], tools=None, presentation="plain")) as stream:
-                            async for event in stream:
-                                if event["type"] == "token":
-                                    text += event["text"]
-                                    if len(text) > 1000:
-                                        raise ValueError("Test output too large")
-                                if event["type"] == "finish":
-                                    finished = event.get("reason") == "stop"
-                        ok = finished and text.strip() == "OK"
-                        return {"ok": ok, "notice": "Synthetic connection test passed. Memory quality was not tested."
-                                if ok else "Model connected but did not complete the synthetic OK response."}
+                        return await synthetic_maintenance_test(provider, execution)
                     except asyncio.CancelledError:
                         return {"ok": False, "notice": "Synthetic test interrupted for foreground work or a settings change."}
                     except Exception:

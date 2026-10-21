@@ -718,7 +718,7 @@ class ModelScreen(FormModal):
             options.append((f"Saved custom effort: {draft.effort}", draft.effort))
         selector.set_options(options)
         if self.follow_dialogue:
-            selector.value = "low" if "reasoning_effort" in profile.parameters else ""
+            selector.value = self._role_effort or profile.parameters.get("reasoning_effort") or ""
         else:
             selector.value = draft.effort
         self.query_one("#model-context-size", Input).value = draft.context_window

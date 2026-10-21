@@ -49,7 +49,7 @@ async def test_background_provider_limits_do_not_change_conversation_parameters(
         background = service.continuity_worker.provider.config
         assert background is not chat and background.parameters is not chat.parameters
         assert background.parameters == {
-            "reasoning_effort": "low", "max_completion_tokens": 4096, "temperature": .7,
+            "reasoning_effort": "high", "max_completion_tokens": 4096,
         }
         assert chat.parameters == config["providers"][0]["parameters"]
         # A plain profile gets a bounded completion without adding effort support.

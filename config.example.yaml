@@ -13,6 +13,10 @@ providers:
   tools: true
   presentation: auto
   structured_verified: false
+  # Independent, exact-route operator verification for maintenance output controls.
+  # Empty keeps unknown routes on prompt-only JSON; Test never enables enforcement.
+  # See docs/AUXILIARY_MODEL.md#output-constraints-and-route-specific-guarantees.
+  maintenance_output_support: []
   post_history: system
   # Token window used for prompt budgeting and the status bar.
   # null discovers the selected model automatically; set manually if discovery is unavailable.

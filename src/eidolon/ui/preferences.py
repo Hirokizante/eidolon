@@ -139,6 +139,9 @@ class PreferencesScreen(FormModal):
     PreferencesScreen.auxiliary.narrow .form-status.field-problem,
     PreferencesScreen.vision.narrow .form-status.field-problem,
     PreferencesScreen.web.narrow .form-status.field-problem { display: none; }
+    PreferencesScreen.auxiliary .form-status.auxiliary-test-feedback { display: block; }
+    PreferencesScreen.short.auxiliary .form-status.auxiliary-test-feedback { display: none; }
+    PreferencesScreen.short.auxiliary.auxiliary-test-feedback .form-hint { display: none; }
     """
     BINDINGS = [
         Binding("escape", "close", "Close", priority=True),
@@ -265,6 +268,11 @@ class PreferencesScreen(FormModal):
     def update_field_title(self) -> None:
         dialog = self.query_one(".form-dialog")
         dialog.border_subtitle = ""
+        if self.state.category == "auxiliary" and self.has_class("short"):
+            status = self.query_one(".form-status", Static)
+            if status.has_class("auxiliary-test-feedback"):
+                dialog.border_subtitle = Text(str(status.render()))
+            return
         identity_short = self.state.category == "identity" and self.has_class("short")
         if (self.state.category not in {"continuity", "identity"}
                 or not (self.has_class("narrow") or identity_short)):
@@ -557,9 +565,12 @@ class PreferencesScreen(FormModal):
         auxiliary = self.validate_auxiliary()
         if auxiliary is None:
             return
+        focused = self.focused
         self.committing = True
         self.set_controls_disabled(True)
-        self.status("Testing with synthetic text only…")
+        self.add_class("auxiliary-test-feedback")
+        self.query_one(".form-status").add_class("auxiliary-test-feedback")
+        self.status("Testing maintenance with synthetic evidence…")
         try:
             result = await self.client.request("test_auxiliary_model", auxiliary=auxiliary)
             self.status(result["notice"], problem=not result["ok"])
@@ -568,6 +579,8 @@ class PreferencesScreen(FormModal):
         finally:
             self.committing = False
             self.set_controls_disabled(False)
+            if self.app.screen is self and focused is not None and focused.is_mounted:
+                focused.focus()
 
     def validate_web_search(self) -> bool:
         try:

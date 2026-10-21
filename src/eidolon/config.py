@@ -128,6 +128,23 @@ class ModelMetadata(SettingsModel):
     updated_at: float = Field(ge=0, allow_inf_nan=False)
 
 
+class MaintenanceOutputSupport(SettingsModel):
+    """Operator-verified support for one exact route and generation mode.
+
+    Inventory hints and a successful synthetic Test cannot create these records.
+    """
+
+    endpoint: str
+    model: str = Field(min_length=1, max_length=500)
+    transport: Literal["chat_completions_stream"] = "chat_completions_stream"
+    reasoning_effort: str | None = Field(default=None, max_length=80)
+    thinking_mode: Literal["adaptive", "disabled"] | None = None
+    json_schema: Literal["unknown", "enforced", "unsupported", "ignored"] = "unknown"
+    json_object: bool | None = Field(default=None, strict=True)
+
+    _validate_endpoint = field_validator("endpoint")(validate_endpoint)
+
+
 class ProviderConfig(SettingsModel):
     name: str = "local"
     display_name: str | None = None
@@ -139,6 +156,7 @@ class ProviderConfig(SettingsModel):
     tools: bool = True
     presentation: Literal["plain", "prefix", "json", "auto"] = "auto"
     structured_verified: bool = False
+    maintenance_output_support: list[MaintenanceOutputSupport] = Field(default_factory=list)
     # Explicit override for compatible endpoints without capability metadata.
     vision: bool | None = Field(default=None, strict=True)
     post_history: Literal["system", "user"] = "system"

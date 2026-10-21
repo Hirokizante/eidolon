@@ -13,6 +13,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from .maintenance import MaintenanceOutput, OutputSupportCache, maintenance_output
+
 
 class ProviderError(RuntimeError):
     """An actionable provider/network failure, without request credentials."""
@@ -35,7 +37,8 @@ class ProviderOutputLimitError(ProviderError):
 class OpenAIProvider:
     def __init__(self, config: Any, *, credential_resolver: Callable | None = None,
                  client: httpx.AsyncClient | None = None, timeout: float = 90,
-                 stream_usage: bool = True):
+                 stream_usage: bool = True,
+                 output_support_cache: OutputSupportCache | None = None):
         self.config = config
         if credential_resolver is None:
             from eidolon.config import resolve_secret
@@ -44,6 +47,7 @@ class OpenAIProvider:
         self.client = client
         self.timeout = timeout
         self.stream_usage = stream_usage
+        self.output_support_cache = output_support_cache or OutputSupportCache()
         self._session_id: str | None = None
         self.model_inventory: list[dict] = []
         self._vision_lock = asyncio.Lock()
@@ -224,15 +228,27 @@ class OpenAIProvider:
             }
         return None
 
+    def maintenance_output(self, task_id: str) -> MaintenanceOutput:
+        return maintenance_output(self.config, task_id,
+                                  self.output_support_cache.rejected(self.config))
+
     async def stream(self, messages: list[dict], *, tools: list[dict] | None = None,
-                     presentation: str | None = None) -> AsyncIterator[dict]:
+                     presentation: str | None = None,
+                     output: MaintenanceOutput | None = None) -> AsyncIterator[dict]:
         """Yield request/progress/token/usage/tool_call/finish events; preserve tool IDs.
 
         The request event contains the serialized body at dispatch, never headers.
         Reasoning progress contains no model text.
         """
-        presentation = presentation or self.presentation_mode
+        if output is not None and tools:
+            raise ProviderCapabilityError("Maintenance output cannot be combined with tools.")
+        presentation = "plain" if output is not None else presentation or self.presentation_mode
         payload = self._payload(messages, tools, presentation)
+        if output is not None and output.response_format is not None:
+            payload["response_format"] = copy.deepcopy(output.response_format)
+            if urlsplit(self.config.endpoint).hostname == "openrouter.ai":
+                # Require compatible upstream routing, rather than ignored hints.
+                payload["provider"] = {"require_parameters": True}
         headers = self._headers()
         headers.setdefault("Accept", "text/event-stream")
         headers.setdefault("Content-Type", "application/json")
@@ -278,6 +294,8 @@ class OpenAIProvider:
                     if not isinstance(content, str):
                         raise ProviderError("Provider returned non-text content; select a chat text model.")
                     events.append({"type": "token", "text": content})
+                if delta.get("refusal") and output is not None:
+                    raise ProviderError("Provider refused the maintenance request.")
                 if delta.get("refusal"):
                     events.append({"type": "token", "text": delta["refusal"]})
                 for position, part in enumerate(delta.get("tool_calls") or []):
@@ -334,9 +352,30 @@ class OpenAIProvider:
             started = monotonic()
             response = await client.send(request, stream=True)
             try:
+                if output is not None:
+                    yield {"type": "response", "status": response.status_code}
                 if response.status_code >= 400:
                     hint = ""
                     if response.status_code in (400, 422):
+                        if output is not None and output.mode != "prompt":
+                            # Inspect only typed error fields, never infer support
+                            # from arbitrary prose or replay a provider's message.
+                            await response.aread()
+                            try:
+                                error = response.json().get("error", {})
+                                if (isinstance(error, dict) and error.get("param") in {
+                                        "response_format", "response_format.type",
+                                        "response_format.json_schema"}
+                                        and error.get("code") in {
+                                            "unsupported_parameter", "unsupported_value"}):
+                                    modes = ({"json_schema", "json_object"}
+                                             if error["param"] == "response_format"
+                                             and error["code"] == "unsupported_parameter"
+                                             else {output.mode})
+                                    for mode in modes:
+                                        self.output_support_cache.reject(self.config, mode)
+                            except (ValueError, AttributeError, TypeError):
+                                pass
                         raise ProviderCapabilityError(
                             f"Provider rejected request options (HTTP {response.status_code}); "
                             "check the selected model, output-token field, reasoning effort, tools and presentation."

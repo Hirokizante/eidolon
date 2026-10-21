@@ -26,8 +26,7 @@ def test_legacy_inheritance_preserves_profile_and_memory_choices():
     execution = resolve_auxiliary(config, 7)
     profile = execution.profile()
     assert profile.model == "dialogue" and profile.context_window_for() == 128000
-    assert profile.parameters == {"stop": ["END"], "temperature": .8,
-                                  "reasoning_effort": "low", "max_completion_tokens": 4096}
+    assert profile.parameters == {"reasoning_effort": "high", "max_completion_tokens": 4096}
     assert execution.context_chars is None and execution.routing_revision == 7
     assert not profile.tools and profile.presentation == "plain"
     assert config.model_dump() == before
@@ -35,7 +34,7 @@ def test_legacy_inheritance_preserves_profile_and_memory_choices():
     with pytest.raises(FrozenInstanceError):
         execution.model = "changed"
     profile.parameters["temperature"] = 0
-    assert execution.profile().parameters["temperature"] == .8
+    assert "temperature" not in execution.profile().parameters
 
 
 def test_separate_model_has_independent_options_and_capacity():

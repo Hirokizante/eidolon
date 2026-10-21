@@ -31,6 +31,9 @@ def configured_route_fingerprint(config: AppConfig) -> str:
     profile = next((p for p in config.providers if p.name == name), None)
     if role.mode != "disabled":
         identity["connection"] = connection_digest(profile) if profile else None
+        if profile:
+            identity["maintenance_output_support"] = [
+                support.model_dump() for support in profile.maintenance_output_support]
         if role.mode == "inherit" and profile:
             identity["inherited"] = {"provider": profile.name, "model": profile.model,
                                       "parameters": profile.parameters,
@@ -61,16 +64,20 @@ class AuxiliaryExecution:
         return ProviderConfig.model_validate_json(self._profile_json)
 
     def provenance(self) -> dict:
+        from .maintenance import maintenance_output
+
         return {"role": self.role, "mode": self.mode, "provider": self.provider,
                 "model": self.model, "routing_revision": self.routing_revision,
                 "route_fingerprint": self.route_fingerprint,
                 "execution_fingerprint": self.execution_fingerprint,
                 "request_options": json.loads(self._options_json),
-                "prompt_hash": self.prompt_hash, "schema_hash": self.schema_hash}
+                "prompt_hash": self.prompt_hash, "schema_hash": self.schema_hash,
+                **maintenance_output(self.profile(), "ordinary").provenance()}
 
 
 def resolve_auxiliary(config: AppConfig, revision: int = 0) -> AuxiliaryExecution | None:
     from eidolon.memory.proposals import ORDINARY_CONTRACT, ORDINARY_INSTRUCTIONS, OrdinaryProposal
+    from .maintenance import maintenance_output
 
     role = config.auxiliary
     if role.mode == "disabled":
@@ -94,6 +101,7 @@ def resolve_auxiliary(config: AppConfig, revision: int = 0) -> AuxiliaryExecutio
             name=connection.name, endpoint=connection.endpoint,
             api_key_ref=connection.api_key_ref, headers=connection.headers.copy(),
             model=model, tools=False, presentation="plain", context_window=role.context_window,
+            maintenance_output_support=copy.deepcopy(connection.maintenance_output_support),
             model_metadata={model: metadata} if metadata else {},
             parameters={role.output_token_field: role.max_output_tokens},
         )
@@ -117,13 +125,18 @@ def resolve_auxiliary(config: AppConfig, revision: int = 0) -> AuxiliaryExecutio
         profile.parameters[key] = (min(current, role.max_output_tokens)
                                    if type(current) is int and current > 0
                                    else role.max_output_tokens)
-        if "reasoning_effort" in profile.parameters:
-            profile.parameters["reasoning_effort"] = "low"
+        # Dialogue stops, sampling and vendor extensions are not maintenance
+        # options. Preserve only the explicit resource/reasoning controls.
+        profile.parameters = {name: copy.deepcopy(value)
+                              for name, value in profile.parameters.items()
+                              if name in {key, "reasoning_effort", "thinking", "stream_options"}}
         profile.tools, profile.presentation = False, "plain"
         profile.structured_verified = False
         if role.context_window is not None:
             profile.context_window = role.context_window
         stream_usage = True
+    if role.reasoning_effort is not None:
+        profile.parameters["reasoning_effort"] = role.reasoning_effort
     if role.thinking_mode is not None:
         profile.parameters["thinking"] = {"type": role.thinking_mode}
     stream_options = profile.parameters.get("stream_options")
@@ -143,7 +156,8 @@ def resolve_auxiliary(config: AppConfig, revision: int = 0) -> AuxiliaryExecutio
                           "schema": OrdinaryProposal.model_json_schema()})
     route = configured_route_fingerprint(config)
     execution = digest({"route": route, "options": options,
-                        "prompt": prompt_hash, "schema": schema_hash})
+                        "prompt": prompt_hash, "schema": schema_hash,
+                        "output": maintenance_output(profile, "ordinary").provenance()})
     return AuxiliaryExecution(role.mode, profile.name, profile.model, revision, route, execution,
                               chars, profile.context_window_for(), role.timeout_seconds,
                               stream_usage, prompt_hash, schema_hash, profile.model_dump_json(),

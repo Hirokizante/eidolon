@@ -3,6 +3,7 @@ import asyncio
 import json
 
 import pytest
+import httpx
 
 from eidolon.config import (
     AuxiliaryModelConfig, IdentityConfig, ModelMetadata, load_config, save_config,
@@ -533,6 +534,189 @@ async def test_synthetic_test_is_preemptible_and_sends_no_personal_evidence(tmp_
         assert len(seen) == 2 and "Private synthetic marker" not in json.dumps(seen)
         assert s.store.maintenance_status()["model_calls"] == 0
         assert s.store.continuity_state()["watermark"] == 0
+
+
+async def test_synthetic_test_can_be_preempted_during_cold_tokenizer_initialization(tmp_path, monkeypatch):
+    import threading
+    from eidolon.providers.context import TokenCounter
+
+    entered, released, completed = threading.Event(), threading.Event(), threading.Event()
+
+    def cold_counter(model):
+        entered.set()
+        released.wait(timeout=2)
+        completed.set()
+        return TokenCounter(model)
+
+    async with room(tmp_path, monkeypatch) as (s, _, _, _):
+        class NeverDispatchProvider:
+            config = s._auxiliary_execution.profile()
+
+            async def stream(self, *args, **kwargs):
+                yield {"type": "finish", "reason": "stop"}
+
+        monkeypatch.setattr("eidolon.service.runtime.OpenAIProvider",
+                            lambda *args, **kwargs: NeverDispatchProvider())
+        monkeypatch.setattr("eidolon.memory.maintenance.TokenCounter", cold_counter)
+        testing = asyncio.create_task(s.handle("test_auxiliary_model", {"auxiliary": {"mode": "inherit"}}))
+        try:
+            await asyncio.wait_for(asyncio.to_thread(entered.wait), 3)
+            assert not completed.is_set(), "Tokenizer initialization blocked foreground work"
+            async with s._foreground_generation():
+                result = await testing
+            assert not result["ok"] and "interrupted" in result["notice"]
+            assert s.store.maintenance_status()["model_calls"] == 0
+        finally:
+            released.set()
+            if not testing.done():
+                testing.cancel()
+                await asyncio.gather(testing, return_exceptions=True)
+
+
+@pytest.mark.parametrize("reply,compatible", [
+    ('{"operations":[{"op":"upsert","topic":"Creative project","importance":"moderate",'
+     '"category":"thread","content":"The user has an unfinished creative project.",'
+     '"sources":["s1"]}]}', True),
+    ('{"operations":[{"op":"no_change"}]}', True),
+    ('OK', False),
+    ('{"operations":[{"op":"upsert","topic":"Invented","sources":["s999"]}]}', False),
+])
+async def test_synthetic_test_validates_real_contract_without_writing(
+    tmp_path, monkeypatch, reply, compatible,
+):
+    from eidolon.providers.openai import OpenAIProvider
+    async with room(tmp_path, monkeypatch) as (s, client, _, _):
+        s.store.complete_turn(s.current_session["id"], "Private synthetic marker.", "Saved privately.")
+        before = s.configuration.read_bytes()
+        state = s.store.continuity_state()
+        maintenance = s.store.maintenance_status()
+        seen = []
+
+        def respond(request):
+            seen.append(json.loads(request.content))
+            packet = {"choices": [{"delta": {"content": reply}, "finish_reason": "stop"}]}
+            return httpx.Response(200, text="data: " + json.dumps(packet) + "\n\ndata: [DONE]\n\n")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            monkeypatch.setattr("eidolon.service.runtime.OpenAIProvider",
+                                lambda profile, **kwargs: OpenAIProvider(profile, client=http, **kwargs))
+            result = await client.request("test_auxiliary_model", auxiliary={
+                "mode": "separate", "provider": "second", "model": "synthetic-draft-model",
+                "max_output_tokens": 512,
+            })
+        assert result["connected"] is True
+        assert result["contract_compatible"] is compatible and result["ok"] is compatible
+        assert result["output_mode"] == "prompt"
+        assert result["contract"] == "current-life-ordinary-v1"
+        assert len(seen) == 1 and seen[0]["model"] == "synthetic-draft-model"
+        assert seen[0]["max_tokens"] == 512
+        assert "Private synthetic marker" not in json.dumps(seen)
+        document = json.loads(seen[0]["messages"][-1]["content"])
+        assert document["contract"] == "current-life-ordinary-v1"
+        assert document["exchanges"][0]["source_refs"]["user"] == "s1"
+        assert s.configuration.read_bytes() == before
+        assert s.store.continuity_state() == state
+        assert s.store.maintenance_status() == maintenance
+
+
+@pytest.mark.parametrize("mode", ["json_schema", "json_object", "prompt"])
+async def test_maintenance_constraints_and_effective_provenance_survive_restart(
+    tmp_path, monkeypatch, mode,
+):
+    from eidolon.config import MaintenanceOutputSupport
+    from eidolon.providers.openai import OpenAIProvider
+
+    config = make_config(tmp_path)
+    profile = config.selected_provider()
+    profile.maintenance_output_support = [MaintenanceOutputSupport(
+        endpoint=profile.endpoint, model=profile.model,
+        json_schema="enforced" if mode == "json_schema" else "unsupported",
+        json_object=mode == "json_object",
+    )]
+    monkeypatch.setattr("test_service.make_config", lambda _: config)
+    payloads = []
+
+    def respond(request):
+        payloads.append(json.loads(request.content))
+        proposal = {"operations": [{"op": "upsert", "topic": "Creative project",
+                    "importance": "moderate", "category": "thread",
+                    "content": "The user has an unfinished creative project.", "sources": ["s1"]}]}
+        if mode == "json_schema":
+            proposal["operations"][0].update(note_ref=None, replaces_ref=None, decision_reason=None,
+                                            event_at=None, follow_up_at=None, promise_source=None)
+        packet = {"choices": [{"delta": {"content": json.dumps(proposal)}, "finish_reason": "stop"}]}
+        return httpx.Response(200, text="data: " + json.dumps(packet) + "\n\ndata: [DONE]\n\n")
+
+    async with room(tmp_path, monkeypatch) as (s, client, _, _):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            s.continuity_worker.provider = OpenAIProvider(s._auxiliary_execution.profile(), client=http)
+            s.store.complete_turn(s.current_session["id"], "My creative project is unfinished.",
+                                  "We can return to the creative project later.")
+            await client.request("memory_refresh")
+            if s._continuity_task:
+                await asyncio.wait_for(s._continuity_task, 5)
+        latest = (await client.request("status"))["maintenance"]["latest_attempt"]
+        assert latest["outcome"] == "committed" and latest["output_mode"] == mode
+        assert latest["contract"] == "current-life-ordinary-v1"
+        assert latest["capability_source"] == "configured_verification"
+        assert len(s.store.continuity_state()["items"]) == 1
+        assert len(payloads) == 1
+        if mode == "prompt":
+            assert "response_format" not in payloads[0]
+        else:
+            assert payloads[0]["response_format"]["type"] == mode
+        task_id = latest["task_id"]
+    from eidolon.storage import Store
+    reopened = Store(config.database_path)
+    try:
+        assert reopened.maintenance_attempts(task_id)[0]["provenance"]["output_mode"] == mode
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("mode", ["json_schema", "json_object", "prompt"])
+@pytest.mark.parametrize("failure", ["refusal", "length", "unfinished", "empty", "rejected_options"])
+async def test_synthetic_test_does_not_mistake_http_success_for_contract_compatibility(
+    tmp_path, monkeypatch, mode, failure,
+):
+    from eidolon.config import MaintenanceOutputSupport
+    from eidolon.providers.openai import OpenAIProvider
+
+    config = make_config(tmp_path)
+    profile = config.selected_provider()
+    profile.maintenance_output_support = [MaintenanceOutputSupport(
+        endpoint=profile.endpoint, model=profile.model,
+        json_schema="enforced" if mode == "json_schema" else "unsupported",
+        json_object=mode == "json_object",
+    )]
+    monkeypatch.setattr("test_service.make_config", lambda _: config)
+    calls = []
+
+    def respond(request):
+        calls.append(json.loads(request.content))
+        if failure == "rejected_options":
+            return httpx.Response(400, json={"error": {"param": "reasoning_effort",
+                                  "code": "unsupported_parameter", "message": "PRIVATE body"}})
+        delta = {"content": '{"operations":[{"op":"no_change"}]}'}
+        if failure == "refusal":
+            delta["refusal"] = "PRIVATE refusal body"
+        if failure == "empty":
+            delta = {}
+        choice = {"delta": delta, "finish_reason": None if failure == "unfinished" else
+                  "length" if failure == "length" else "stop"}
+        return httpx.Response(200, text="data: " + json.dumps({"choices": [choice]}) + "\n\n")
+
+    async with room(tmp_path, monkeypatch) as (s, client, _, _):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            monkeypatch.setattr("eidolon.service.runtime.OpenAIProvider",
+                                lambda profile, **kwargs: OpenAIProvider(profile, client=http, **kwargs))
+            result = await client.request("test_auxiliary_model", auxiliary={"mode": "inherit"})
+        assert result["connected"] and not result["contract_compatible"] and not result["ok"]
+        assert result["output_mode"] == mode
+        assert "PRIVATE" not in json.dumps(result)
+        assert len(calls) == 1
+        assert s.store.maintenance_status()["model_calls"] == 0
+        assert not s.store.continuity_state()["items"]
 
 
 async def test_recall_preferences_do_not_interrupt_unrelated_maintenance(tmp_path, monkeypatch):

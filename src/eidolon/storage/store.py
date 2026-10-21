@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import tempfile
 import threading
@@ -1129,17 +1130,30 @@ class Store:
 
     def start_maintenance_attempt(self, task_id: str, provenance: dict,
                                   stage: str = "continuity") -> str:
+        from ..memory.proposals import CONTRACT_VERSIONS
+        from ..providers.maintenance import CAPABILITY_SOURCES, OUTPUT_MODES
+
         required = {"role", "mode", "provider", "model", "routing_revision", "route_fingerprint",
                     "execution_fingerprint", "request_options", "prompt_hash", "schema_hash"}
         safe_options = {"max_tokens", "max_completion_tokens", "reasoning_effort", "context_chars",
                         "context_window", "timeout_seconds", "stream_usage", "thinking_mode"}
-        if (not isinstance(provenance, dict) or set(provenance) != required
+        output_fields = {"contract", "output_mode", "capability_source", "provider_schema_hash"}
+        if (not isinstance(provenance, dict) or not required <= set(provenance)
+                or set(provenance) - required - output_fields
                 or provenance["role"] != "auxiliary" or provenance["mode"] not in {"inherit", "separate"}
                 or type(provenance["routing_revision"]) is not int
                 or provenance["routing_revision"] < 1
                 or not isinstance(provenance["request_options"], dict)
                 or set(provenance["request_options"]) - safe_options):
             raise ValueError("Invalid auxiliary execution provenance")
+        if set(provenance) & output_fields:
+            if (not output_fields <= set(provenance)
+                    or provenance["contract"] not in CONTRACT_VERSIONS
+                    or provenance["output_mode"] not in OUTPUT_MODES
+                    or provenance["capability_source"] not in CAPABILITY_SOURCES
+                    or not isinstance(provenance["provider_schema_hash"], str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", provenance["provider_schema_hash"])):
+                raise ValueError("Invalid maintenance output provenance")
         for key in ("provider", "model", "route_fingerprint", "execution_fingerprint",
                     "prompt_hash", "schema_hash"):
             value = provenance[key]
