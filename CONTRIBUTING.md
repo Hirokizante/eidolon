@@ -103,8 +103,12 @@ Add regression tests for behavior changes. Name files `test_<module>.py` and
 functions `test_<behavior>`. pytest-asyncio uses automatic mode, and there is no
 configured numeric coverage threshold.
 
-Isolation is established by individual tests and fixtures, not a suite-wide
-private-state sandbox. Use `tmp_path` for configuration, databases, prompts, and
+The shared test fixture pins `TZ=Asia/Manila` for synthetic configuration defaults
+and schedule/date expectations, independently of the host timezone. Tests of
+timezone detection override `TZ` explicitly.
+
+Private-state isolation is established by individual tests and fixtures, not a
+suite-wide sandbox. Use `tmp_path` for configuration, databases, prompts, and
 jobs outside the checkout. Patch `EIDOLON_HOME` and home-directory resolution
 when testing code that uses default locations, as in
 [`tests/test_cli.py`](tests/test_cli.py). Fake providers and memory services, use

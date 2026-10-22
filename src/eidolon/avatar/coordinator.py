@@ -25,7 +25,7 @@ class AvatarCoordinator:
         self.owns_client = client is None
         self.cue_ttl = cue_ttl
         self._catalog = {"expressions": [], "gestures": []}
-        self._catalog_at = 0.0
+        self._catalog_at: float | None = None
         self._catalog_generation = None
         self._catalog_lock = asyncio.Lock()
         self._current: tuple | None = None
@@ -84,10 +84,12 @@ class AvatarCoordinator:
         )
         if generation != self._catalog_generation:
             refresh = True
-        if not refresh and time.monotonic() - self._catalog_at < self.config.catalog_ttl:
+        if (not refresh and self._catalog_at is not None
+                and time.monotonic() - self._catalog_at < self.config.catalog_ttl):
             return {key: list(value) for key, value in self._catalog.items()}
         async with self._catalog_lock:
-            if not refresh and time.monotonic() - self._catalog_at < self.config.catalog_ttl:
+            if (not refresh and self._catalog_at is not None
+                    and time.monotonic() - self._catalog_at < self.config.catalog_ttl):
                 return {key: list(value) for key, value in self._catalog.items()}
             try:
                 result = await self.mcp.call(self.config.server, "list_emotes", {})
@@ -122,14 +124,14 @@ class AvatarCoordinator:
                 self._diagnostic("catalog", "unavailable", error=type(exc).__name__)
                 # An offline/stale catalog does not authorize gestures after reconnect.
                 self._catalog = {"expressions": [], "gestures": []}
-                self._catalog_at = 0.0
+                self._catalog_at = None
         return {key: list(value) for key, value in self._catalog.items()}
 
     async def _refresh_loop(self):
         retry_delay = 1.0
         while True:
             await self.catalog(refresh=True)
-            if self._catalog_at:
+            if self._catalog_at is not None:
                 retry_delay = 1.0
                 await asyncio.sleep(self.config.catalog_ttl)
             else:
@@ -172,7 +174,7 @@ class AvatarCoordinator:
         vocabulary = self._catalog["expressions" if kind == "expression" else "gestures"]
         if name not in vocabulary:
             self._diagnostic(kind, "unknown_name", name=name)
-            self._catalog_at = 0
+            self._catalog_at = None
             return False
         # Shared with explicit cosmetic tool calls, including retries of this turn.
         key = (session_id, turn_id, kind)
@@ -237,7 +239,7 @@ class AvatarCoordinator:
                 raw = json.dumps(result, ensure_ascii=False)
                 self._diagnostic(kind, "acknowledged", name=name, result=raw[:2000], **identity)
                 if "unknown" in raw.lower():
-                    self._catalog_at = 0
+                    self._catalog_at = None
                     # Refresh authorizes later turns; the rejected command is never replayed.
                     await self.catalog(refresh=True)
             except Exception as exc:

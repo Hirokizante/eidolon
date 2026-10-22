@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import hmac
 import json
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -533,7 +535,40 @@ def test_standalone_setup_storage_failure_preserves_config_and_hides_secrets(
     assert config.model_dump() == before
 
 
-async def test_offline_catalog_is_not_cached_and_can_warm_without_restart():
+@pytest.mark.parametrize("uptime", [0.0, 1.0, 1000.0])
+async def test_catalog_fetches_before_caching_and_expires_after_ttl(monkeypatch, uptime):
+    clock = SimpleNamespace(now=uptime)
+    monkeypatch.setattr("eidolon.avatar.coordinator.time", SimpleNamespace(
+        monotonic=lambda: clock.now, time=time.time,
+    ))
+
+    class CountingBody(Body):
+        attempts = 0
+
+        async def call(self, server, tool, arguments):
+            self.attempts += 1
+            return await super().call(server, tool, arguments)
+
+    body = CountingBody()
+    avatar = AvatarCoordinator(AvatarConfig(enabled=True), body)
+    try:
+        assert (await avatar.catalog())["gestures"] == ["wave", "stretch"]
+        assert body.attempts == 1
+        clock.now += avatar.config.catalog_ttl - 1
+        assert (await avatar.catalog())["gestures"] == ["wave", "stretch"]
+        assert body.attempts == 1
+        clock.now += 1
+        assert (await avatar.catalog())["gestures"] == ["wave", "stretch"]
+        assert body.attempts == 2
+    finally:
+        await avatar.close()
+
+
+@pytest.mark.parametrize("uptime", [0.0, 1.0, 1000.0])
+async def test_offline_catalog_is_not_cached_and_can_warm_without_restart(monkeypatch, uptime):
+    monkeypatch.setattr("eidolon.avatar.coordinator.time", SimpleNamespace(
+        monotonic=lambda: uptime, time=time.time,
+    ))
     class Warming(Body):
         attempts = 0
 

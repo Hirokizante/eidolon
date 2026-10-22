@@ -129,15 +129,26 @@ def test_paged_reads_fit_context_budget_without_skipping_lines(tmp_path):
         agent.read_file("large.txt")
 
 
-async def test_commands_return_cwd_stdout_stderr_exit_status_and_list(registry, tmp_path):
+@pytest.mark.parametrize("yield_time_ms", [0, 1000])
+async def test_commands_return_cwd_stdout_stderr_exit_status_and_list(
+    registry, tmp_path, yield_time_ms,
+):
     await registry.set_agent_mode(True)
     result = await registry.call("run_command", {
         "command": "pwd; printf 'hello'; printf 'problem' >&2; exit 7", "cwd": str(tmp_path),
-        "yield_time_ms": 1000,
+        "yield_time_ms": yield_time_ms,
     }, AGENT_CONTEXT)
+    stdout, stderr = result["stdout"], result["stderr"]
+    async with asyncio.timeout(10):
+        while result["status"] != "completed" or result["output_remaining"]:
+            result = await registry.call("read_command_output", {
+                "command_id": result["command_id"], "yield_time_ms": 1000,
+            }, AGENT_CONTEXT)
+            stdout += result["stdout"]
+            stderr += result["stderr"]
     assert result["status"] == "completed" and result["exit_code"] == 7
-    assert str(tmp_path) in result["stdout"] and result["stdout"].endswith("hello")
-    assert result["stderr"] == "problem"
+    assert str(tmp_path) in stdout and stdout.endswith("hello")
+    assert stderr == "problem"
     listing = await registry.call("list_commands", {}, AGENT_CONTEXT)
     assert listing["commands"][0]["command_id"] == result["command_id"]
     assert (await registry.call("read_command_output", {"command_id": result["command_id"]},
