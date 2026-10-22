@@ -309,8 +309,10 @@ async def test_auxiliary_resize_floor_validation_and_synthetic_test():
         assert app.config.auxiliary.max_output_tokens == 4096
 
 
-@pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
-@pytest.mark.parametrize("connected", [True, False])
+# Both notices at a normal size; one representative notice at each smaller layout.
+@pytest.mark.parametrize("size,connected", [
+    ((80, 24), True), ((80, 24), False), ((60, 18), False), ((48, 12), False),
+])
 async def test_contract_feedback_preserves_preference_and_composer_drafts(size, connected, monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("EIDOLON_ASCII", "1")

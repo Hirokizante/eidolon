@@ -127,9 +127,14 @@ async def test_provider_menus_open_before_service_requests_complete(
         assert worker.is_finished
         assert not gate.is_set()
         assert not screen.loading
+        # CPU-idle pause is bounded and can expire during CI layout work.
+        # Drain scheduled screen work while discovery is still blocked.
+        await pilot.wait_for_scheduled_animations()
         field = app.focused
         visible_field = screen.get_widget_at(*field.region.center)[0]
-        assert visible_field is field or field in visible_field.ancestors
+        assert visible_field is field or field in visible_field.ancestors, (
+            field, field.region, screen.query_one(".form-body").region, visible_field,
+        )
         if command != "connect":
             assert pending == ["list_models"]
             options = screen.query_one("#model-options", OptionList)
