@@ -121,8 +121,11 @@ assistant_content contains the assistant role's messages.
 
 Archive concluded topics promptly with note_ref, content, sources, archive_reason
 and decision_reason. Reasons: completed, broken_promise, no_longer_current,
-conversation_ended. Cite a NEW complete original naming the same topic and
-establishing the transition. Prose cannot manufacture evidence. Questions,
+conversation_ended. Cite a NEW complete original identifying the same topic and
+establishing the transition. Equivalent wording and named references to the note's
+saved originals can identify it. "That meeting at Ember Library? All wrapped up"
+can close its interview; a successful interview or job offer can also establish
+completion. Preparation alone and vague "it's done" cannot. Prose cannot manufacture evidence. Questions,
 uncertainty, conditional/future claims, elapsed time or a session ending cannot
 establish completion. Do not invent follow-ups to keep a concluded topic alive.
 

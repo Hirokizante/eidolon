@@ -235,6 +235,29 @@ they can use `sources: []` because they retain the note's previous evidence and
 do not claim the situation ended. Tests use synthetic model responses and do not establish that a
 particular selected model produces faithful prose or improves answer quality.
 
+Topic matching recognizes bounded wording equivalents, including cutoff/closing
+date/due date for a deadline, hiring conversation for an interview, house move for
+relocation, and doctor visit for a medical appointment. It also uses the target
+note's saved originals when a later message names a subject omitted from its
+summary. Old citations alone never authorize an unrelated new development.
+
+Ordinary completion language such as "wrapped up", "got through", or a reported
+successful interview can close the matching note. For example, "That meeting at
+Ember Library? All wrapped up; they offered me the catalog assistant role" can
+close the earlier Ember Library interview. The named introduction and its answer
+must be in the same original message. A vague "it's done", interview preparation,
+questions about completion, future intentions, uncertainty, negation, conditionals,
+and mixed real/fiction messages do not establish that outcome. Reported speech,
+quotes, and ambiguous third-party ownership are conservatively rejected for
+closure, including when attribution appears in an earlier paragraph.
+
+These local rules use the same auxiliary proposal call and are rechecked inside
+the saving transaction. They cover specific wording and reference patterns rather
+than general language understanding; unfamiliar paraphrases can remain unresolved.
+A rejected proposal leaves all notes and evidence progress unchanged and keeps the
+batch pending, rather than recording a successful no-change. Synthetic service and
+storage tests cover these outcomes; no live-model reliability rate is established.
+
 ## Failure explanations
 
 A quiet Life indicator near the composer points to `/runs` while an unresolved
