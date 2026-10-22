@@ -48,12 +48,9 @@ async def test_scripted_workload_exercises_real_storage_without_contacting_provi
         assert row["usage"] is None
     for key in ("admission", "correction", "closure", "small-talk", "replacement",
                 "capacity-review", "legacy-conversion", "supported-metadata",
-                "uncertain-admission", "speaker-ownership", "paraphrased-update"):
+                "uncertain-admission", "speaker-ownership", "paraphrased-update",
+                "paraphrased-closure"):
         assert results[key]["expectation_match"], (key, results[key]["checks"])
-    # Keep the desired closure expectation as the validator improves. Historical
-    # failures belong in the captured baseline, never in production requirements.
-    paraphrase = results["paraphrased-closure"]
-    assert paraphrase["expectation_match"] == (paraphrase["outcome"] == "accepted_change")
     summary = baseline.summarize(list(results.values()))
     assert summary["samples"] == 17
     assert summary["requests"] == 17

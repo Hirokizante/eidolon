@@ -353,11 +353,24 @@ _STOP_WORDS = {
     "on", "with", "have", "has", "had", "this", "that", "will", "tomorrow", "today",
     "yesterday", "done", "finished", "completed", "resolved", "cancelled", "canceled",
     "please", "give", "like", "want", "need", "prefer", "feel", "about", "later",
+    "ongoing", "upcoming", "approaching", "already", "finally", "still", "now",
 }
+
+# Bounded lexical equivalences, not an assertion that arbitrary related subjects
+# are interchangeable. Multiword expressions are normalized before tokenization.
+_SUBJECT_EQUIVALENTS = (
+    (r"\b(?:submission cutoff|cut[- ]?off|closing date|due date)\b", "deadline"),
+    (r"\b(?:job interview|hiring conversation)\b", "interview"),
+    (r"\b(?:moving house|house move|relocation)\b", "relocation"),
+    (r"\b(?:doctor['’]?s? (?:visit|appointment)|medical (?:visit|appointment))\b", "medicalvisit"),
+)
 
 
 def subject_tokens(value: str) -> set[str]:
-    return {token for token in re.findall(r"[^\W_]+", value.casefold(), re.UNICODE)
+    value = value.casefold()
+    for pattern, replacement in _SUBJECT_EQUIVALENTS:
+        value = re.sub(pattern, replacement, value)
+    return {token for token in re.findall(r"[^\W_]+", value, re.UNICODE)
             if len(token) > 2 and token not in _STOP_WORDS}
 
 
@@ -397,46 +410,94 @@ def source_timestamp(row: dict, role: str) -> str:
 def _qualified_claim(content: str) -> bool:
     """Conservative qualifier guard for metadata that changes future behavior."""
     return bool("?" in content or re.search(
-        r"\b(?:not|never|if|unless|whether|would|could|might|may|perhaps|maybe|think|hope|plan|intend)\b"
+        r"\b(?:not|never|if|unless|whether|would|could|might|may|perhaps|maybe|think|hope|wish|plan|intend)\b"
         r"|n['’]t\b", content, re.IGNORECASE,
     ))
+
+
+def _subject_clauses(content: str) -> list[str]:
+    """Conservative boundaries where a different subject can take over."""
+    return re.split(r"[,;]|\b(?:and|but|while|whereas|after|before|because|although|despite)\b",
+                    content, flags=re.IGNORECASE)
+
+
+def _transition_qualified(content: str, op: str, archive_reason: str | None) -> bool:
+    """Retirement reasons can require negation that would disprove completion."""
+    if archive_reason in {"broken_promise", "no_longer_current"}:
+        qualifiers = r"if|unless|would|could|might|maybe|perhaps|wish"
+        if archive_reason == "no_longer_current":
+            qualifiers += r"|will|shall"
+        return "?" in content or bool(re.search(r"\b(?:" + qualifiers + r")\b", content,
+                                                re.IGNORECASE))
+    if op == "archive" and archive_reason not in {"completed", "conversation_ended"}:
+        content = re.sub(r"\bnot relevant\b", "irrelevant", content, flags=re.IGNORECASE)
+    return _qualified_claim(content)
 
 
 def transition_supported(content: str, op: str, item_content: str,
                           archive_reason: str | None = None) -> bool:
     """A terminal patch needs a positive, current/past, topic-matched statement."""
+    # Attribution can govern a later sentence or paragraph. Check the complete
+    # original before considering sentences, so a quoted first-person statement
+    # cannot be mistaken for the speaker's own outcome. Ambiguous reported speech
+    # remains unresolved rather than acquiring an invented owner.
+    if re.search(
+        r'\b(?:said|says|told|wrote|writes|according to|quoting|quoted|'
+        r'sent (?:this|the) message)\b|["“”]|'
+        r"\b(?:his|her|their)\b|"
+        r"\b(?!(?:it|that|there|what|who|here)['’]s\b)[^\W\d_]+['’]s\b",
+        content, re.IGNORECASE,
+    ):
+        return False
     # Check each complete sentence without dropping the full original from
     # provenance. A question about tomorrow need not invalidate a completed
     # development reported in a different sentence of the same message.
     sentences = re.split(r"(?<=[.!?])\s+|\n+", content)
     if len(sentences) > 1:
-        return any(transition_supported(sentence, op, item_content, archive_reason)
-                   for sentence in sentences if sentence.strip())
+        for index, sentence in enumerate(sentences):
+            # A topical question can introduce an elliptical answer in the same
+            # original: "That meeting at Ember Library? All wrapped up." Never
+            # borrow an antecedent from generated prose or a different message.
+            if (index and re.fullmatch(r"\s*(?:That|The|My|Our)\b[^.!?\n]+\?",
+                                       sentences[index - 1], re.IGNORECASE)
+                    and not _qualified_claim(sentences[index - 1].rstrip("?"))
+                    and re.match(r"\s*(?:all wrapped up|it\b|that\b)", sentence,
+                                 re.IGNORECASE)):
+                sentence = sentences[index - 1].rstrip("?") + ": " + sentence
+            if sentence.strip() and transition_supported(sentence, op, item_content, archive_reason):
+                return True
+        return False
+    # Clause boundaries often separate subjects. Do not let a mention of an
+    # interview authorize completion of a garden project in the next clause.
+    # Qualifiers still govern the whole sentence, including elliptical clauses.
+    clauses = _subject_clauses(content)
+    if len(clauses) > 1:
+        return not _transition_qualified(content, op, archive_reason) and any(
+            transition_supported(clause, op, item_content, archive_reason) for clause in clauses
+        )
     if not same_topic(content, item_content):
         return False
     if archive_reason == "broken_promise":
-        return bool("?" not in content and not re.search(
-            r"\b(?:if|unless|would|could|might|maybe|perhaps)\b", content, re.IGNORECASE,
-        ) and re.search(
+        return bool(not _transition_qualified(content, op, archive_reason) and re.search(
             r"\b(?:broke|broken|failed to|forgot to|missed|cancelled|canceled|"
             r"cannot|unable to)\b|\b(?:didn['’]t|won['’]t|can['’]t)\b|\bwill not\b",
             content, re.IGNORECASE,
         ))
     if archive_reason == "no_longer_current":
-        return bool("?" not in content and not re.search(
-            r"\b(?:if|unless|would|could|might|maybe|perhaps|will|shall)\b",
-            content, re.IGNORECASE,
-        ) and re.search(
+        return bool(not _transition_qualified(content, op, archive_reason) and re.search(
             r"\bno longer\b|\bnot relevant\b|\bnot\b.+\banymore\b|\b(?:ended|stopped|recovered|"
             r"expired|ceased|cancelled|canceled)\b|\b(?:is|was|are|were)\s+over[.!]?$",
             content, re.IGNORECASE,
         ))
     if archive_reason in {"completed", "conversation_ended"}:
         op = "resolve"
-    qualified_text = re.sub(r"\bnot relevant\b", "irrelevant", content,
-                            flags=re.IGNORECASE) if op == "archive" else content
+    if (op == "resolve" and re.search(r"\binterview\b", content, re.IGNORECASE) and re.search(
+        r"\b(?:preparation|preparing|practice|practicing|practising|rehearsal|rehearsing|mock|notes)\b",
+        content, re.IGNORECASE,
+    )):
+        return False
     if (op not in {"resolve", "archive"} or not same_topic(content, item_content)
-            or _qualified_claim(qualified_text) or re.search(
+            or _transition_qualified(content, op, archive_reason) or re.search(
                 r"\b(?:will|shall|going to|tomorrow|next (?:week|month|year))\b",
                 content, re.IGNORECASE,
             )):
@@ -453,7 +514,22 @@ def transition_supported(content: str, op: str, item_content: str,
         rf"|\b{adjective}(?=[.!]|$)"
         r"|\b(?:is|was|are|were)\s+over(?=[.!]|$|\s+(?:now|today|yesterday)\b)"
     )
-    return bool(re.search(current_or_past, content, re.IGNORECASE))
+    if re.search(current_or_past, content, re.IGNORECASE):
+        return True
+    wrapped = re.search(r"\bwrapped up\b", content, re.IGNORECASE)
+    through = re.search(r"\bgot through\b", content, re.IGNORECASE)
+    if (wrapped and same_topic(content[:wrapped.start()], item_content)
+            or through and same_topic(content[through.end():], item_content)):
+        return True
+    # Successful interview outcomes imply that the interview took place. A
+    # successful rehearsal/preparation does not. Keep this implication tied to
+    # the saved subject rather than treating every positive report as closure.
+    return bool(re.search(r"\binterview\b", item_content, re.IGNORECASE) and re.search(
+        r"\binterview\s+went\s+(?:well|great|smoothly)\b"
+        r"|\bI\s+(?:have\s+)?aced\s+(?:my\s+)?[^.!?;]*\binterview\b"
+        r"|\boffered\s+me\s+(?:the|a)\s+[^.!?;]*\b(?:role|job|position)\b",
+        content, re.IGNORECASE,
+    ))
 
 
 def _validate_sources(operation: ContinuityOperation, rows: dict[int, dict]) -> list[dict]:
@@ -574,18 +650,31 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
     rewrite = is_legacy_rewrite(operation, item)
     fresh = [source["excerpt"] for source in sources
              if rewrite or new_exchange_ids is None or source["exchange_id"] in new_exchange_ids]
+    # Summaries can omit the name by which a later message refers to a subject.
+    # Only the target note's saved originals may supply additional anchors;
+    # citing old evidence still cannot turn an unrelated new message into support.
+    anchors = [item["content"]] if item else []
+    if item:
+        for source in item.get("sources", []):
+            for statement in re.split(r"(?<=[.!?])\s+|\n+", source.get("excerpt") or ""):
+                # A complete original may discuss several unrelated subjects.
+                # Only its statements about this note may extend the anchors.
+                for clause in _subject_clauses(statement):
+                    if (same_topic(clause, item["content"])
+                            or same_topic(clause, item.get("topic", ""))):
+                        anchors.append(clause)
     if operation["op"] in {"resolve", "archive"}:
         if item is None:
             raise ContinuityValidationError("A terminal operation requires an existing item")
         # Generated prose must never manufacture a terminal transition. One
         # complete original message must independently support closing the topic.
-        if not any(transition_supported(excerpt, operation["op"], item["content"],
+        if not any(transition_supported(excerpt, operation["op"], anchor,
                                        operation.get("archive_reason"))
-                   for excerpt in fresh):
+                   for excerpt in fresh for anchor in anchors):
             raise ContinuityValidationError("A terminal operation needs positive, topic-matched evidence",
                                             code="terminal")
     elif (operation["op"] == "upsert" and item
-          and not any(same_topic(excerpt, item["content"]) for excerpt in fresh)):
+          and not any(same_topic(excerpt, anchor) for excerpt in fresh for anchor in anchors)):
         raise ContinuityValidationError("An existing item needs evidence about the same topic")
     owner, kind = operation.get("promise_owner"), operation.get("promise_kind")
     if bool(owner) != bool(kind):
