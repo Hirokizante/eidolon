@@ -330,7 +330,10 @@ async def test_current_life_has_separate_notes_and_run_history_with_direct_refre
         await pilot.press("enter")
         await pilot.pause()
         assert ("memory_refresh", {"session_id": app.session_id}) in client.calls
-        assert "queued" in status_text(screen)
+        # A periodic poll may run before the assertion on a slower machine.
+        await screen.action_reload(quiet=True).wait()
+        assert screen.state.snapshot["continuity"]["maintenance"]["running"]
+        assert status_text(screen) == "Refreshing current life in the background…"
         assert refresh.disabled and screen.detail_key is None
         assert client.memory["readiness"]["status"] == DIAGNOSTIC
         await pilot.press("escape")
