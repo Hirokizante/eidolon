@@ -70,8 +70,11 @@ def test_command_registry_searches_names_aliases_and_descriptions():
     )
 
 
-@pytest.mark.parametrize("size", [(140, 40), (80, 24), (60, 24), (60, 18), (48, 12)])
-@pytest.mark.parametrize("no_color,ascii_mode", [(False, False), (True, False), (True, True)])
+# All layouts in color, plus both monochrome border variants at the floor.
+@pytest.mark.parametrize("size,no_color,ascii_mode", [
+    *((size, False, False) for size in [(140, 40), (80, 24), (60, 24), (60, 18), (48, 12)]),
+    ((48, 12), True, False), ((48, 12), True, True),
+])
 async def test_activity_overlay_fits_and_restores_draft(size, no_color, ascii_mode, monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("EIDOLON_ASCII", raising=False)

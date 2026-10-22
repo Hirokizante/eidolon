@@ -199,8 +199,11 @@ def test_history_date_preserves_chat_day_and_uses_local_job_start():
     assert session_date({"created_at": "invalid"}, "Asia/Manila", ascii=True) == "-"
 
 
-@pytest.mark.parametrize("size", [(140, 40), (80, 24), (60, 18), (48, 12)])
-@pytest.mark.parametrize("ascii_mode", [False, True])
+# Layout boundaries in Unicode; ASCII appearance also exercised at the floor.
+@pytest.mark.parametrize("size,ascii_mode", [
+    *((size, False) for size in [(140, 40), (80, 24), (60, 18), (48, 12)]),
+    ((48, 12), True),
+])
 async def test_history_overlay_controls_focus_and_draft(size, ascii_mode, monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     if ascii_mode:

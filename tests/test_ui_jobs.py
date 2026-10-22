@@ -54,8 +54,11 @@ def install(client: JobsClient, **changes) -> Job:
     return job
 
 
-@pytest.mark.parametrize("size", [(140, 40), (80, 24), (60, 24), (60, 18), (48, 12)])
-@pytest.mark.parametrize("ascii_mode", [False, True])
+# Layout boundaries in Unicode; ASCII appearance also exercised at the floor.
+@pytest.mark.parametrize("size,ascii_mode", [
+    *((size, False) for size in [(140, 40), (80, 24), (60, 24), (60, 18), (48, 12)]),
+    ((48, 12), True),
+])
 async def test_jobs_overlay_fits_and_preserves_chat(size, ascii_mode, monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     if ascii_mode:

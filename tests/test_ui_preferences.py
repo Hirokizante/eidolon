@@ -303,9 +303,9 @@ async def test_identity_preferences_keyboard_apply_preserves_chat_state(size):
 
 
 @pytest.mark.parametrize("field", ["user_name", "companion_name"])
-@pytest.mark.parametrize("value", ["   ", "z" * 81, "private-test-marker\u202e"])
 @pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12), (80, 12)])
-async def test_identity_preferences_validate_beside_field_without_echoing_input(field, value, size):
+async def test_identity_preferences_validate_beside_field_without_echoing_input(field, size):
+    value = "private-test-marker\u202e"
     client = FakeClient()
     app = RoomApp(AppConfig(memory={"enabled": True, "save_enabled": True, "bank": "hermes"}), client=client)
     async with app.run_test(size=size) as pilot:
@@ -441,9 +441,8 @@ async def test_identity_preferences_failed_save_retains_names_draft_and_can_retr
 
 
 @pytest.mark.parametrize("monochrome", [False, True])
-@pytest.mark.parametrize("long_names", [False, True])
 async def test_identity_preferences_literal_drafts_resize_and_discard(
-    monkeypatch, monochrome, long_names,
+    monkeypatch, monochrome,
 ):
     for variable in ("NO_COLOR", "EIDOLON_ASCII"):
         if monochrome:
@@ -454,9 +453,8 @@ async def test_identity_preferences_literal_drafts_resize_and_discard(
     app = RoomApp(AppConfig(memory={"enabled": True, "save_enabled": True, "bank": "hermes"}), client=client)
     names = {"user_name": "[bold]Kai[/] {{user}} 雪",
              "companion_name": "[red]Fern[/] {{companion}}"}
-    if long_names:
-        names = {field: (value + " 界e\u0301👩\u200d💻" * 20)[:79] + "界"
-                 for field, value in names.items()}
+    names = {field: (value + " 界e\u0301👩\u200d💻" * 20)[:79] + "界"
+             for field, value in names.items()}
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)

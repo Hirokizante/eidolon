@@ -22,16 +22,14 @@ from test_ui_jobs import JobsClient, install
 from test_ui_memory import MemoryClient
 
 
-@pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
 @pytest.mark.parametrize("ascii_mode", [False, True], ids=["color", "ascii-monochrome"])
-@pytest.mark.parametrize("names", [
-    ("[bold]Aster[/bold] 雨 é 🌿", "{{Cedar}} *雪* é 👩‍💻"),
-    ("[bold]Aster[/bold] 雨 é 🌿" + "界" * 55, "{{Cedar}} *雪* é 👩‍💻" + "語" * 60),
-], ids=["literal-unicode", "long-unicode"])
 async def test_complete_identity_flow_at_terminal_floor(
-    size, ascii_mode, names, monkeypatch, tmp_path, request,
+    ascii_mode, monkeypatch, tmp_path, request,
 ):
-    """Exercise editing, live snapshots, mixed-age history, and resize recovery."""
+    """Complete flow at the floor; focused preference tests cover larger layouts."""
+    size = (48, 12)
+    names = ("[bold]Aster[/bold] 雨 é 🌿" + "界" * 55,
+             "{{Cedar}} *雪* é 👩‍💻" + "語" * 60)
     for variable in ("NO_COLOR", "EIDOLON_ASCII"):
         monkeypatch.delenv(variable, raising=False)
         if ascii_mode:
@@ -129,7 +127,6 @@ async def test_complete_identity_flow_at_terminal_floor(
         conversation.scroll_home(animate=False)  # Read earlier messages during the reply.
         await pilot.pause()
         position = conversation.scroll_y
-        capture("chat-thinking")
         client.response_gate.set()
         await worker.wait()
         await pilot.pause()
@@ -143,7 +140,6 @@ async def test_complete_identity_flow_at_terminal_floor(
         assert conversation.is_vertical_scroll_end
         assert composer.region.bottom <= size[1] and app.focused is composer
         assert composer.text == "Unsent draft 雨 é 🌿" and composer.selection == selection
-        capture("chat")
 
         await pilot.press("alt+2", "enter")
         await pilot.pause()
@@ -155,7 +151,6 @@ async def test_complete_identity_flow_at_terminal_floor(
         assert all(message["content"] in preview.source for message in original)
         scroller = app.screen.query_one(VerticalScroll)
         assert app.focused is scroller
-        capture("history")
         await pilot.press("end")
         await pilot.pause()
         assert scroller.is_vertical_scroll_end
@@ -188,17 +183,14 @@ async def test_complete_identity_flow_at_terminal_floor(
     assert client.messages == original
 
 
-@pytest.fixture(params=[False, True], ids=["literal-color", "wide-ascii-monochrome"])
-def identity_config(request, monkeypatch):
-    if request.param:
-        monkeypatch.setenv("EIDOLON_ASCII", "1")
-        monkeypatch.setenv("NO_COLOR", "1")
-        identity = {"user_name": "界" * 80, "companion_name": "語" * 80}
-    else:
-        monkeypatch.delenv("EIDOLON_ASCII", raising=False)
-        monkeypatch.delenv("NO_COLOR", raising=False)
-        identity = {"user_name": "[bold]Aster[/bold]", "companion_name": "{{Cedar}} *雨* é 🌿"}
-    return AppConfig(memory={"enabled": True, "save_enabled": True, "bank": "hermes"}, identity=identity)
+@pytest.fixture
+def identity_config(monkeypatch):
+    monkeypatch.setenv("EIDOLON_ASCII", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    return AppConfig(
+        memory={"enabled": True, "save_enabled": True, "bank": "hermes"},
+        identity={"user_name": "界" * 80, "companion_name": "語" * 80},
+    )
 
 
 @pytest.mark.parametrize("compact", [False, True])

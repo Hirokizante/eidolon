@@ -169,7 +169,7 @@ async def test_exact_separate_payload_and_dispatch_time_credentials(field, limit
     assert events[-1]["type"] == "finish"
 
 
-async def test_existing_72_probe_corpus_keeps_evidence_identical_across_routes(tmp_path):
+async def test_distinct_source_backlogs_keep_evidence_identical_across_routes(tmp_path):
     """Offline application replay with scripted proposals, not a model quality score."""
     from datetime import datetime
     from pathlib import Path
@@ -180,7 +180,16 @@ async def test_existing_72_probe_corpus_keeps_evidence_identical_across_routes(t
 
     fixture = json.loads((Path(__file__).parent / "fixtures/memory_baseline_companion.json").read_text())
     assert fixture["synthetic"] and len(fixture["probes"]) >= 60
+    # Queries are not inputs to this offline worker replay. Cover each distinct
+    # admitted source sequence once, rather than rebuilding it for every query.
+    backlogs = {}
     for probe in fixture["probes"]:
+        sources = tuple(source["id"] for source in fixture["sources"]
+                        if datetime.fromisoformat(source["timestamp"])
+                        <= datetime.fromisoformat(probe["timestamp"]))
+        backlogs.setdefault(sources, probe)
+    assert sorted(map(len, backlogs)) == [3, 12, 21]
+    for source_ids, probe in backlogs.items():
         outcomes = []
         for mode in ("inherit", "separate"):
             config = AppConfig(memory={"enabled": True, "save_enabled": True, "bank": "hermes"}, auxiliary=AuxiliaryModelConfig(
@@ -189,7 +198,7 @@ async def test_existing_72_probe_corpus_keeps_evidence_identical_across_routes(t
             store = Store(tmp_path / f"{probe['id']}-{mode}.sqlite3")
             try:
                 for source in fixture["sources"]:
-                    if datetime.fromisoformat(source["timestamp"]) > datetime.fromisoformat(probe["timestamp"]):
+                    if source["id"] not in source_ids:
                         continue
                     session = store.session_for(datetime.fromisoformat(source["timestamp"]))
                     turn = store.complete_turn(session["id"], source["user"], source["assistant"],
@@ -202,6 +211,7 @@ async def test_existing_72_probe_corpus_keeps_evidence_identical_across_routes(t
                                          (source["timestamp"], turn["id"]))
                         store.db.execute("UPDATE messages SET created_at=? WHERE generation_id=?",
                                          (source["timestamp"], turn["id"]))
+                expected_watermark = store.recent_continuity_inputs(limit=1)[0]["id"]
                 route = store.reconcile_auxiliary_route(configured_route_fingerprint(config))
                 execution = resolve_auxiliary(config, route["revision"])
                 class ScriptedProvider:
@@ -231,6 +241,8 @@ async def test_existing_72_probe_corpus_keeps_evidence_identical_across_routes(t
                     assert passes <= 4
                 assert store.pending_maintenance_task() is None
                 state = store.continuity_state()
+                assert state["watermark"] == expected_watermark
+                assert state["items"]
                 assert all(not item["invalidated"] for item in state["items"])
                 outcomes.append({"watermark": state["watermark"],
                                  "notes": sorted((item["content"], item["sources"][0]["document_id"])
