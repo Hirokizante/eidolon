@@ -28,6 +28,7 @@ from .continuity import (
     active_items, aware_time, needs_note_metadata,
 )
 from .proposals import parse_proposal, task_contract
+from .maintenance_budget import ResponseLimits
 
 
 LEGACY_REWRITE_BATCH_NOTES = 4
@@ -98,6 +99,9 @@ async def synthetic_maintenance_test(provider: Any, execution: AuxiliaryExecutio
         label = {"json_schema": "schema", "json_object": "JSON", "prompt": "prompt JSON"}[
             result["output_mode"]]
         result["notice"] = (f"Contract passed ({label}). Quality and enforcement untested.")
+    except ContinuityValidationError as exc:
+        result["reason_code"] = "validation." + exc.code
+        result["notice"] = exc.public_reason
     except Exception:
         result["notice"] = ("Connected; contract failed. Check model options and output limits."
                             if worker.connected else "No provider response. Check connection, "
@@ -139,8 +143,8 @@ class ContinuityWorker:
         self.commit_result = commit_result
         self.identity = identity if identity is not None else IdentityConfig()
         self._attempt_identity: dict[str, str] | None = None
-        profile = getattr(provider, "config", None)
-        self.budget = ContextBudget.for_profile(profile)
+        profile = execution.profile() if execution else getattr(provider, "config", None)
+        self._configure_budget(profile)
         self.model = getattr(profile, "model", "")
         self.counter: TokenCounter | None = None
         self.max_output_chars = max_output_chars
@@ -154,6 +158,14 @@ class ContinuityWorker:
     def _output(self, task_id: str) -> MaintenanceOutput | None:
         factory = getattr(self.provider, "maintenance_output", None)
         return factory(task_id) if factory else None
+
+    def _configure_budget(self, profile: Any) -> None:
+        self.budget = ContextBudget.for_profile(profile)
+        thinking = getattr(profile, "parameters", {}).get("thinking")
+        reserve = (thinking.get("budget_tokens") if isinstance(thinking, dict)
+                   and thinking.get("type") != "disabled" else None)
+        self.output_tokens = max(0, self.budget.output_tokens - (
+            reserve if type(reserve) is int and reserve > 0 else 0))
 
     @property
     def status(self) -> dict:
@@ -176,7 +188,10 @@ class ContinuityWorker:
     def _batch(self, inputs: list[dict], state: dict) -> list[dict]:
         """Keep the oldest contiguous prefix; never advance across unseen inputs."""
         result = []
+        limit = self._response_limits("ordinary").max_operations
         for row in inputs:
+            if len(result) == limit:
+                break
             candidate = result + [row]
             # Task identity stays local; only evidence and state enter model input.
             task = {"id": "z-" * 18, "scope": self.scope,
@@ -185,26 +200,37 @@ class ContinuityWorker:
                 self._messages(task, state)
             except ContinuityValidationError:
                 if not result:
-                    raise ContinuityValidationError("The oldest source exceeds the input allowance",
-                                                    code="input_limit")
+                    raise
                 break
             result.append(row)
         return result
 
+    def _response_limits(self, task_id: str) -> ResponseLimits:
+        return ResponseLimits.for_task(task_id, self.output_tokens, self.max_output_chars)
+
     def _messages(self, task: dict, state: dict) -> list[dict]:
-        # Omitted state remains untouched. Include the newest compact working set
-        # and identities, rather than unbounded archived history in every request.
+        # Every active topic is mandatory context. Detailed bodies and complete
+        # supporting exchanges are optional, but index-only notes cannot be targets.
+        limits = self._response_limits(task["id"])
+        if (not task["id"].startswith(("narrative:", "review:"))
+                and len(task["inputs"]) > limits.max_operations):
+            raise ContinuityValidationError("Captured batch exceeds response plan",
+                                            code="output_budget")
         current = active_items(state.get("items", []), scope=self.scope)
         items = sorted(current, key=lambda item: (
             bool(item.get("locked", item.get("manual_lock"))),
             IMPORTANCE_RANK.get(item.get("importance"), 1), item.get("last_mention_at", "")
-        ))[:100]
+        ))
         inactive = [item for item in state.get("items", [])
                     if item not in current and not item.get("invalidated")
                     and not item.get("suppressed") and item.get("scope") == self.scope]
         items += sorted(inactive, key=lambda item: item.get("last_mention_at", ""),
                         reverse=True)[:8]
+        if len(items) > 999:
+            raise ContinuityValidationError("Complete topic index exceeds reference bounds",
+                                            code="input_state")
         rewrite = task["id"].startswith("narrative:")
+        rewrite_limit = limits.max_operations
         task_ids = {row["exchange_id"] for row in task["inputs"]}
         rewrite_targets: set[str] = set()
         if rewrite:
@@ -215,7 +241,7 @@ class ContinuityWorker:
                         and item.get("sources")
                         and {source["exchange_id"] for source in item["sources"]} <= task_ids):
                     rewrite_targets.add(item["id"])
-                    if len(rewrite_targets) == LEGACY_REWRITE_BATCH_NOTES:
+                    if len(rewrite_targets) == min(LEGACY_REWRITE_BATCH_NOTES, rewrite_limit):
                         break
             items.sort(key=lambda item: item["id"] not in rewrite_targets)
         fields = ("id", "revision", "category", "topic", "importance", "metadata_pending",
@@ -225,6 +251,7 @@ class ContinuityWorker:
                   "follow_up_at",
                   "last_followup_at", "promise_owner", "promise_kind")
         document = {
+            "response_limits": limits.document(),
             "current_identity": (self._attempt_identity if self._attempt_identity is not None
                                  else self.identity.model_dump()),
             "scope": task["scope"], "timezone": self.timezone,
@@ -232,6 +259,17 @@ class ContinuityWorker:
             "active_count": state.get("active_count", len(current)),
             "available_slots": max(0, self.max_notes - state.get("active_count", len(current))),
             "items": [],
+            "topic_index": [{"id": item["id"], "topic": item.get("topic", ""),
+                             "importance": item.get("importance", "moderate"),
+                             "category": item.get("category"), "state": item.get("state", "open"),
+                             "locked": bool(item.get("locked", item.get("manual_lock"))),
+                             "user_created": bool(item.get("user_created")
+                                                  or item.get("origin") == "user_note"),
+                             "protected": bool(item.get("locked", item.get("manual_lock"))
+                                               or item.get("user_created")
+                                               or item.get("origin") == "user_note")}
+                            for item in items],
+            "supporting_exchanges": [],
             "legacy_rewrite_ids": [],
             "rewrite_existing": rewrite,
             "review_existing": task["id"].startswith("review:"),
@@ -262,24 +300,50 @@ class ContinuityWorker:
 
         def fits() -> bool:
             assembled = messages()
+            output = self._output(task["id"])
+            response_format = output.response_format if output else None
             if self.max_input_chars is not None:
                 chars = sum(len(json.dumps(message, ensure_ascii=False)) for message in assembled)
+                if response_format:
+                    chars += len(json.dumps(response_format, ensure_ascii=False))
                 if chars > self.max_input_chars:
                     return False
-            output = self._output(task["id"])
             return self.budget.fits(self.counter.request(
-                assembled, response_format=output.response_format if output else None))
+                assembled, response_format=response_format))
 
+        exchanges = document["exchanges"]
+        index = document["topic_index"]
+        document["exchanges"] = []
+        document["topic_index"] = []
+        if not fits():
+            raise ContinuityValidationError("Instructions and reserves exceed settings",
+                                            code="input_overhead")
+        document["topic_index"] = index
+        if not fits():
+            raise ContinuityValidationError("Complete topic index exceeds settings",
+                                            code="input_state")
+        document["exchanges"] = exchanges
         if not fits():
             raise ContinuityValidationError("The complete source batch exceeds the input allowance",
                                             code="input_limit")
         evidence = {row["exchange_id"]: row for row in state.get("source_exchanges", [])}
+        evidence.update({row["exchange_id"]: row for row in task["inputs"]})
         for item in items:
             entry = {key: item[key] for key in fields if key in item}
             if item.get("content_format") != "narrative" and item.get("sources"):
                 # A legacy note's content is already present in its originals.
                 entry.pop("content", None)
             entry["sources"] = []
+            supporting = document["supporting_exchanges"]
+            supplied_ids = task_ids | {row["exchange_id"] for row in supporting}
+            required_ids = {source["exchange_id"] for source in item.get("sources", [])}
+            if not task["id"].startswith("review:") and not required_ids <= evidence.keys():
+                continue
+            extra = [evidence[key] for key in sorted(required_ids - supplied_ids)
+                     if key in evidence and not task["id"].startswith("review:")]
+            document["supporting_exchanges"] = supporting + [
+                {key: value for key, value in row.items() if key not in {"user", "assistant", "id"}}
+                for row in extra]
             for source in item.get("sources", []):
                 support = {key: source[key] for key in
                            ("exchange_id", "document_id", "role", "origin")}
@@ -300,10 +364,22 @@ class ContinuityWorker:
                        and bool(item.get("sources")))
             if convert:
                 document["legacy_rewrite_ids"].append(item["id"])
-            if not fits():
+            try:
+                detail_fits = fits()
+            except ContinuityValidationError as exc:
+                # Complete background adds both speakers' references. A full
+                # optional reference table leaves this note index-only too.
+                if exc.code != "input_limit":
+                    raise
+                detail_fits = False
+            if not detail_fits:
                 document["items"].pop()
+                document["supporting_exchanges"] = supporting
                 if convert:
                     document["legacy_rewrite_ids"].pop()
+                if item["id"] in rewrite_targets:
+                    raise ContinuityValidationError("Required rewrite details exceed settings",
+                                                    code="input_state")
         return messages()
 
     def _source_exchanges(self, state: dict) -> list[dict]:
@@ -336,7 +412,8 @@ class ContinuityWorker:
             if fits:
                 ids = candidate
                 notes += 1
-                if notes == LEGACY_REWRITE_BATCH_NOTES:
+                if notes == min(LEGACY_REWRITE_BATCH_NOTES,
+                                self._response_limits("narrative:fit").max_operations):
                     break
             elif not ids:
                 # Persist the complete oldest note's sources as a held rewrite,
@@ -403,7 +480,11 @@ class ContinuityWorker:
         if not finished:
             raise ContinuityValidationError("The maintenance stream did not finish cleanly",
                                             code="output_incomplete")
-        return request.compile(parse_proposal("".join(chunks)))
+        proposal = parse_proposal("".join(chunks))
+        limits = self._response_limits(task["id"])
+        if self.counter.value(proposal) > limits.response_tokens:
+            raise ContinuityValidationError("Response exceeds planned tokens", code="output_plan")
+        return request.compile(proposal)
 
     def _failed(self, task: dict, *, reason: str, reason_code: str,
                 immediate: bool = False) -> None:
@@ -431,10 +512,12 @@ class ContinuityWorker:
             # Capture before tokenizer initialization can yield. Budgeting and
             # inference share these names; saved evidence keeps its own attribution.
             self._attempt_identity = self.identity.model_dump()
-            self.budget = ContextBudget.for_profile(getattr(self.provider, "config", None))
+            profile = self.execution.profile() if self.execution else getattr(
+                self.provider, "config", None)
+            self._configure_budget(profile)
             if self.counter is None:
                 self.counter = await asyncio.to_thread(TokenCounter, self.model)
-            state = self.store.continuity_state(scope=self.scope, maintenance=True)
+            state = self.store.continuity_state(scope=self.scope, limit=None, maintenance=True)
             state["source_exchanges"] = self._source_exchanges(state)
             task = self.store.pending_maintenance_task(scope=self.scope, stage="continuity")
             now = datetime.now(dt_timezone.utc)
@@ -480,7 +563,7 @@ class ContinuityWorker:
                 # If a single source cannot fit, persist it for explicit retry;
                 # do not skip ahead to smaller or newer exchanges.
                 try:
-                    bounded = inputs if rewrite else self._batch(inputs, state)
+                    bounded = inputs if rewrite or review else self._batch(inputs, state)
                 except ContinuityValidationError:
                     task = self.store.create_maintenance_task(
                         inputs[:1], scope=self.scope, expected_revision=state["revision"],

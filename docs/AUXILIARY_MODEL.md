@@ -66,8 +66,31 @@ model's manual capacity. Unknown serving capacity remains unknown.
 
 The character allowance is an additional work limit, not a token-capacity
 measurement. Known token capacity, output reserve, and safety reserve still apply.
+Maintenance counts its effective task instructions, response schema when used,
+complete topic/protection index, selected note details and complete exchanges.
+The schema also counts toward an explicit character allowance. Nothing is clipped
+to manufacture a fit. An unknown context window remains unknown; removing a
+character cap does not establish the provider's actual capacity.
+
+The response cap also bounds work: smaller allowances select fewer whole
+exchanges, fewer operations and shorter prose. The request carries per-field and
+total prose limits, which are checked locally. Planning leaves 10% (at least 32
+tokens) for response estimation and reserves JSON/reference bookkeeping before
+allocating prose. Ordinary, capacity and legacy tasks use their own overheads and
+operation ceilings. For example, 512 output tokens permits one ordinary operation
+and one complete exchange per new batch; the default 4096 allows up to eight.
+One exchange can still require more work than estimated; it remains pending if
+the model cannot express the useful changes within the plan.
+
 Reasoning/thinking can consume the output allowance. If output is incomplete,
 reduce supported reasoning effort or increase Max Response Length within the bounds.
+An explicit positive thinking `budget_tokens` is subtracted when planning answer
+space, while the full output allowance remains reserved in the context window.
+Adaptive or otherwise unknown reasoning consumption cannot be predicted. The app
+never increases the configured token/time cap or disables thinking to make work fit.
+Very small output settings can be valid configuration values but unusable for a
+maintenance task's minimum planned work. Use **Test auxiliary** to check the draft
+contract before saving; it reports a preflight limit without making a provider call.
 Only configure thinking controls on endpoints that accept them; a reasoning effort
 such as `none` does not itself guarantee that a gateway disables thinking.
 
@@ -220,6 +243,13 @@ Failures keep existing notes and processing watermarks intact and use bounded
 retry backoff. If an immutable pending batch cannot fit a smaller model, choose
 a larger-capacity target or increase an overly restrictive input allowance, then
 refresh again. The app does not truncate that batch or skip to newer evidence.
+Preflight notices distinguish instructions/schema/output-reserve overhead,
+required topic index or target details, an oversized complete source, and an
+insufficient response allowance. These appear as settings attention in status
+and Run history, including runs where no request was dispatched. Such runs have
+no paid attempt and do not increment model-call counts. A single oversized
+exchange remains retained and unresolved. Lowering the response cap also holds
+an existing larger immutable batch instead of sending it with a smaller work plan.
 A missing externally edited auxiliary connection is isolated from dialogue startup;
 repair it in Preferences or deliberately choose Follow dialogue model.
 
@@ -236,7 +266,8 @@ Ordinary evidence maintenance uses the versioned `current-life-ordinary-v1`
 proposal contract in [proposals.py](../src/eidolon/memory/proposals.py).
 The model chooses substantive changes in one request: topic, importance,
 category, prose, supporting sources, and closure/replacement decisions.
-It returns `{"operations":[...]}` with 1–24 explicit operations. A new note is:
+It returns `{"operations":[...]}` with 1–24 explicit operations, further bounded
+by the request's `response_limits`. A new note is:
 
 ```json
 {"operations":[{"op":"upsert","topic":"Interview preparation","importance":"moderate","category":"thread","content":"The user's interview is approaching; practice remains undecided.","sources":["s1"]}]}
@@ -249,6 +280,22 @@ and new evidence in `sources`. A replacement pairs an archive with reason
 tradeoff reason. Legitimate no-change is exactly
 `{"operations":[{"op":"no_change"}]}`. It means no useful supported change was
 warranted, rather than a fallback for an invalid operation.
+
+Every request includes `topic_index`, with stable local note references, topics,
+importance, protection and detail availability for every active note. Selected
+`items` contain full note details; their saved background appears as complete
+`supporting_exchanges`, separate from the new `exchanges`. Index-only notes are
+visible for duplicate/protection decisions but cannot be changed. Legacy targets
+must fit with their required details before dispatch. Capacity-only review needs
+the saved note details for policy decisions and preserves its evidence locally.
+
+When useful work needs an index-only note's details, return sole
+`{"operations":[{"op":"defer","reason":"context_required","note_ref":"n1"}]}`.
+When the useful changes cannot fit the response plan, return sole
+`{"operations":[{"op":"defer","reason":"response_budget"}]}`. Deferral retains
+the evidence and reports the limiting condition; it is not a successful no-change
+and does not complete a partial set of operations. Increase the relevant allowance
+and refresh to reconsider the retained work.
 
 Note references (`n1`, etc.) and source references (`s1`, etc.) are bounded and
 local to the displayed request; reusing them from another request is unsupported.

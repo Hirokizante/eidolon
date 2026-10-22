@@ -295,7 +295,8 @@ def test_identity_budget_keeps_whole_names_and_oldest_evidence_prefix(store, uni
     limit(size(short))
     with pytest.raises(ContinuityValidationError) as failure:
         worker._batch(rows, state)
-    assert failure.value.public_reason == ContinuityValidationError.REASONS["input_limit"]
+    assert failure.value.public_reason == ContinuityValidationError.REASONS[
+        "input_overhead" if unit == "tokens" else "input_limit"]
     limit(size(long))
     assert worker._batch(rows, state) == rows[:1]
     document = json.loads(worker._messages(task, state)[-1]["content"])
@@ -875,7 +876,7 @@ async def test_foreground_cancellation_preserves_task_without_partial_commit(sto
 
 
 @pytest.mark.parametrize("event", [{"type": "tool_call"},
-                                  {"type": "token", "text": "x" * 200}])
+                                  {"type": "token", "text": "x" * 2000}])
 async def test_rejected_stream_is_closed_immediately_and_keeps_uncommitted_evidence(store, event):
     closed = asyncio.Event()
 
@@ -888,7 +889,7 @@ async def test_rejected_stream_is_closed_immediately_and_keeps_uncommitted_evide
                 closed.set()
 
     add(store)
-    worker = ContinuityWorker(store, RejectedProvider(), max_output_chars=100)
+    worker = ContinuityWorker(store, RejectedProvider(), max_output_chars=1000)
     assert not await worker.run_once(force=True)
     assert closed.is_set()
     assert store.continuity_state()["watermark"] == 0

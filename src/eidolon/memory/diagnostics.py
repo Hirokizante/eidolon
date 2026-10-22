@@ -25,7 +25,9 @@ REASONS = {
     **{"validation." + code: text for code, text in ContinuityValidationError.REASONS.items()},
     "validation.unsupported": "The proposed update did not pass validation.",
 }
-CONFIGURATION_REASONS = {"configuration", "authentication", "validation.input_limit"}
+CONFIGURATION_REASONS = {"configuration", "authentication", "validation.input_limit",
+                         "validation.input_overhead", "validation.input_state",
+                         "validation.output_budget"}
 
 
 def safe_reason(code: str | None, version: int | None = REASON_VERSION) -> dict | None:

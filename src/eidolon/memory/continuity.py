@@ -37,14 +37,14 @@ class ContinuityValidationError(ValueError):
         "reference": "Use only the note_ref and source_refs supplied in this request.",
         "schema": "The model returned malformed continuity operations.",
         "capacity_task": "Capacity review permits only archive with note_ref and decision_reason, "
-                         "or sole no_change. Archive only unprotected active notes and no more "
+                         "or sole no_change/defer. Archive only unprotected active notes and no more "
                          "than the existing excess; all saved note fields are preserved.",
         "legacy_task": "Legacy work permits only upsert with a supplied target_ref as note_ref, "
-                       "topic, importance and conversion content, or sole no_change. Omit content "
+                       "topic, importance and conversion content, or sole no_change/defer. Omit content "
                        "for existing narrative notes; preserve their wording. Sources, category, "
                        "scope and optional metadata are supplied by the app. No new notes or archives.",
         "schema_op": "Each operation must use the JSON key op with a value of upsert, resolve, "
-                     "archive or no_change. Do not name this key operation, action or type.",
+                     "archive, no_change or defer. Do not name this key operation, action or type.",
         "source": "Evidence must copy a complete original message with its correct source identity.",
         "batch_source": "Updates must cite an exchange from this batch. Prior sources alone "
                         "may only convert an open legacy note to narrative while preserving "
@@ -75,7 +75,17 @@ class ContinuityValidationError(ValueError):
         "output_tokens": "The maintenance response reached its output-token limit. "
                          "Increase the auxiliary output limit or lower reasoning effort.",
         "output_limit": "The maintenance output exceeded its size allowance.",
+        "output_budget": "The response settings cannot fit a substantive maintenance operation. "
+                         "Increase the auxiliary output allowance in Preferences. Evidence is kept.",
+        "output_plan": "The proposal exceeded its planned operation or prose allowance. "
+                       "Evidence is kept for retry.",
         "input_limit": "The oldest complete source batch exceeds the input allowance.",
+        "input_overhead": "Maintenance instructions, output reserve and estimation margin exceed "
+                          "the input settings before evidence is added. Increase the input "
+                          "allowance/context window or reduce the output reserve in Preferences.",
+        "input_state": "The complete topic/protection index or required note details exceed "
+                       "the input settings. Increase the auxiliary input allowance/context window "
+                       "in Preferences. Evidence is kept.",
     }
     DETAILS = frozenset({
         "Invalid source timestamp",

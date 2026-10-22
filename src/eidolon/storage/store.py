@@ -771,7 +771,7 @@ class Store:
             items = [item for item in items if active(item)]
         return items if limit is None else items[:max(0, min(limit, 100))]
 
-    def continuity_state(self, scope: str = "real_life", limit: int = 100, *,
+    def continuity_state(self, scope: str = "real_life", limit: int | None = 100, *,
                           maintenance: bool = False) -> dict:
         from ..memory.continuity import IMPORTANCE_RANK, active_items
         with self._lock:
@@ -788,7 +788,7 @@ class Store:
                 ))
             return {**self._continuity_scope(scope),
                     "active_count": len(active_ids),
-                    "items": items[:max(0, min(limit, 100))]}
+                    "items": items if limit is None else items[:max(0, min(limit, 100))]}
 
     def get_continuity_item(self, item_id: str,
                             scope: str = "real_life") -> dict | None:
