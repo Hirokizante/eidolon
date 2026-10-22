@@ -153,18 +153,62 @@ Run the checks appropriate to the change and report their actual results:
 | `uv run pip-audit --local --skip-editable` | Known vulnerabilities in the synced environment, excluding the editable application |
 | `git diff --check` | Whitespace errors in the diff |
 
-For application behavior changes, run relevant regression tests and the full
-suite before handoff. For documentation-only work, verify changed commands,
-examples, local links, and privacy checks; explain any test scope limits. Packaging
-changes should also be checked with `uv build`. Hook commands using `--all-files`
-select tracked files; include new files explicitly with `--files <paths>` when
-checking them before staging.
+### Selecting tests
 
-The [GitHub Actions workflow](.github/workflows/security.yml) runs on pushes,
-pull requests, manual dispatch, and a weekly schedule. Ubuntu jobs check full
+For an isolated behavior change, run the owning test file and relevant boundary
+tests. State the selected tests, why they cover the change, and the results at
+handoff. Use the table as a starting point; follow callers when a change crosses
+module boundaries. Run Ruff for Python changes and privacy checks for changed or
+new files. For documentation-only work, verify commands, examples and links;
+packaging changes also need `uv build`.
+
+| Changed area | Start with these tests and relevant boundary cases |
+| --- | --- |
+| Provider requests or routing | `test_provider.py`, `test_model_routing.py`, relevant `test_engine*.py` |
+| Memory and continuity | Matching `test_memory*.py`, `test_continuity*.py`, `test_maintenance*.py`; relevant engine/service cases |
+| A single UI screen | Matching `test_ui_<screen>.py`; relevant `test_identity_ui.py` or `test_status.py` cases |
+| Config, preferences or identity | `test_config.py`, `test_preferences.py`, `test_identity.py`; affected CLI/service/UI cases |
+| CLI, service, storage or scheduler | Matching `test_cli.py`, `test_service*.py`, `test_storage.py`, `test_scheduler*.py`; affected callers |
+| Privacy guard or ignore rules | `test_repository_privacy.py` and configured privacy/history hooks |
+| Test reports or CI | Exercise the summary with synthetic passing/failing XML, inspect event/concurrency rules, run changed test files |
+
+Run **one local full suite after focused checks** for shared UI/form infrastructure,
+shared configuration/validation, persistence or migrations, privacy boundaries,
+service lifecycle/concurrency, dependency changes, shared test infrastructure, or
+any change whose affected tests cannot be selected confidently. Repeat only after
+new changes or failures warrant it. CI runs the full suite for every PR revision;
+isolated changes may first reveal an unrelated regression there. Open a draft PR
+for automatic feedback on a feature branch; feature pushes alone do not trigger CI.
+
+Keep exhaustive inexpensive input validation below the UI. Exercise UI behavior at
+representative sizes, retaining checks for each relevant layout boundary,
+keyboard access, drafts, focus and ASCII/monochrome appearance. Before removing a
+combination, identify its contract, remaining protection and interaction risk.
+Classify failures as application, assertion/synchronization, environment or
+infrastructure problems before changing their enforcement. Use explicit worker,
+timer or layout completion boundaries instead of arbitrary sleeps and retries.
+
+For a timing investigation, append `--durations=10 --tb=short
+--junitxml=/tmp/eidolon-results.xml` to the four-worker command; choose a unique
+temporary report path if runs overlap. Summed case time across workers is distinct
+from elapsed suite time. Use `uv run python scripts/summarize_tests.py <report>`
+for a bounded summary. Inspect full logs only for relevant failures; a summary is
+not a replacement for pytest's exit status. Keep reports outside checkouts.
+
+Hook commands using `--all-files` select tracked files; include new files
+explicitly with `--files <paths>` when checking them before staging.
+
+The [GitHub Actions workflow](.github/workflows/security.yml) runs on pushes to
+`main`, tag pushes, pull requests, manual dispatch, and a weekly schedule.
+Superseded PR and branch-push runs are cancelled within their event/ref context;
+PR merge-result validation remains separate from push validation. Ubuntu jobs check full
 history with the privacy hooks and audit locked dependencies with pip-audit.
 A macOS job runs Ruff, source compilation, the four-worker test suite, and the
-package build. Live Keychain, launchd, provider, and memory-service checks still
+package build, then retain JUnit results for seven days and write a bounded timing
+and failure summary even if tests fail. Required checks on `main` are `privacy`,
+`validation`, and `dependencies`; require a PR and keep these names stable when
+editing the workflow. Repository settings enforce this independently of YAML.
+Live Keychain, launchd, provider, and memory-service checks still
 require separate validation. Include local validation and any integration limits
 in the PR description.
 

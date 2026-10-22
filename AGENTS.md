@@ -38,6 +38,10 @@ Use pytest, pytest-asyncio, and pytest-xdist; async tests run in auto mode. Name
 
 Always use `uv run pytest -n 4 --dist worksteal` for full-suite and focused test runs. Append paths, node IDs, or `-k` filters to this command; for example, `uv run pytest -n 4 --dist worksteal tests/test_provider.py`. These commands supersede serial pytest examples in older reports and task specs. Use `-n 0` only when a specific debugging task requires serial execution, and explain the reason in validation notes.
 
+Select affected tests and local full-suite exceptions using
+[the validation guide](CONTRIBUTING.md#selecting-tests). Report the selection and
+results at handoff; CI supplies full-suite validation for pull requests.
+
 ## Commit & Pull Request Guidelines
 
 Use imperative, sentence-case commit subjects such as “Harden memory recall, recovery, and presentation fallback.” Keep commits focused. PRs should explain changed behavior, link relevant issues, and list validation performed and its limits, including terminal layout checks. Update maintained guides and generic examples when behavior changes.
