@@ -386,3 +386,39 @@ async def test_recovery_limit_rejects_invalid_settings_without_changing_saved_co
             await client.request("save_preferences", preferences={"continuity_recovery_calls": value})
         from eidolon.config import load_config
         assert load_config(service.configuration).memory.continuity_recovery_calls == 6
+
+
+async def test_unrelated_model_capabilities_cannot_release_configuration_pause(
+    tmp_path, monkeypatch, clock,
+):
+    from eidolon.config import MaintenanceOutputSupport, load_config, save_config
+    from eidolon.providers.openai import ProviderCapabilityError
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={"continuity_enabled": True})
+        service.store.complete_turn(service.current_session["id"], "An open project.", "Okay.")
+
+        def reject(doc):
+            raise ProviderCapabilityError("PRIVATE configuration error")
+
+        provider = CompactProvider(reject)
+        await refresh(service, client, provider)
+        saved = load_config(service.configuration)
+        saved.providers[0].maintenance_output_support.append(MaintenanceOutputSupport(
+            endpoint=saved.providers[0].endpoint, model="unrelated-model", json_schema="enforced"))
+        save_config(saved, service.configuration)
+        await service._refresh_auxiliary()
+        clock.advance()
+        await automatic(service, provider)
+        assert len(provider.calls) == 1
+        stage = (await client.request("status"))["maintenance"]["stages"][0]
+        assert stage["paused"] and stage["budget"]["remaining"] == 5
+        saved.providers[0].maintenance_output_support.append(MaintenanceOutputSupport(
+            endpoint=saved.providers[0].endpoint, model=saved.providers[0].model, json_object=True))
+        save_config(saved, service.configuration)
+        await service._refresh_auxiliary()
+        await automatic(service, provider)
+        assert len(provider.calls) == 2
+        stage = (await client.request("status"))["maintenance"]["stages"][0]
+        assert stage["paused"] and stage["budget"]["remaining"] == 4
+        assert stage["budget"]["pass"] == 1

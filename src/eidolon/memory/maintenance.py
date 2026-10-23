@@ -16,10 +16,10 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any
 from uuid import uuid4
 
-from eidolon.config import IdentityConfig
+from eidolon.config import IdentityConfig, ProviderConfig
 from eidolon.providers.context import ContextBudget, TokenCounter
 from eidolon.providers.metrics import measured_stream
-from eidolon.providers.maintenance import MaintenanceOutput
+from eidolon.providers.maintenance import MaintenanceOutput, maintenance_output
 from eidolon.providers.routing import AuxiliaryExecution, digest
 
 from .continuity import (
@@ -540,10 +540,11 @@ class ContinuityWorker:
             key: getattr(profile, key, None) for key in ("endpoint", "headers", "api_key_ref")
         }}
         if reason_code != "authentication":
+            output = maintenance_output(profile, "ordinary") if isinstance(
+                profile, ProviderConfig) else None
             settings.update(model=getattr(profile, "model", None),
                             parameters=getattr(profile, "parameters", {}),
-                            output_support=[entry.model_dump() for entry in
-                                            getattr(profile, "maintenance_output_support", [])])
+                            response_format=output.response_format if output else None)
         if reason_code and reason_code.startswith("validation."):
             settings.update(input_chars=self.max_input_chars, timeout=self.timeout,
                             output_chars=self.max_output_chars,
