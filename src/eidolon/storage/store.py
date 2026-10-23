@@ -1428,12 +1428,20 @@ class Store:
                 raise ValueError("Maintenance evidence changed or is no longer eligible")
             from ..memory.continuity import (
                 POLICY_ARCHIVE_REASONS, is_legacy_rewrite, needs_note_metadata,
-                validate_note_capacity, validate_note_metadata, validate_transition_evidence,
+                validate_note_capacity, validate_note_metadata, validate_source_chronology,
+                validate_transition_evidence,
             )
             # Recheck the full saved scope inside this transaction. A bounded
             # inspector or model request cannot hide notes from the active cap.
             capacity_items = self.list_continuity_items(scope, limit=None)
             inputs = {entry["id"]: entry for entry in current}
+            chronology_rows = dict(inputs)
+            prior_ids = list(dict.fromkeys(
+                source["exchange_id"] for item in capacity_items if not item.get("invalidated")
+                for source in item.get("sources", [])))
+            for start in range(0, len(prior_ids), 32):
+                chronology_rows.update({entry["id"]: entry for entry in self.continuity_evidence(
+                    prior_ids[start:start + 32], scope=scope)})
             changed, targets = 0, set()
             for index, operation in enumerate(operations):
                 if not isinstance(operation, dict):
@@ -1522,6 +1530,9 @@ class Store:
                 # reparsed as if they were the original relative expression.
                 validate_transition_evidence({**operation, "op": action}, previous,
                                              new_exchange_ids=set(inputs))
+                validate_source_chronology({**operation, "op": action}, previous,
+                                           rows=chronology_rows, new_exchange_ids=set(inputs),
+                                           items=capacity_items)
                 supported = [source["excerpt"] for source in sources]
                 if (not narrative and not policy_archive
                         and operation.get("content") not in [*supported, "\n".join(supported)]):

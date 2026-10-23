@@ -227,6 +227,44 @@ Source eligibility, complete snapshots, locks, scope and revisions are rechecked
 commit. Revoking an earlier source invalidates the summary, including when new
 evidence is added.
 
+### Replay and source chronology
+
+Retried or out-of-order evidence is checked against the latest saved notes both
+when validating the proposal and inside the commit transaction. Recency comes
+from the original supporting speaker messages and their timezone-aware timestamps,
+not the refresh time, generated wording, note observation date, event date, or
+an unrelated later citation. For a closure, only original messages supporting
+that terminal transition establish its chronology. Preparation evidence cannot
+borrow the timestamp of a later unrelated message to reopen a completed move;
+an old completion claim cannot borrow a later preparation message to close it.
+Omitting the target reference and proposing the same normalized topic as a new
+note does not bypass the check against the saved topic.
+
+Older evidence can fill a missing topic or add background support to an open
+note while preserving its exact prose, existing sources, category, importance,
+and behavioral metadata. A substantive update or reopening needs later
+topic-matched evidence from the current batch. Equal timestamps do not establish
+an order between conflicting claims. For substantive upserts, every newly cited
+topical original must be later than the current support: a later background
+message about the same subject cannot lend its timestamp to an old state claim.
+Such mixed-age proposals remain unresolved even if a faithful rewrite might be
+possible; older saved support can still accompany a genuinely later development.
+Missing or ambiguous support leaves the
+whole proposal uncommitted, including other proposed changes, and Run history
+shows a safe chronology explanation. Retry and service restart preserve the
+evidence and recheck the same rule against the current notes. Format-only legacy
+conversion and explicit capacity/replacement decisions retain their separate
+validation rules; a manually edited unlocked automatic note without supporting
+sources remains eligible for new evidence.
+
+Chronology uses the existing bounded topic and transition language checks; it
+does not prove that an arbitrary paraphrase is faithful, that differently named
+topics are identical, or that the reported event happened at the message time.
+When older background needs substantive rewording of an established claim, the
+conservative result is unresolved work rather than a guessed merge. This guard
+does not enable progress past unresolved older batches: newer evidence still
+waits until that separate recovery work is implemented.
+
 Dates, promise metadata and closing a topic still depend on complete original
 statements. Generated prose cannot establish those changes. These deterministic
 checks establish provenance and metadata constraints, not the semantic truth of

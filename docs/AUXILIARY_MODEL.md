@@ -233,6 +233,14 @@ Runs with unresolved conditions appear first in Run history, even when their
 continuity update finished. An unrelated older failure remains visible. Connection/configuration warnings
 are distinct from Hindsight readiness.
 
+A chronology rejection means the original topic evidence does not establish a
+later supported state. Refreshing again or restarting cannot make old evidence
+newer. Preserve the current note and its sources, review the originals, or wait
+for a later supported development; missing topics and unchanged-claim background
+support can still be admitted. See [replay and source chronology](CURRENT_LIFE_SUMMARIES.md#replay-and-source-chronology)
+for the conservative merge rules and their language limits. The rejected batch
+remains unresolved through the usual bounded recovery path.
+
 ### Bounded recovery and configuration pauses
 
 In Preferences → Current life, **Requests per recovery pass** defaults to six

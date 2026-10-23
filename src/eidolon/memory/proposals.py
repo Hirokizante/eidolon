@@ -95,7 +95,8 @@ Select substantive changes. An upsert needs topic, importance, category, content
 and 1-8 sources; omit note_ref for a new note. Keep an existing topic unchanged.
 Update only when new batch evidence develops that same topic; retain relevant
 background and cite its supplied original sources. Prior sources alone cannot
-establish a development. Do not duplicate topics, rewrite unchanged prose, or
+establish a development. Older topic evidence cannot undo newer supported state;
+use original source timestamps. Do not duplicate topics, rewrite unchanged prose, or
 change locked, user_created, invalidated or suppressed notes. Omitted notes stay.
 Create notes only for recurring subjects, ongoing situations, unresolved matters
 or meaningful future interactions. Skip greetings, transient trivia and closed

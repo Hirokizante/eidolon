@@ -49,6 +49,10 @@ class ContinuityValidationError(ValueError):
         "batch_source": "Updates must cite an exchange from this batch. Prior sources alone "
                         "may only convert an open legacy note to narrative while preserving "
                         "all its sources, category, scope and optional metadata.",
+        "chronology": "The evidence does not establish a later supported state for this topic. "
+                      "Preserve the current note and its supporting sources; use older evidence "
+                      "only for a missing topic or compatible background. If the conflict cannot "
+                      "be resolved from the originals, keep it pending for review or newer evidence.",
         "content": "Note content must exactly match its complete cited messages.",
         "narrative": "Write a compact third-person narrative summary, not copied exchanges, "
                      "with content_format narrative and origin derived.",
@@ -701,6 +705,97 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
                                             code="promise_scheduled")
 
 
+def validate_source_chronology(operation: dict, item: dict | None, *,
+                               rows: dict[int, dict], new_exchange_ids: set[int],
+                               items: list[dict] | None = None) -> None:
+    """Compare topic support in originals, never generated prose or refresh dates.
+
+    A later unrelated citation cannot lend its clock to an older claim. For a
+    closed note, the terminal evidence establishes the state, rather than the
+    earlier claim or an unrelated source saved alongside the closure.
+    """
+    if item is None:
+        # Omitting note_ref must not resurrect a closed topic as a new note.
+        for previous in items or []:
+            if (previous.get("sources") and not previous.get("invalidated")
+                    and not previous.get("suppressed")
+                    and topic_key(operation.get("topic", "")) == topic_key(previous.get("topic", ""))):
+                validate_source_chronology(operation, previous, rows=rows,
+                                           new_exchange_ids=new_exchange_ids)
+        return
+    if (not item.get("sources") or is_legacy_rewrite(operation, item)
+            or operation.get("archive_reason") in POLICY_ARCHIVE_REASONS):
+        return
+    # Older background may enrich provenance while leaving the established
+    # claim and every behavioral field intact. An upsert always opens its target,
+    # so this exception cannot apply to a closed note. Substantive rewording of
+    # older evidence remains ambiguous and must not replace the newer claim.
+    identity = ("exchange_id", "document_id", "role", "origin")
+    prior_keys = {tuple(source.get(key) for key in identity) for source in item["sources"]}
+    proposed_keys = {tuple(source.get(key) for key in identity)
+                     for source in operation.get("sources", [])}
+    preserved = ("content", "category", "topic", "importance", "content_format", "origin", "scope",
+                 "event_at", "expires_at", "follow_up_at", "promise_owner", "promise_kind")
+    if (operation["op"] == "upsert" and item.get("state") == "open"
+            and prior_keys <= proposed_keys
+            and all(operation.get(key) == item.get(key) for key in preserved)
+            and not operation.get("replaces_item_id")):
+        return
+    anchors = [item.get("topic", "")]
+    if item.get("content"):
+        anchors.append(item["content"])
+    prior = []
+    for source in item.get("sources", []):
+        row = rows.get(source["exchange_id"])
+        if row is None:
+            raise ContinuityValidationError("Current support is unavailable", code="chronology")
+        original = _source_text(row, source["role"])
+        prior.append((source, row, original))
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", original):
+            for clause in _subject_clauses(sentence):
+                if (same_topic(clause, item.get("topic", ""))
+                        or same_topic(clause, item.get("content", ""))):
+                    anchors.append(clause)
+
+    def relevant(original: str) -> bool:
+        return any(same_topic(original, anchor) for anchor in anchors)
+
+    def supports_transition(original: str, reason: str | None) -> bool:
+        return any(transition_supported(original, "archive", anchor, reason) for anchor in anchors)
+
+    supported = [(source, row, original) for source, row, original in prior if relevant(original)]
+    if item.get("state") == "archived" and item.get("archive_reason") not in POLICY_ARCHIVE_REASONS:
+        supported = [(source, row, original) for source, row, original in supported
+                     if supports_transition(original, item.get("archive_reason"))]
+    incoming = [(source, rows[source["exchange_id"]]) for source in operation.get("sources", [])
+                if source["exchange_id"] in new_exchange_ids
+                and relevant(_source_text(rows[source["exchange_id"]], source["role"]))]
+    if operation["op"] in {"resolve", "archive"}:
+        incoming = [(source, row) for source, row in incoming
+                    if any(transition_supported(_source_text(row, source["role"]), operation["op"],
+                                                anchor, operation.get("archive_reason"))
+                           for anchor in anchors)]
+    elif item.get("state") == "archived":
+        incoming = [(source, row) for source, row in incoming
+                    if not supports_transition(_source_text(row, source["role"]),
+                                               item.get("archive_reason"))]
+    if not supported or not incoming:
+        raise ContinuityValidationError("Topic chronology is ambiguous", code="chronology")
+    latest = max(aware_time(source_timestamp(row, source["role"]))
+                 for source, row, _ in supported)
+    # A substantive mixed-age proposal is ambiguous: a newer message about
+    # background on this same topic cannot lend its clock to an older state
+    # claim. Every newly cited topical original must clear the current support.
+    # Prior saved support remains available as background for a genuine later
+    # development; unchanged-claim enrichment was handled above.
+    proposed = min(aware_time(source_timestamp(row, source["role"])) for source, row in incoming)
+    # Equal instants do not establish an order between different original claims.
+    # A format-only rewrite was handled above; do not reopen a closed note with
+    # its own closing evidence either.
+    if proposed <= latest:
+        raise ContinuityValidationError("Older or unordered topic evidence", code="chronology")
+
+
 def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                         scope: Scope = "real_life", timezone: str = "UTC",
                         supporting_inputs: list[dict] | None = None,
@@ -808,6 +903,8 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                 result[field] = None
         result.update(origin=origin, scope=scope, observed_at=observed, last_mention_at=observed)
         validate_transition_evidence(result, item, new_exchange_ids=set(new_rows))
+        validate_source_chronology(result, item, rows={**supporting_rows, **new_rows},
+                                   new_exchange_ids=set(new_rows), items=state.get("items", []))
         if (operation.op == "upsert" and (operation.category is None
                 or operation.origin is None or operation.scope is None)):
             raise ContinuityValidationError("A new or updated note requires category, origin, and scope")
