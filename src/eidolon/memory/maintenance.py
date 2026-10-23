@@ -10,9 +10,9 @@ import asyncio
 import hashlib
 import json
 import math
+from collections.abc import Callable
 from contextlib import aclosing
 from datetime import datetime, timedelta, timezone as dt_timezone
-from functools import partial
 from typing import Any
 from uuid import uuid4
 
@@ -119,7 +119,7 @@ class ContinuityWorker:
     def __init__(self, store: Any, provider: Any, *, timezone: str = "UTC",
                  scope: Scope = "real_life", batch_exchanges: int = 8,
                  idle_seconds: int = 600, enabled: bool = False,
-                 max_notes: int = DEFAULT_MAX_NOTES,
+                 max_notes: int = DEFAULT_MAX_NOTES, recovery_calls: int = 6,
                  timeout: float = 60, max_input_chars: int | None = None,
                  max_output_chars: int = 24_000, execution: Any = None,
                  commit_result: Any = None, identity: IdentityConfig | None = None):
@@ -136,7 +136,10 @@ class ContinuityWorker:
         self.scope = scope
         self.batch_exchanges = batch_exchanges
         self.idle_seconds = idle_seconds
+        if type(recovery_calls) is not int or not 1 <= recovery_calls <= 100:
+            raise ValueError("Recovery calls must be an integer from 1 to 100")
         self.max_notes = max_notes
+        self.recovery_calls = recovery_calls
         self.enabled = enabled
         self.timeout = timeout
         self.execution = execution
@@ -154,6 +157,7 @@ class ContinuityWorker:
         self._last_result = "idle"
         self._attempt_id: str | None = None
         self.connected = False
+        self._dispatched = False
 
     def _output(self, task_id: str) -> MaintenanceOutput | None:
         factory = getattr(self.provider, "maintenance_output", None)
@@ -173,7 +177,7 @@ class ContinuityWorker:
         return {**status, "running": bool(self._active_task and not self._active_task.done()),
                 "enabled": self.enabled, "last_result": self._last_result,
                 "batch_exchanges": self.batch_exchanges, "idle_seconds": self.idle_seconds,
-                "max_notes": self.max_notes}
+                "max_notes": self.max_notes, "recovery_calls": self.recovery_calls}
 
     def cancel(self) -> None:
         if self._active_task and not self._active_task.done():
@@ -422,7 +426,8 @@ class ContinuityWorker:
         return [evidence[key] for key in sorted(ids)]
 
     async def _propose(self, task: dict, state: dict, *,
-                       output: MaintenanceOutput | None = None) -> list[dict]:
+                       output: MaintenanceOutput | None = None,
+                       on_dispatch: Callable[[], None] | None = None) -> list[dict]:
         chunks: list[str] = []
         size = 0
         finished = False
@@ -435,18 +440,28 @@ class ContinuityWorker:
         record = getattr(self.store, "record_request_metrics", None)
         output = output or self._output(task["id"])
         options = {"output": output} if output is not None else {}
+
+        def record_metrics(**values: Any) -> None:
+            if record and (self._attempt_id is not None or self.execution is None):
+                record(role="auxiliary", provider=getattr(
+                    getattr(self.provider, "config", None), "name", "unknown"),
+                    model=self.model, task_id=task["id"], attempt_id=self._attempt_id, **values)
+
+        # Production adapters announce dispatch after payload/credential preparation.
+        # Scripted providers without that event begin at stream consumption.
+        if on_dispatch and not getattr(self.provider, "reports_dispatch", False):
+            on_dispatch()
         try:
             async with (
                 asyncio.timeout(self.timeout),
                 aclosing(measured_stream(
                     self.provider.stream(messages, tools=None, presentation="plain", **options),
-                    record=partial(record, role="auxiliary", provider=getattr(
-                        getattr(self.provider, "config", None), "name", "unknown"),
-                        model=self.model, task_id=task["id"], attempt_id=self._attempt_id)
-                    if record else None,
+                    record=record_metrics if record else None,
                 )) as stream,
             ):
                 async for event in stream:
+                    if event.get("type") == "request" and on_dispatch:
+                        on_dispatch()
                     if event.get("type") in {"response", "token", "progress", "usage", "finish"}:
                         self.connected = True
                     if event.get("type") == "progress" and event.get("phase") == "reasoning":
@@ -486,14 +501,75 @@ class ContinuityWorker:
             raise ContinuityValidationError("Response exceeds planned tokens", code="output_plan")
         return request.compile(proposal)
 
+    def _start_attempt(self, task: dict, output: MaintenanceOutput | None) -> None:
+        if self._dispatched:
+            return
+        if self.execution is not None:
+            provenance = self.execution.provenance()
+            original_output = {key: provenance.get(key) for key in
+                               ("contract", "output_mode", "capability_source",
+                                "provider_schema_hash")}
+            if output is not None:
+                provenance.update(output.provenance())
+            contract, instructions, schema, _ = task_contract(task["id"])
+            provenance["contract"] = contract
+            provenance["prompt_hash"] = hashlib.sha256(instructions.encode()).hexdigest()
+            provenance["schema_hash"] = digest({
+                "contract": contract, "schema": schema.model_json_schema(),
+            })
+            if (task["id"].startswith(("narrative:", "review:"))
+                    or any(provenance[key] != value for key, value in original_output.items())):
+                provenance["execution_fingerprint"] = digest({
+                    "execution": provenance["execution_fingerprint"],
+                    "prompt": provenance["prompt_hash"], "schema": provenance["schema_hash"],
+                    "output": output.provenance() if output else original_output,
+                })
+            self._attempt_id = self.store.start_maintenance_attempt(
+                task["id"], provenance,
+            )
+        else:
+            self.store.record_maintenance_usage(task["id"], "continuity", called=True)
+        self._dispatched = True
+
+    def _recovery_fingerprint(self, reason_code: str | None = None) -> str:
+        # Effective inference settings exclude inventory, UI, enable/Off and batching.
+        # A route revision alone is not a relevant configuration change.
+        profile = self.execution.profile() if self.execution else getattr(
+            self.provider, "config", None)
+        settings = {"connection": {
+            key: getattr(profile, key, None) for key in ("endpoint", "headers", "api_key_ref")
+        }}
+        if reason_code != "authentication":
+            settings.update(model=getattr(profile, "model", None),
+                            parameters=getattr(profile, "parameters", {}),
+                            output_support=[entry.model_dump() for entry in
+                                            getattr(profile, "maintenance_output_support", [])])
+        if reason_code and reason_code.startswith("validation."):
+            settings.update(input_chars=self.max_input_chars, timeout=self.timeout,
+                            output_chars=self.max_output_chars,
+                            context_window=self.budget.window,
+                            timezone=self.timezone, identity=self.identity.model_dump())
+            if reason_code == "validation.input_state":
+                settings["max_notes"] = self.max_notes
+        return digest(settings)
+
     def _failed(self, task: dict, *, reason: str, reason_code: str,
                 immediate: bool = False) -> None:
         stage = task.get("stages", {}).get("continuity", {})
         attempts = stage.get("attempts", 0)
         delay = 0 if immediate else min(3600, 30 * 2 ** min(attempts, 7))
-        retry = (datetime.now(dt_timezone.utc) + timedelta(seconds=delay)).isoformat()
+        from .diagnostics import CONFIGURATION_REASONS
+        paused = reason_code in CONFIGURATION_REASONS
+        self.store.prepare_maintenance_recovery(
+            task["id"], call_limit=self.recovery_calls,
+            fingerprint=self._recovery_fingerprint(reason_code))
+        saved = self.store.get_maintenance_stage(task["id"])
+        retry = (None if paused or saved["budget"]["exhausted"] else
+                 (datetime.now(dt_timezone.utc) + timedelta(seconds=delay)).isoformat())
         self.store.fail_maintenance_stage(task["id"], "continuity", reason,
-                                          next_retry_at=retry, reason_code=reason_code)
+                                          next_retry_at=retry, reason_code=reason_code,
+                                          pause_fingerprint=self._recovery_fingerprint(reason_code)
+                                          if paused else None)
         self._last_result = reason
 
     async def run_once(self, *, force: bool = False) -> bool:
@@ -522,6 +598,14 @@ class ContinuityWorker:
             task = self.store.pending_maintenance_task(scope=self.scope, stage="continuity")
             now = datetime.now(dt_timezone.utc)
             if task:
+                if not self.store.prepare_maintenance_recovery(
+                    task["id"], call_limit=self.recovery_calls,
+                    fingerprint=self._recovery_fingerprint(
+                        (task["stages"]["continuity"].get("reason") or {}).get("code")),
+                    retry=force,
+                ):
+                    self._last_result = "recovery paused or exhausted"
+                    return False
                 stage = task.get("stages", {}).get("continuity", {})
                 retry = stage.get("next_retry_at")
                 if retry and aware_time(retry) > now and not force:
@@ -595,6 +679,13 @@ class ContinuityWorker:
                     review=review, review_key=str(self.max_notes),
                     review_task_id="review:" + str(uuid4()) if review else None,
                 )
+            if not self.store.prepare_maintenance_recovery(
+                task["id"], call_limit=self.recovery_calls,
+                fingerprint=self._recovery_fingerprint(
+                    (task["stages"]["continuity"].get("reason") or {}).get("code")),
+            ):
+                self._last_result = "recovery paused or exhausted"
+                return False
             self._task_id = task["id"]
             # The task may be from an older worker configuration. Enforce the
             # allowance again without truncating its immutable evidence set.
@@ -604,32 +695,8 @@ class ContinuityWorker:
                 self._last_result = "already claimed"
                 return False
             output = self._output(task["id"])
-            if self.execution is not None:
-                provenance = self.execution.provenance()
-                original_output = {key: provenance.get(key) for key in
-                                   ("contract", "output_mode", "capability_source",
-                                    "provider_schema_hash")}
-                if output is not None:
-                    provenance.update(output.provenance())
-                contract, instructions, schema, _ = task_contract(task["id"])
-                provenance["contract"] = contract
-                provenance["prompt_hash"] = hashlib.sha256(instructions.encode()).hexdigest()
-                provenance["schema_hash"] = digest({
-                    "contract": contract, "schema": schema.model_json_schema(),
-                })
-                if (task["id"].startswith(("narrative:", "review:"))
-                        or any(provenance[key] != value for key, value in original_output.items())):
-                    provenance["execution_fingerprint"] = digest({
-                        "execution": provenance["execution_fingerprint"],
-                        "prompt": provenance["prompt_hash"], "schema": provenance["schema_hash"],
-                        "output": output.provenance() if output else original_output,
-                    })
-                self._attempt_id = self.store.start_maintenance_attempt(
-                    task["id"], provenance,
-                )
-            else:
-                self.store.record_maintenance_usage(task["id"], "continuity", called=True)
-            operations = await self._propose(task, state, output=output)
+            operations = await self._propose(
+                task, state, output=output, on_dispatch=lambda: self._start_attempt(task, output))
             if self.commit_result is not None:
                 await self.commit_result(self.execution, self._attempt_id, task, state, operations)
             else:
@@ -694,6 +761,7 @@ class ContinuityWorker:
                 self.store.finish_maintenance_attempt(self._attempt_id, outcome,
                                                       reason_code=reason_code)
             self._attempt_id = None
+            self._dispatched = False
             self._attempt_identity = None
             self._active_task = None
             self._task_id = None

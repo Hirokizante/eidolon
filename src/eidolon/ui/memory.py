@@ -175,11 +175,20 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         parts.append(descriptions[row["status"]])
     if reason:
         parts.append(reason["explanation"])
+    budget = row.get("budget") or {}
+    if budget:
+        parts.append(f"Recovery pass {budget['pass']}: {budget['used']}/{budget['limit']} requests "
+                     f"used; {budget['remaining']} remaining.")
+        if budget.get("exhausted") and row.get("status") != "completed":
+            parts.append("Budget exhausted. Complete evidence is retained; newer evidence waits.")
+    if row.get("paused"):
+        parts.append("Requests paused until relevant settings change or an explicit Refresh.")
     if "attempts" in row and isinstance(row["attempts"], list):
         action = {
             "complete": "Complete; no retry needed.",
             "running": "Refreshing now; foreground work has priority.",
             "configure": "Check the auxiliary model in /preferences, then refresh current life.",
+            "retry_required": "Use Refresh current life to start a new bounded recovery pass.",
             "retry_scheduled": "Automatic retry after " + local_time(
                 row.get("next_retry_at"), timezone_name) + "; foreground work has priority.",
             "automatic_check": "Waiting for the next automatic maintenance check.",
@@ -658,7 +667,7 @@ class MemoryScreen(FormModal):
         if unresolved.get("total"):
             message = ("Current life needs configuration attention. Check /preferences." if
                        unresolved.get("configuration_attention") else
-                       "Current life has evidence set aside. Open Run history." if
+                       "Current life budget exhausted. Newer evidence waits. Open Run history." if
                        unresolved.get("set_aside") else
                        "Current life is recovering. Open Run history for causes and next steps.")
             self.status(message, problem=True)

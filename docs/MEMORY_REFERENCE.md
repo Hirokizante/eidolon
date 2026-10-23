@@ -209,7 +209,8 @@ completed chat exchanges until the batch threshold (default eight) or idle time
 since the latest completion (default 600 seconds). Smaller model input allowances
 can reduce a batch. Manual **Refresh current life** requests one bounded pass
 without enabling automatic updates or reply inclusion. It bypasses coalescing and
-retry delay, not source eligibility, locks, capacity, or revision checks.
+retry delay and starts a fresh bounded recovery pass for pending work. It preserves
+lifetime history and usage, source eligibility, locks, capacity, and revision checks.
 
 Inputs are oldest-first completed chat exchanges with explicit saving eligibility
 and matching scope (`real_life` for the worker). Partial, opted-out, unknown
@@ -226,7 +227,20 @@ and incomplete model streams leave the batch pending without partial note update
 or watermark advancement. Retry backoff grows from 30 seconds to one hour;
 foreground interruption permits immediate retry. Retries preserve the original
 task/evidence identity across restart while capturing current configuration and
-participant names for the new attempt.
+participant names for the new attempt. Each original batch defaults to six dispatched
+requests per pass (`memory.continuity_recovery_calls`, 1–100), including correction,
+rejected, interrupted, and stale requests. Planning or credential failures before
+dispatch do not count. The frozen allowance survives restart; only explicit Refresh
+starts a new pass. Settings changes do not replenish an existing pass.
+
+Recognized configuration/authentication and input-limit failures pause unchanged
+settings instead of repeatedly dispatching. A relevant configuration change makes
+the batch eligible within the remaining allowance; explicit Refresh also releases
+the pause. Exhaustion stops automatic calls and remains visible in Run history
+and the main Life indicator. Complete evidence stays retained and newer evidence
+continues to wait behind the oldest unresolved batch. See
+[bounded recovery](AUXILIARY_MODEL.md#bounded-recovery-and-configuration-pauses) for
+settings, actions, diagnostics, and the limits of this policy.
 
 Completed work is not automatically dispatched again. Legacy narrative conversion
 and over-limit capacity review can run without new exchanges; explicit refresh

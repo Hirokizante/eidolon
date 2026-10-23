@@ -78,6 +78,10 @@ FIELDS = (
     PreferenceField("continuity_batch_exchanges", "Completed exchanges per update",
                     "From 1 to 32; default 8. Larger backlogs are processed in bounded batches.",
                     "continuity", "integer"),
+    PreferenceField("continuity_recovery_calls", "Requests per recovery pass",
+                    "From 1 to 100; default 6, including the first request and corrections. "
+                    "Refresh starts a new pass; automatic retries stop when it is used up.",
+                    "continuity", "integer"),
     PreferenceField("continuity_idle_seconds", "Idle time before update",
                     "Seconds from 1 to 86400; default 600 (ten minutes).",
                     "continuity", "integer"),

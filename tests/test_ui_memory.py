@@ -1098,9 +1098,10 @@ async def test_memory_dismissal_preserves_the_conversation_reading_position():
         assert conversation.scroll_y == position
 
 
+@pytest.mark.parametrize("condition", ["recovering", "set_aside", "configuration_attention"])
 @pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
 async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_draft(
-    size, monkeypatch,
+    size, monkeypatch, condition,
 ):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("EIDOLON_ASCII", "1")
@@ -1118,13 +1119,20 @@ async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_
                     "reason": {"version": 1, "code": "validation.output_json",
                                "explanation": DIAGNOSTIC}, "exception": DIAGNOSTIC,
                 }], model_calls=2, attempt_counts={"failed": 1, "committed": 1},
-                    next_action="complete", last_successful_at="2026-10-14T04:01:00+00:00")
+                    budget={"limit": 6, "used": 6, "remaining": 0, "exhausted": True, "pass": 1},
+                    paused=condition == "configuration_attention",
+                    next_action=("configure" if condition == "configuration_attention"
+                                 else "retry_required"),
+                    last_successful_at="2026-10-14T04:01:00+00:00")
             return result
 
     client = ProblemClient()
     client.memory["continuity"]["maintenance"]["unresolved"] = {
         "recovering": 1, "configuration_attention": 0, "set_aside": 0, "total": 1,
     }
+    client.memory["continuity"]["maintenance"]["unresolved"].update(
+        recovering=int(condition == "recovering"), set_aside=int(condition == "set_aside"),
+        configuration_attention=int(condition == "configuration_attention"))
     client.memory["continuity"]["maintenance"]["automatic"] = True
     client.memory["continuity"]["maintenance"]["stages"][0]["unresolved_count"] = 1
     config = AppConfig()
@@ -1139,7 +1147,8 @@ async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_
         selection = composer.selection
         indicator = app.query_one("#service-status", Static)
         assert indicator.display and "/runs" in str(indicator.render())
-        assert "recovering" in str(indicator.render())
+        assert {"recovering": "recovering", "set_aside": "budget exhausted",
+                "configuration_attention": "check settings"}[condition] in str(indicator.render())
         await pilot.press("ctrl+p")
         await pilot.press("r", "u", "n", "s", "enter")
         await pilot.pause()
@@ -1155,6 +1164,11 @@ async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_
         assert "The model did not return a valid JSON object." in text
         assert "synthetic-small" in text and "prompt_tokens: 42" in text
         assert "3.0s" in text and "Attempt history" in text
+        assert "6/6 requests used; 0 remaining" in text
+        if condition == "configuration_attention":
+            assert "Requests paused" in text
+        else:
+            assert "new bounded recovery pass" in text
         assert "Previous version" in text and OLD_NOTE_TEXT in text
         assert DIAGNOSTIC not in text
         scroll = screen.query_one("#memory-detail-scroll", VerticalScroll)

@@ -528,3 +528,33 @@ async def test_identity_preferences_literal_drafts_resize_and_discard(
         assert app.config.identity.model_dump() == client.configuration["identity"] == names
         assert ("save_preferences", {"preferences": names}) in client.calls
         assert app.focused is composer and composer.selection == selection
+
+
+@pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
+async def test_current_life_recovery_budget_saves_by_keyboard_without_losing_draft(
+    size, monkeypatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("EIDOLON_ASCII", "1")
+    config = AppConfig()
+    client = FakeClient()
+    client.configuration = config.model_dump(mode="json")
+    app = RoomApp(config, client=client)
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.load_text("Draft 雨 café")
+        await pilot.press("alt+6")
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#preference-category", Select).value = "continuity"
+        await pilot.pause()
+        field = screen.query_one("#pref-continuity_recovery_calls", Input)
+        field.focus()
+        await pilot.press("end", "backspace", "3")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert ("save_preferences", {"preferences": {
+            "continuity_recovery_calls": 3}}) in client.calls
+        assert app.config.memory.continuity_recovery_calls == 3
+        assert app.focused is composer and composer.text == "Draft 雨 café"

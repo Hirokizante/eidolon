@@ -168,6 +168,7 @@ class RoomService:
             batch_exchanges=config.memory.continuity_batch_exchanges,
             idle_seconds=config.memory.continuity_idle_seconds,
             max_notes=config.memory.continuity_max_notes,
+            recovery_calls=config.memory.continuity_recovery_calls,
             enabled=config.memory.continuity_enabled,
             timeout=execution.timeout_seconds if execution else 60,
             max_input_chars=execution.context_chars if execution else None,
@@ -206,6 +207,7 @@ class RoomService:
                     for attribute, field in (("enabled", "continuity_enabled"),
                                              ("batch_exchanges", "continuity_batch_exchanges"),
                                              ("max_notes", "continuity_max_notes"),
+                                             ("recovery_calls", "continuity_recovery_calls"),
                                              ("idle_seconds", "continuity_idle_seconds")):
                         actual = getattr(self.continuity_worker, attribute,
                                          getattr(self._auxiliary_source.memory, field))
@@ -400,17 +402,21 @@ class RoomService:
         auxiliary = self.auxiliary_status()
         can_run = auxiliary.get("mode") != "disabled" and not auxiliary.get("configuration_error")
         automatic = self.config.memory.continuity_enabled and can_run
-        next_action = ("complete" if completed else "configure" if not can_run else
+        exhausted = row.get("budget", {}).get("exhausted", False)
+        paused = row.get("paused", False)
+        next_action = ("complete" if completed else "configure" if not can_run or paused else
+                       "retry_required" if exhausted else
                        "retry_scheduled" if automatic and row.get("next_retry_at") else
                        "automatic_check" if automatic else "refresh")
         return {**{key: row.get(key) for key in (
             "task_id", "stage", "status", "attempts", "model_calls", "attempt_counts",
-            "updated_at", "change_count", "unresolved_count",
+            "updated_at", "change_count", "unresolved_count", "budget", "paused",
         )}, "reason": None if completed else read_reason(row.get("reason")),
             "usage": safe_usage(row.get("usage")),
             "usage_totals": safe_usage(row.get("usage_totals")),
             "next_action": next_action,
-            "next_retry_at": row.get("next_retry_at") if automatic and not completed else None}
+            "next_retry_at": row.get("next_retry_at") if automatic and not (
+                completed or paused or exhausted) else None}
 
     def memory_state(self, session_id: str | None = None) -> dict:
         """Private, bounded inspection data; reading never triggers recall or retention."""

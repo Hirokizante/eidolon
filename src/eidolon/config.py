@@ -207,6 +207,7 @@ class MemoryConfig(SettingsModel):
     continuity_max_notes: int = Field(default=12, ge=1, le=64, strict=True)
     continuity_batch_exchanges: int = Field(default=8, ge=1, le=32)
     continuity_idle_seconds: int = Field(default=600, ge=1, le=86400)
+    continuity_recovery_calls: int = Field(default=6, ge=1, le=100, strict=True)
     url: str = "http://127.0.0.1:8888"
     bank: str = ""
     api_key_ref: SecretReference | None = None

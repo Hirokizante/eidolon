@@ -39,6 +39,7 @@ memory:
   continuity_max_notes: 12  # Active notes only; archived notes do not count (1–64).
   continuity_batch_exchanges: 8
   continuity_idle_seconds: 600
+  continuity_recovery_calls: 6  # total dispatched requests per pass (1–100); explicit Refresh starts a new pass
   url: http://127.0.0.1:8888
   bank: ''  # Existing bank for recall/delivery; saving can queue locally without one.
   api_key_ref: null

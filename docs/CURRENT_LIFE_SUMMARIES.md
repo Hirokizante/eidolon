@@ -263,7 +263,8 @@ storage tests cover these outcomes; no live-model reliability rate is establishe
 A quiet Life indicator near the composer points to `/runs` while an unresolved
 condition needs retry or configuration attention. `/runs` and `/memory` →
 Current life → Run history show safe per-attempt explanations alongside model,
-timing, available usage, next action/time, last success, and saved note comparisons.
+timing, available usage, recovery allowance used/remaining, configuration pause,
+next action/time, last success, and saved note comparisons.
 Reasons remain visible after a later retry succeeds. Older attempts with no
 recorded reason say so; unknown usage is never shown as zero. See the
 [auxiliary failure guide](AUXILIARY_MODEL.md#diagnose-and-recover) for diagnostic
@@ -283,7 +284,12 @@ for complete response shapes.
 A missing or invalid `op` produces specific correction instructions for the next
 retry, including after a service restart. Unknown fields and invalid evidence still
 reject the whole proposal. Failed attempts preserve the pending batch, existing
-notes and watermark. Diagnostics use application-owned text; raw model output and
+notes and watermark. A pass defaults to six dispatched auxiliary calls. After
+exhaustion, automatic calls stop and newer evidence still waits; explicit Refresh
+starts a fresh bounded pass with lifetime history intact. Recognized configuration
+failures pause unchanged settings until a relevant change or explicit Refresh.
+See [bounded recovery](AUXILIARY_MODEL.md#bounded-recovery-and-configuration-pauses).
+Diagnostics use application-owned text; raw model output and
 arbitrary schema error details are not persisted or replayed as instructions.
 Responses stopped by the provider's token limit are reported as output-token
 exhaustion, separately from connection failures. Auxiliary settings allow up to
