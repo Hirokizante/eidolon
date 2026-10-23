@@ -43,6 +43,26 @@ class ModelClient(FakeClient):
         return await super().request(method, **params)
 
 
+@pytest.fixture
+def form_layout_ready(monkeypatch) -> asyncio.Event:
+    """Observe the real focus reveal and its refresh after composer anchoring."""
+    ready = asyncio.Event()
+    reveal_focus = FormModal.reveal_focus
+
+    def observe_reveal(screen: FormModal) -> None:
+        reveal_focus(screen)
+        if ready.is_set() or screen.focused is None:
+            return
+        composer = screen.app.screen_stack[0].query_one(Composer)
+        dialog = screen.query_one(".form-dialog")
+        if dialog.region.bottom == composer.region.y:
+            # scroll_y changes immediately; widget regions update on the next refresh.
+            screen.call_after_refresh(ready.set)
+
+    monkeypatch.setattr(FormModal, "reveal_focus", observe_reveal)
+    return ready
+
+
 def test_new_commands_are_discoverable():
     assert find_command("connect").description
     assert find_command("models").description
@@ -99,7 +119,7 @@ async def test_models_command_switches_provider_profile():
 ])
 @pytest.mark.parametrize("size", [(80, 24), (60, 24), (48, 12)])
 async def test_provider_menus_open_before_service_requests_complete(
-    command, screen_type, size, monkeypatch,
+    command, screen_type, size, monkeypatch, form_layout_ready,
 ):
     config = AppConfig(memory={"enabled": True, "save_enabled": True, "bank": "hermes"}, providers=[ProviderConfig(model="alpha", models=["alpha", "cached-model"])])
     client = ModelClient()
@@ -127,9 +147,7 @@ async def test_provider_menus_open_before_service_requests_complete(
         assert worker.is_finished
         assert not gate.is_set()
         assert not screen.loading
-        # CPU-idle pause is bounded and can expire during CI layout work.
-        # Drain scheduled screen work while discovery is still blocked.
-        await pilot.wait_for_scheduled_animations()
+        await asyncio.wait_for(form_layout_ready.wait(), timeout=5)
         field = app.focused
         visible_field = screen.get_widget_at(*field.region.center)[0]
         assert visible_field is field or field in visible_field.ancestors, (
@@ -152,6 +170,58 @@ async def test_provider_menus_open_before_service_requests_complete(
         await pilot.pause()
         assert app.focused is composer
         assert composer.text == "next message"
+
+
+async def test_pending_model_filter_waits_for_anchored_reveal_refresh(
+    monkeypatch, form_layout_ready,
+):
+    """Hold the real deferred reveal after the dialog shrinks to its final layout."""
+    config = AppConfig(providers=[ProviderConfig(model="alpha", models=["alpha", "cached-model"])])
+    client = ModelClient()
+    client.configuration = config.model_dump(mode="json")
+    app = RoomApp(config, client=client)
+    reached, release, discovery = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    reveal_focus = ModelScreen.reveal_focus
+
+    async def held_reveal(screen: ModelScreen) -> None:
+        if not reached.is_set() and screen.query_one(".form-body").region.height == 1:
+            reached.set()
+            await release.wait()
+        reveal_focus(screen)
+
+    monkeypatch.setattr(ModelScreen, "reveal_focus", held_reveal)
+    async with app.run_test(size=(48, 12)) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.load_text("next message")
+        request = client.request
+
+        async def delayed_request(method, **params):
+            if method == "list_models":
+                await discovery.wait()
+            return await request(method, **params)
+
+        monkeypatch.setattr(client, "request", delayed_request)
+        worker = app.execute_command("/models")
+        try:
+            await asyncio.wait_for(reached.wait(), timeout=5)
+            screen = app.screen
+            field = screen.query_one("#model-filter", Input)
+            assert worker.is_finished and app.focused is field
+            assert not discovery.is_set() and not screen.loading
+            assert not form_layout_ready.is_set()
+        finally:
+            release.set()
+        await asyncio.wait_for(form_layout_ready.wait(), timeout=5)
+        body = screen.query_one(".form-body")
+        visible_field = screen.get_widget_at(*field.region.center)[0]
+        assert field.region.overlaps(body.region)
+        assert visible_field is field or field in visible_field.ancestors, (
+            field.region, body.region, body.scroll_y, visible_field,
+        )
+        assert not discovery.is_set()
+        await pilot.press("escape")
+        assert app.focused is composer and composer.text == "next message"
 
 
 @pytest.mark.parametrize("command,screen_type", [
@@ -181,7 +251,9 @@ async def test_model_commands_preserve_composer_and_prompt_drafts(command, scree
 
 @pytest.mark.parametrize("command", ["models", "connect"])
 @pytest.mark.parametrize("size", [(100, 32), (80, 24), (60, 24), (48, 12)])
-async def test_provider_menus_keep_chat_composer_and_flat_controls_visible(command, size):
+async def test_provider_menus_keep_chat_composer_and_flat_controls_visible(
+    command, size, form_layout_ready,
+):
     app = RoomApp(AppConfig(memory={"enabled": True, "save_enabled": True, "bank": "hermes"}), client=ModelClient())
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
@@ -189,6 +261,7 @@ async def test_provider_menus_keep_chat_composer_and_flat_controls_visible(comma
         composer.load_text("a draft")
         app.execute_command("/" + command)
         await pilot.pause()
+        await asyncio.wait_for(form_layout_ready.wait(), timeout=5)
         screen = app.screen
         dialog = screen.query_one(".form-dialog")
         body = screen.query_one(".form-body")
