@@ -211,7 +211,8 @@ reply path. For the separate image analyst, see [Providers](PROVIDERS.md#use-ima
 `/memory` → **Current life** shows refresh status and actionable notices. Choose
 **Run history**, then Enter on a run, to review its outcome and saved note changes.
 `/runs` opens Run history directly, and Ctrl+P lists the same command. A quiet
-**Life: recovering**, **Life: needs retry**, or **Life: check settings** indicator
+**Life: recovering**, **Life: needs retry**, **Life: budget exhausted**, or
+**Life: check settings** indicator
 near the composer appears while maintenance has unresolved trouble. It remains
 visible even when optional service-status components are hidden. Automatic work
 never adds retry messages to chat or moves focus.
@@ -220,7 +221,8 @@ Run details show each retained attempt's safe cause, effective model, start/end
 time, duration, and numeric usage when the provider supplies it. They also show
 aggregate outcomes, recorded usage across attempts, the next action or earliest
 automatic retry time, last successful maintenance, and existing before/after note
-comparisons. Unknown usage stays unavailable; recorded totals exclude unknown
+comparisons. Recovery details include the pass number, request limit, used and
+remaining calls, exhaustion, and whether requests are paused. Unknown usage stays unavailable; recorded totals exclude unknown
 usage and should not be treated as complete billing totals. Foreground work can
 delay a scheduled retry beyond the displayed time. With automatic updates off,
 use **Refresh current life** after correcting settings.
@@ -229,9 +231,45 @@ A successful retry preserves earlier failed attempts. Warnings represent all
 unresolved conditions, so a newer success clears only the condition it resolves.
 Runs with unresolved conditions appear first in Run history, even when their
 continuity update finished. An unrelated older failure remains visible. Connection/configuration warnings
-are distinct from Hindsight readiness. This diagnostics slice preserves the
-existing retry policy: it does not introduce recovery budgets, set-aside batches,
-or progress past the oldest unresolved evidence.
+are distinct from Hindsight readiness.
+
+### Bounded recovery and configuration pauses
+
+In Preferences → Current life, **Requests per recovery pass** defaults to six
+(`memory.continuity_recovery_calls`, integer 1–100). This is the total dispatched
+auxiliary allowance for one original batch, including its first request,
+corrections, provider rejections, and interrupted or stale dispatched calls.
+Future split-child requests must share this original allowance. Requests that
+fail local planning or credential preparation before dispatch consume no call.
+The pass limit and consumed calls persist across service restarts. Changing the
+limit affects new batches and explicit retries; it does not enlarge a current pass.
+
+Malformed or invalid proposals receive application-owned correction feedback.
+Transient provider failures, timeouts, rate/credit limits, and incomplete output
+use delayed retries, bounded by the same allowance. Input limits and recognized
+configuration/authentication failures pause requests. These keep a safe reason
+and no scheduled retry time. A relevant effective configuration change makes the
+batch eligible with its remaining allowance; it never grants new calls. Model or
+output changes do not release an authentication pause on an unchanged connection.
+Changing an enable/use switch, batching/idle setting, UI preference, or restarting
+cannot release a configuration pause or replenish the budget. If a credential's
+value changes behind the same saved reference, use explicit Refresh to retry.
+
+**Refresh current life** explicitly starts a fresh bounded pass for pending work,
+bypassing the prior pause or delay while retaining lifetime request counts,
+usage, reasons, and attempt history. It does not enable automatic updates, change
+reply inclusion, select another model, raise token/context limits, or bypass
+Auxiliary Off. An interrupted dispatched call still counts, including one found
+running after a service restart.
+
+Once allowance is exhausted, automatic requests stop. Run history explains
+**Budget exhausted**, and the main indicator points to `/runs`. The diagnostic
+`set_aside` count includes these exhausted batches. Complete evidence, valid
+notes, and the input watermark remain intact. **Newer evidence still waits behind
+this batch**: progress past gaps, splitting, and a shared daily backlog allowance
+are separate work and are not implemented here. Refresh is the explicit way to
+request another bounded pass. An exhausted batch needs that action even after a
+relevant settings change.
 
 `uv run eidolon doctor` reports auxiliary routing separately from Hindsight
 connectivity. With the service running, it also includes maintenance diagnostics:
@@ -383,7 +421,13 @@ unresolved conditions, and note comparisons; `maintenance_attempts` returns the
 same safe attempt representation. Unknown reasons and usage are null. Attempt
 reasons survive restarts. Aggregate outcome and usage counts survive pruning;
 individual attempt details do not.
-The `set_aside` count is zero under the current retry policy.
+Each stage includes `budget` (`limit`, `used`, `remaining`, `exhausted`, `pass`)
+and `paused`. A paused stage exposes its safe `reason` and `configure` action;
+an exhausted stage uses `retry_required`. Neither has a scheduled retry time.
+Schema v11 persists the limit, pass boundary, and relevant-configuration pause
+fingerprint. Upgraded lifetime call counts consume the initial allowance; an
+upgrade cannot mint a fresh budget. Fingerprints are private hashes and are not
+included in service-facing diagnostics.
 
 Raw prompts, proposals, responses, arbitrary exception text, credentials, URLs,
 and full provenance are excluded from failure details. Reasons come from a

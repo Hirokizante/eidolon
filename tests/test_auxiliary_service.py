@@ -430,7 +430,10 @@ async def test_attempt_history_is_bounded_and_aggregates_survive_pruning(tmp_pat
         s.store.complete_turn(s.current_session["id"], "Synthetic project.", "Acknowledged.")
         task = s.store.create_maintenance_task(s.store.continuity_inputs(), expected_revision=0,
                                                control_revision=0)
-        for _ in range(105):
+        for index in range(105):
+            if index % 6 == 0:
+                s.store.prepare_maintenance_recovery(
+                    task["id"], call_limit=6, fingerprint="synthetic", retry=index > 0)
             attempt = s.store.start_maintenance_attempt(task["id"], s._auxiliary_execution.provenance())
             s.store.record_maintenance_usage(task["id"], usage={"prompt_tokens": 10}, attempt_id=attempt)
             s.store.record_maintenance_usage(task["id"], usage={"prompt_tokens": 12}, attempt_id=attempt)
@@ -815,7 +818,8 @@ async def test_hostile_provider_bodies_never_become_maintenance_diagnostics(
         detail = await client.request("memory_continuity_run", task_id=task_id)
         assert detail["attempts"][0]["reason"]["code"] == code
         assert detail["reason"]["code"] == code
-        assert detail["next_action"] == "refresh"  # Automatic maintenance is off.
+        assert detail["next_action"] == ("configure" if condition == "configuration_attention"
+                                         else "refresh")
         assert detail["next_retry_at"] is None
         attempts = await client.request("maintenance_attempts", task_id=task_id)
         assert hostile not in json.dumps([status, detail, attempts])
@@ -893,7 +897,7 @@ async def test_v9_history_upgrade_keeps_missing_causes_unknown(tmp_path, monkeyp
             s.store.db.execute("PRAGMA user_version=9")
     reopened = Store(path)
     try:
-        assert reopened.migration_backup_path and ".pre-v10-" in str(reopened.migration_backup_path)
+        assert reopened.migration_backup_path and ".pre-v11-" in str(reopened.migration_backup_path)
         assert reopened.maintenance_attempts(task["id"])[0]["reason"] is None
         stage = reopened.get_maintenance_stage(task["id"])
         assert stage["reason"] is None

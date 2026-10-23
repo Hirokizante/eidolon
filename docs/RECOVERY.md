@@ -67,9 +67,9 @@ configuration and jobs part of the same snapshot.
 ## Automatic SQLite snapshots
 
 The current [Store](../src/eidolon/storage/store.py) accepts schema versions up to
-10 and refuses unknown newer versions. Before upgrading an existing nonempty
+11 and refuses unknown newer versions. Before upgrading an existing nonempty
 older database, it takes a SQLite backup including committed WAL data. The normal
-path is `backups/room.sqlite3.pre-v10-<UTC timestamp>.sqlite3` beside the database.
+path is `backups/room.sqlite3.pre-v11-<UTC timestamp>.sqlite3` beside the database.
 Snapshots have mode `0600` in a `0700` directory. A database under a Git checkout
 uses a private temporary backup directory instead; that fallback does not make
 in-checkout runtime state acceptable. An already current database or an empty

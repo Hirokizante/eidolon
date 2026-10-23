@@ -44,11 +44,11 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 10:
+        if version > 11:
             self.db.close()
             raise ValueError("This database requires a newer Eidolon version")
         self.migration_backup_path: Path | None = None
-        if version < 10 and self.db.execute(
+        if version < 11 and self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone():
             # SQLite's backup API captures a consistent snapshot, including WAL
@@ -59,7 +59,7 @@ class Store:
             backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_dir.chmod(0o700)
             stamp = datetime.now(dt_timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v10-{stamp}.sqlite3"
+            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v11-{stamp}.sqlite3"
             with sqlite3.connect(self.migration_backup_path) as backup:
                 self.db.backup(backup)
             self.migration_backup_path.chmod(0o600)
@@ -210,6 +210,16 @@ class Store:
             for column in ("usage_totals", "committed_execution"):
                 if column not in stage_columns:
                     self.db.execute(f"ALTER TABLE maintenance_stages ADD COLUMN {column} TEXT")
+            # Existing lifetime calls count toward the first bounded pass on upgrade.
+            for column, declaration in (
+                ("recovery_limit", "INTEGER"),
+                ("pass_start_calls", "INTEGER NOT NULL DEFAULT 0"),
+                ("recovery_pass", "INTEGER NOT NULL DEFAULT 1"),
+                ("pause_fingerprint", "TEXT"),
+            ):
+                if column not in stage_columns:
+                    self.db.execute(
+                        f"ALTER TABLE maintenance_stages ADD COLUMN {column} {declaration}")
             attempt_columns = {row["name"] for row in self.db.execute(
                 "PRAGMA table_info(maintenance_attempts)"
             )}
@@ -249,7 +259,7 @@ class Store:
                     "UPDATE outbox SET review_state='pending' WHERE status!='completed' "
                     "AND generation_id IN (SELECT id FROM generations WHERE memory_eligible IS NULL)"
                 )
-            self.db.execute("PRAGMA user_version=10")
+            self.db.execute("PRAGMA user_version=11")
         self.db.commit()
         self.path.chmod(0o600)
 
@@ -884,6 +894,13 @@ class Store:
             result[key] = json.loads(result[key]) if result.get(key) else None
         result["attempt_counts"] = result["attempt_counts"] or {}
         result["reason"] = read_reason(result["reason"])
+        limit = result.get("recovery_limit")
+        limit = limit if limit is not None else 6
+        used = result.get("model_calls", 0) - result.get("pass_start_calls", 0)
+        result["budget"] = {"limit": limit, "used": used,
+                            "remaining": max(0, limit - used), "exhausted": used >= limit,
+                            "pass": result.get("recovery_pass", 1)}
+        result["paused"] = bool(result.get("pause_fingerprint"))
         return result
 
     def get_maintenance_stage(self, task_id: str, stage: str = "continuity") -> dict | None:
@@ -1032,9 +1049,39 @@ class Store:
             # jump to newer evidence while a failed batch still needs retry.
             return self._maintenance_task(row["id"]) if row else None
 
+    def prepare_maintenance_recovery(self, task_id: str, *, call_limit: int,
+                                     fingerprint: str, retry: bool = False) -> bool:
+        """Freeze a pass's allowance; only explicit retry can start another pass.
+
+        Lifetime counters are never reset. Future split children must dispatch
+        against their original task's allowance rather than preparing a new one.
+        """
+        if type(call_limit) is not int or not 1 <= call_limit <= 100:
+            raise ValueError("Recovery call limit must be an integer from 1 to 100")
+        with self._lock, self.db:
+            row = self.get_maintenance_stage(task_id)
+            if row is None or row["status"] == "completed":
+                return False
+            if retry:
+                self.db.execute(
+                    "UPDATE maintenance_stages SET recovery_limit=?,pass_start_calls=model_calls,"
+                    "recovery_pass=recovery_pass+1,pause_fingerprint=NULL,next_retry_at=NULL "
+                    "WHERE task_id=? AND stage='continuity'", (call_limit, task_id),
+                )
+            else:
+                self.db.execute(
+                    "UPDATE maintenance_stages SET recovery_limit=coalesce(recovery_limit,?),"
+                    "pause_fingerprint=CASE WHEN pause_fingerprint!=? THEN NULL "
+                    "ELSE pause_fingerprint END WHERE task_id=? AND stage='continuity'",
+                    (call_limit, fingerprint, task_id),
+                )
+            row = self.get_maintenance_stage(task_id)
+            return not row["paused"] and not row["budget"]["exhausted"]
+
     def fail_maintenance_stage(self, task_id: str, stage: str, error: str,
                                 next_retry_at: str | None = None, *,
-                                reason_code: str | None = None) -> None:
+                                reason_code: str | None = None,
+                                pause_fingerprint: str | None = None) -> None:
         from ..memory.diagnostics import safe_reason
         if stage not in {"continuity", "summary", "reflection"}:
             raise ValueError("Invalid maintenance stage")
@@ -1043,10 +1090,11 @@ class Store:
             self._maintenance_task(task_id)
             self.db.execute(
                 "UPDATE maintenance_stages SET status='failed',attempts=attempts+1,error=?,"
-                "next_retry_at=?,updated_at=?,reason=? WHERE task_id=? AND stage=? "
+                "next_retry_at=?,updated_at=?,reason=?,pause_fingerprint=? "
+                "WHERE task_id=? AND stage=? "
                 "AND status!='completed'",
                 (str(error)[:1000], retry_at, utc_now(), json.dumps(safe_reason(reason_code)),
-                 task_id, stage),
+                 pause_fingerprint, task_id, stage),
             )
 
     def maintenance_status(self, scope: str = "real_life") -> dict:
@@ -1087,7 +1135,7 @@ class Store:
             unresolved = {"recovering": 0, "configuration_attention": 0, "set_aside": 0}
             from ..memory.diagnostics import problem_state, read_reason
             for row in self.db.execute(
-                "SELECT coalesce(s.reason,a.reason) FROM maintenance_stages s "
+                "SELECT coalesce(s.reason,a.reason),s.* FROM maintenance_stages s "
                 "JOIN maintenance_tasks t ON t.id=s.task_id "
                 "LEFT JOIN maintenance_attempts a ON a.id=(SELECT id FROM maintenance_attempts "
                 "WHERE task_id=s.task_id AND stage=s.stage "
@@ -1095,7 +1143,11 @@ class Store:
                 "WHERE t.scope=? AND (s.status='failed' OR "
                 "s.status='pending' AND a.outcome='interrupted')", (scope,),
             ):
-                unresolved[problem_state(read_reason(json.loads(row[0]) if row[0] else None))] += 1
+                saved = self._stage_row(row)
+                condition = ("configuration_attention" if saved["paused"] else
+                             "set_aside" if saved["budget"]["exhausted"] else
+                             problem_state(read_reason(json.loads(row[0]) if row[0] else None)))
+                unresolved[condition] += 1
             unresolved["total"] = sum(unresolved.values())
             successful = self.db.execute(
                 "SELECT max(s.updated_at) FROM maintenance_stages s JOIN maintenance_tasks t "
@@ -1182,6 +1234,9 @@ class Store:
                 raise ValueError("Maintenance stage is missing")
             if status["status"] == "completed":
                 raise ValueError("Maintenance stage is already completed")
+            recovery = self.get_maintenance_stage(task_id, stage)
+            if recovery["paused"] or recovery["budget"]["exhausted"]:
+                raise ValueError("Maintenance recovery is paused or exhausted")
             attempt_id = str(uuid.uuid4())
             self.db.execute(
                 "INSERT INTO maintenance_attempts(id,task_id,stage,provenance,started_at,outcome) "
@@ -1268,6 +1323,10 @@ class Store:
                 raise ValueError("Maintenance usage must contain bounded numeric counts")
         with self._lock, self.db:
             self._maintenance_task(task_id)
+            if called:
+                recovery = self.get_maintenance_stage(task_id, stage)
+                if recovery is None or recovery["paused"] or recovery["budget"]["exhausted"]:
+                    raise ValueError("Maintenance recovery is paused or exhausted")
             if usage and attempt_id:
                 attempt = self.get_maintenance_attempt(attempt_id)
                 if not attempt or attempt["task_id"] != task_id or attempt["stage"] != stage:

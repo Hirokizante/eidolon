@@ -37,7 +37,7 @@ def test_upgrade_removes_output_paths_and_preserves_runs_results_and_files(tmp_p
             assert all("note_path" not in run for run in runs.values())
             assert upgraded.job_cursor("daily") == stamp
             assert not upgraded.db.execute("PRAGMA foreign_key_check").fetchall()
-            assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 10
+            assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 11
             assert existing.read_text() == "Existing output remains private."
         finally:
             upgraded.close()
@@ -312,7 +312,7 @@ def test_request_schema_upgrade_preserves_history_and_exact_body_after_restart(t
         provider="test", model="test", user_message="🌸", method="POST",
         endpoint="http://localhost/v1/chat/completions", body=raw,
     )
-    assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 10
+    assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 11
     assert "body" not in upgraded.list_model_requests(session)[0]
     assert [message["content"] for message in upgraded.list_messages(session)] == [
         "Original question", "Original answer"]
@@ -337,7 +337,7 @@ def test_outbox_retry_migration_preserves_payload_and_identity(tmp_path):
         store = Store(path)
         upgraded = store.pending_outbox()[0]
         assert upgraded == {**original, "next_retry_at": None}
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert not store.db.execute("PRAGMA foreign_key_check").fetchall()
         store.close()
 

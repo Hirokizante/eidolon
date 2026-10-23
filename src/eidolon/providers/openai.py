@@ -35,6 +35,9 @@ class ProviderOutputLimitError(ProviderError):
 
 
 class OpenAIProvider:
+    # The request event is emitted after local preparation, immediately before send.
+    reports_dispatch = True
+
     def __init__(self, config: Any, *, credential_resolver: Callable | None = None,
                  client: httpx.AsyncClient | None = None, timeout: float = 90,
                  stream_usage: bool = True,
