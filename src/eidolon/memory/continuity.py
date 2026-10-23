@@ -742,6 +742,8 @@ def validate_source_chronology(operation: dict, item: dict | None, *,
             and not operation.get("replaces_item_id")):
         return
     anchors = [item.get("topic", "")]
+    if item.get("content"):
+        anchors.append(item["content"])
     prior = []
     for source in item.get("sources", []):
         row = rows.get(source["exchange_id"])
@@ -751,7 +753,8 @@ def validate_source_chronology(operation: dict, item: dict | None, *,
         prior.append((source, row, original))
         for sentence in re.split(r"(?<=[.!?])\s+|\n+", original):
             for clause in _subject_clauses(sentence):
-                if same_topic(clause, anchors[0]):
+                if (same_topic(clause, item.get("topic", ""))
+                        or same_topic(clause, item.get("content", ""))):
                     anchors.append(clause)
 
     def relevant(original: str) -> bool:

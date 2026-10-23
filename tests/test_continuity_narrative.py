@@ -90,6 +90,29 @@ async def test_cohesive_summary_combines_speakers_without_echoing_long_originals
     assert context.manifest["entries"][0]["sources"] == item["sources"]
 
 
+@pytest.mark.parametrize("update,summary", [
+    ("My interview is scheduled for Friday.", "The user's interview is scheduled for Friday."),
+    ("The hiring panel scheduled a meeting for Friday.",
+     "The user has a Friday meeting with the hiring panel."),
+])
+async def test_chronology_uses_content_when_topic_has_no_tokens_in_original(store, update, summary):
+    first = add(store, "My interview with the hiring panel is tomorrow.",
+                metadata={"user_message_at": "2026-10-14T03:00:00+08:00"})
+    initial = narrative(first, "The interview is approaching.", topic="Career milestone")
+    assert await ContinuityWorker(store, Provider(result=proposal(initial))).run_once(force=True)
+    item = store.continuity_state()["items"][0]
+    second = add(store, update,
+                 metadata={"user_message_at": "2026-10-15T03:00:00+08:00"})
+    changed = narrative(second, summary, topic=item["topic"], item_id=item["id"],
+                        expected_revision=item["revision"])
+
+    assert await ContinuityWorker(store, Provider(result=proposal(changed))).run_once(force=True)
+    saved = store.get_continuity_item(item["id"])
+    assert saved["content"] == summary
+    assert saved["revision"] == item["revision"] + 1
+    assert store.pending_maintenance_task() is None
+
+
 async def test_updates_rebuild_from_original_support_and_keep_one_topic(store):
     first = add(store)
     initial = narrative(first)
