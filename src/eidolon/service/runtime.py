@@ -403,8 +403,12 @@ class RoomService:
         auxiliary = self.auxiliary_status()
         can_run = auxiliary.get("mode") != "disabled" and not auxiliary.get("configuration_error")
         automatic = self.config.memory.continuity_enabled and can_run
-        exhausted = row.get("set_aside") or row.get("budget", {}).get("exhausted", False)
-        paused = row.get("paused", False)
+        split = row.get("split") or {}
+        unfinished = split.get("unresolved", 0)
+        exhausted = (row.get("set_aside") or row.get("budget", {}).get("exhausted", False)
+                     or unfinished and split.get("retained") == unfinished)
+        paused = row.get("paused", False) or bool(
+            unfinished and split.get("paused") == unfinished)
         next_action = ("complete" if completed else "configure" if not can_run or paused else
                        "retry_required" if exhausted else
                        "retry_scheduled" if automatic and row.get("next_retry_at") else
@@ -412,7 +416,9 @@ class RoomService:
         return {**{key: row.get(key) for key in (
             "task_id", "stage", "status", "attempts", "model_calls", "attempt_counts",
             "updated_at", "change_count", "unresolved_count", "budget", "paused", "set_aside",
+            "root_id", "split",
         )}, "reason": None if completed else read_reason(row.get("reason")),
+            "paused": paused,
             "usage": safe_usage(row.get("usage")),
             "usage_totals": safe_usage(row.get("usage_totals")),
             "next_action": next_action,

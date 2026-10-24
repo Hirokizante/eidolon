@@ -600,6 +600,19 @@ class ContinuityWorker:
             task = (self.store.get_maintenance_task(retry_task_id) if retry_task_id else
                     self.store.pending_maintenance_task(scope=self.scope, stage="continuity",
                                                         include_retained=force))
+            force_retry_prepared = False
+            if task and task["stages"]["continuity"]["status"] == "split":
+                if force:
+                    self.store.prepare_maintenance_recovery(
+                        task["id"], call_limit=self.recovery_calls,
+                        fingerprint=self._recovery_fingerprint(), retry=True)
+                    force_retry_prepared = True
+                # A nested split is resolved to a leaf below without requesting
+                # or charging the superseded parent's original evidence again.
+                while task and task["stages"]["continuity"]["status"] == "split":
+                    task = next((self.store.get_maintenance_task(row["task_id"])
+                                 for row in self.store.maintenance_split(task["id"])["children"]
+                                 if row["status"] != "completed"), None)
             # Recheck configuration-paused work after relevant settings change.
             if task is None and not force:
                 for retained in self.store.retained_maintenance_tasks(scope=self.scope):
@@ -616,7 +629,7 @@ class ContinuityWorker:
                     task["id"], call_limit=self.recovery_calls,
                     fingerprint=self._recovery_fingerprint(
                         (task["stages"]["continuity"].get("reason") or {}).get("code")),
-                    retry=force,
+                    retry=force and not force_retry_prepared,
                 ):
                     self._last_result = "recovery paused or exhausted"
                     return False
@@ -772,6 +785,24 @@ class ContinuityWorker:
             if self._attempt_id is not None:
                 self.store.finish_maintenance_attempt(self._attempt_id, outcome,
                                                       reason_code=reason_code)
+            if task and reason_code and reason_code.startswith("validation."):
+                # One precise correction precedes subdivision. Input/response
+                # planning failures can split without paying for a futile call.
+                # Reviews and legacy conversions keep their whole dependency set.
+                saved = self.store.get_maintenance_task(task["id"])
+                stage = saved["stages"]["continuity"]
+                splittable = reason_code not in {
+                    "validation.evidence_changed", "validation.input_overhead",
+                    "validation.input_state",
+                }
+                if splittable and (stage["attempts"] >= 2 or reason_code in {
+                    "validation.input_limit", "validation.output_budget",
+                }):
+                    children = self.store.split_maintenance_task(task["id"])
+                    if children:
+                        self._last_result = "split into smaller complete-exchange groups"
+                    elif saved.get("parent_id") and len(saved["inputs"]) == 1:
+                        self.store.retain_maintenance_task(task["id"])
             self._attempt_id = None
             self._dispatched = False
             self._attempt_identity = None

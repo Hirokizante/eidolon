@@ -29,6 +29,7 @@ CATEGORIES = (("Reply context", "replies"), ("Current life", "continuity"))
 RUN_STATES = {
     "pending": "Waiting", "running": "Refreshing", "completed": "Finished",
     "failed": "Needs retry", "interrupted": "Paused", "stale": "Waiting",
+    "split": "Smaller groups",
 }
 
 
@@ -124,7 +125,7 @@ def run_state(row: dict) -> str:
 def run_summary(row: dict) -> str:
     summary = "Set aside" if row.get("set_aside") else run_state(row)
     count = row.get("change_count")
-    if row.get("status") == "completed" and type(count) is int:
+    if row.get("status") == "completed" and type(count) is int and not row.get("split"):
         summary += (" · No changes" if count == 0 else
                     f" · {count} {'note' if count == 1 else 'notes'} updated")
     if row.get("status") == "completed" and row.get("unresolved_count"):
@@ -175,6 +176,15 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         parts.append(descriptions[row["status"]])
     if reason:
         parts.append(reason["explanation"])
+    split = row.get("split")
+    if split:
+        parts.append(f"Smaller groups: {split['completed']} complete; "
+                     f"{split['unresolved']} unresolved. "
+                     "All groups share the original batch's recovery budget. "
+                     "Completed groups will not be applied again. "
+                     "Each group has its own entry in Run history.")
+    elif row.get("root_id") and row["root_id"] != row.get("task_id"):
+        parts.append("This group shares the original batch's recovery budget.")
     budget = row.get("budget") or {}
     if budget:
         parts.append(f"Recovery pass {budget['pass']}: {budget['used']}/{budget['limit']} requests "
@@ -249,7 +259,9 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
     if "changes" not in row:
         parts.append("Note updates have not been loaded yet.")
     elif not row["changes"]:
-        parts.append("No notes were changed by this run." if row.get("status") == "completed"
+        parts.append("Note changes are recorded in the smaller groups' Run history entries."
+                     if split else
+                     "No notes were changed by this run." if row.get("status") == "completed"
                      else "No note updates have been saved by this run.")
     for index, change in enumerate(row.get("changes", []), 1):
         after, before = change["after"], change.get("before")
