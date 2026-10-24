@@ -602,13 +602,14 @@ class ContinuityWorker:
                                                         include_retained=force))
             # Recheck configuration-paused work after relevant settings change.
             if task is None and not force:
-                retained = self.store.pending_maintenance_task(scope=self.scope)
-                if retained and self.store.prepare_maintenance_recovery(
-                    retained["id"], call_limit=self.recovery_calls,
-                    fingerprint=self._recovery_fingerprint(
-                        (retained["stages"]["continuity"].get("reason") or {}).get("code")),
-                ):
-                    task = retained
+                for retained in self.store.retained_maintenance_tasks(scope=self.scope):
+                    if self.store.prepare_maintenance_recovery(
+                        retained["id"], call_limit=self.recovery_calls,
+                        fingerprint=self._recovery_fingerprint(
+                            (retained["stages"]["continuity"].get("reason") or {}).get("code")),
+                    ):
+                        task = retained
+                        break
             now = datetime.now(dt_timezone.utc)
             if task:
                 if not self.store.prepare_maintenance_recovery(

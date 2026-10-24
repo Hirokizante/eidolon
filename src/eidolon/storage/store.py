@@ -1113,6 +1113,18 @@ class Store:
             # Cooldown still belongs to the active pass; retained work is separate.
             return self._maintenance_task(row["id"]) if row else None
 
+    def retained_maintenance_tasks(self, scope: str = "real_life") -> list[dict]:
+        """List unfinished retained continuity tasks in evidence order."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT t.id FROM maintenance_tasks t JOIN maintenance_stages s ON s.task_id=t.id "
+                "WHERE t.scope=? AND s.stage='continuity' AND s.status IN ('pending','failed') "
+                "AND (s.set_aside=1 OR "
+                "s.model_calls-s.pass_start_calls>=coalesce(s.recovery_limit,6)) "
+                "ORDER BY t.input_watermark,t.id", (scope,),
+            ).fetchall()
+            return [self._maintenance_task(row["id"]) for row in rows]
+
     def prepare_maintenance_recovery(self, task_id: str, *, call_limit: int,
                                      fingerprint: str, retry: bool = False) -> bool:
         """Freeze a pass's allowance; only explicit retry can start another pass.
