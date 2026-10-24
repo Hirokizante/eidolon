@@ -51,7 +51,7 @@ async def test_default_budget_exhausts_and_manual_retry_keeps_history(tmp_path, 
         original = service.store.pending_maintenance_task()["inputs"]
         service.store.complete_turn(service.current_session["id"], "A newer subject.", "Okay.")
         await automatic(service, provider)
-        assert len(provider.calls) == 6
+        assert len(provider.calls) == 7  # New evidence has its own initial allowance.
         assert service.store.continuity_state()["watermark"] == 0
         assert service.store.pending_maintenance_task()["inputs"] == original
 
@@ -254,8 +254,11 @@ async def test_foreground_interruption_consumes_last_call_and_preserves_notes(
         assert service.store.get_continuity_item(note["id"]) == note
         assert service.store.continuity_state()["watermark"] == 0
         clock.advance()
-        await automatic(service, provider)
-        assert len(provider.calls) == 1
+        newer = CompactProvider(lambda doc: {"operations": [{"op": "no_change"}]})
+        await automatic(service, newer)
+        assert len(provider.calls) == 1 and len(newer.calls) == 1
+        assert service.store.maintenance_status()["evidence"] == {"processed": 1, "unresolved": 1}
+        assert service.store.get_continuity_item(note["id"]) == note
 
 
 async def test_predispatch_limit_failure_keeps_configured_budget_across_restart(
@@ -312,7 +315,9 @@ async def test_stale_dispatched_result_uses_the_last_slot(tmp_path, monkeypatch,
         assert len(provider.calls) == 1
 
 
-async def test_abandoned_dispatched_call_is_interrupted_and_exhausted_on_restart(tmp_path, monkeypatch):
+async def test_abandoned_dispatched_call_is_interrupted_and_exhausted_on_restart(
+    tmp_path, monkeypatch, clock,
+):
     from eidolon.config import load_config
     from eidolon.service.runtime import RoomService
 
@@ -334,6 +339,13 @@ async def test_abandoned_dispatched_call_is_interrupted_and_exhausted_on_restart
             assert detail["attempts"][0]["outcome"] == "interrupted"
             assert detail["budget"]["remaining"] == 0
             assert detail["next_action"] == "retry_required"
+            assert restarted.maintenance_status()["unresolved"]["set_aside"] == 1
+            restarted.store.complete_turn(restarted.current_session["id"], "New evidence.", "Okay.")
+            clock.advance()
+            newer = CompactProvider(lambda doc: {"operations": [{"op": "no_change"}]})
+            await automatic(restarted, newer)
+            assert len(newer.calls) == 1
+            assert restarted.maintenance_status()["evidence"] == {"processed": 1, "unresolved": 1}
             assert restarted.maintenance_status()["unresolved"]["set_aside"] == 1
         finally:
             await restarted.close()

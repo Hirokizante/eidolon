@@ -265,7 +265,7 @@ class RoomService:
         finally:
             self._foreground_waiters -= 1
 
-    def _start_continuity(self, *, force: bool = False) -> bool:
+    def _start_continuity(self, *, force: bool = False, retry_task_id: str | None = None) -> bool:
         """Schedule at most one bounded pass, never waiting for a provider here."""
         if (self._auxiliary_applying or self._auxiliary_execution is None
                 or self.stop_event.is_set() or self.generation_lock.locked()
@@ -284,7 +284,8 @@ class RoomService:
         worker = self.continuity_worker
         async def run():
             try:
-                await worker.run_once(force=force)
+                await worker.run_once(force=force, **({"retry_task_id": retry_task_id}
+                                                    if retry_task_id else {}))
                 self._continuity_runtime_error = None
             except asyncio.CancelledError:
                 raise
@@ -402,7 +403,7 @@ class RoomService:
         auxiliary = self.auxiliary_status()
         can_run = auxiliary.get("mode") != "disabled" and not auxiliary.get("configuration_error")
         automatic = self.config.memory.continuity_enabled and can_run
-        exhausted = row.get("budget", {}).get("exhausted", False)
+        exhausted = row.get("set_aside") or row.get("budget", {}).get("exhausted", False)
         paused = row.get("paused", False)
         next_action = ("complete" if completed else "configure" if not can_run or paused else
                        "retry_required" if exhausted else
@@ -410,7 +411,7 @@ class RoomService:
                        "automatic_check" if automatic else "refresh")
         return {**{key: row.get(key) for key in (
             "task_id", "stage", "status", "attempts", "model_calls", "attempt_counts",
-            "updated_at", "change_count", "unresolved_count", "budget", "paused",
+            "updated_at", "change_count", "unresolved_count", "budget", "paused", "set_aside",
         )}, "reason": None if completed else read_reason(row.get("reason")),
             "usage": safe_usage(row.get("usage")),
             "usage_totals": safe_usage(row.get("usage_totals")),
@@ -1143,6 +1144,18 @@ class RoomService:
                            if change["before"] is not None else None),
                 "created": change["created"],
             } for change in run["changes"]]}
+        if method == "memory_retry":
+            task_id = params.get("task_id")
+            stage = self.store.get_maintenance_stage(task_id) if isinstance(task_id, str) else None
+            if stage is None:
+                raise ValueError("Choose an existing current life batch")
+            if self.store.get_maintenance_task(task_id)["scope"] != "real_life":
+                raise ValueError("Choose a current life batch in the real-life scope")
+            if stage["status"] == "completed":
+                raise ValueError("This current life batch is already completed")
+            await self._refresh_auxiliary()
+            queued = self._start_continuity(force=True, retry_task_id=task_id)
+            return {**self.memory_state(params.get("session_id")), "refresh_queued": queued}
         if method == "memory_refresh":
             await self._refresh_auxiliary()
             queued = self._start_continuity(force=True)

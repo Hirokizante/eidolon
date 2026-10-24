@@ -122,7 +122,7 @@ def run_state(row: dict) -> str:
 
 
 def run_summary(row: dict) -> str:
-    summary = run_state(row)
+    summary = "Set aside" if row.get("set_aside") else run_state(row)
     count = row.get("change_count")
     if row.get("status") == "completed" and type(count) is int:
         summary += (" · No changes" if count == 0 else
@@ -180,7 +180,10 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         parts.append(f"Recovery pass {budget['pass']}: {budget['used']}/{budget['limit']} requests "
                      f"used; {budget['remaining']} remaining.")
         if budget.get("exhausted") and row.get("status") != "completed":
-            parts.append("Budget exhausted. Complete evidence is retained; newer evidence waits.")
+            parts.append("Budget exhausted. Complete evidence is set aside; "
+                         "newer eligible evidence continues.")
+    if row.get("set_aside") and not budget.get("exhausted"):
+        parts.append("Complete evidence is set aside; newer eligible evidence continues.")
     if row.get("paused"):
         parts.append("Requests paused until relevant settings change or an explicit Refresh.")
     if "attempts" in row and isinstance(row["attempts"], list):
@@ -188,7 +191,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             "complete": "Complete; no retry needed.",
             "running": "Refreshing now; foreground work has priority.",
             "configure": "Check the auxiliary model in /preferences, then refresh current life.",
-            "retry_required": "Use Refresh current life to start a new bounded recovery pass.",
+            "retry_required": "Use Retry batch to start a new bounded recovery pass.",
             "retry_scheduled": "Automatic retry after " + local_time(
                 row.get("next_retry_at"), timezone_name) + "; foreground work has priority.",
             "automatic_check": "Waiting for the next automatic maintenance check.",
@@ -297,7 +300,7 @@ class MemoryScreen(FormModal):
     MemoryScreen #memory-detail { display: none; height: 1fr; }
     MemoryScreen #memory-detail-scroll { height: 1fr; scrollbar-size: 1 1; }
     MemoryScreen #memory-text { height: auto; }
-    MemoryScreen #memory-note-actions { height: 1; }
+    MemoryScreen #memory-note-actions, MemoryScreen #memory-run-actions { height: 1; }
     MemoryScreen #memory-browser.detail #memory-list { display: none; }
     MemoryScreen #memory-browser.detail #memory-detail { display: block; }
     MemoryScreen .form-status {
@@ -365,6 +368,8 @@ class MemoryScreen(FormModal):
                     with Horizontal(id="memory-note-actions"):
                         yield Button("Edit note", id="memory-edit", flat=True, compact=True)
                         yield Button("Delete note", id="memory-delete", flat=True, compact=True)
+                    with Horizontal(id="memory-run-actions"):
+                        yield Button("Retry batch", id="memory-retry", flat=True, compact=True)
             yield Static("Enter details | ^F search | ^L refresh | Esc", classes="form-hint",
                          markup=False)
         yield Static("Terminal too small — need 48×12. Resize or press Esc to close.",
@@ -503,6 +508,15 @@ class MemoryScreen(FormModal):
         self.query_one("#memory-note-actions").display = bool(
             self.detail_key and self.detail_key.startswith("continuity:")
         )
+        run = self.detail_value or {}
+        retry = self.query_one("#memory-retry", Button)
+        retry.display = bool(self.detail_key and self.detail_key.startswith("maintenance:")
+                             and run.get("status") != "completed")
+        self.query_one("#memory-run-actions").display = retry.display
+        retry.disabled = (self.loading or self.committing or not self.connected
+                          or run.get("status") == "running"
+                          or bool((self.state.snapshot or {}).get("continuity", {}).get(
+                              "maintenance", {}).get("running")))
         for selector in ("#memory-create", "#memory-edit", "#memory-delete"):
             self.query_one(selector, Button).disabled = (
                 self.loading or self.committing or not self.connected
@@ -665,9 +679,11 @@ class MemoryScreen(FormModal):
         auxiliary = maintenance.get("auxiliary", {})
         unresolved = maintenance.get("unresolved") or {}
         if unresolved.get("total"):
+            retained = maintenance.get("retained_batches", unresolved.get("set_aside", 0))
             message = ("Current life needs configuration attention. Check /preferences." if
                        unresolved.get("configuration_attention") else
-                       "Current life budget exhausted. Newer evidence waits. Open Run history." if
+                       f"{retained} {'batch' if retained == 1 else 'batches'} set aside. "
+                       "Open Run history to retry." if
                        unresolved.get("set_aside") else
                        "Current life is recovering. Open Run history for causes and next steps.")
             self.status(message, problem=True)
@@ -744,6 +760,8 @@ class MemoryScreen(FormModal):
             self.update_status()
         elif event.button.id == "memory-refresh":
             self.refresh_current_life()
+        elif event.button.id == "memory-retry":
+            self.refresh_current_life(retry_task_id=(self.detail_value or {}).get("task_id"))
         elif event.button.id == "memory-create":
             self.action_new_note()
         elif event.button.id == "memory-edit":
@@ -798,7 +816,7 @@ class MemoryScreen(FormModal):
             table.move_cursor(row=table.get_row_index(self.state.selected))
 
     @work(exclusive=True, group="memory-refresh", exit_on_error=False)
-    async def refresh_current_life(self) -> None:
+    async def refresh_current_life(self, *, retry_task_id: str | None = None) -> None:
         maintenance = (self.state.snapshot or {}).get("continuity", {}).get("maintenance", {})
         if self.committing or self.loading or not self.connected or maintenance.get("running"):
             return
@@ -807,11 +825,14 @@ class MemoryScreen(FormModal):
         self.status("Queueing current life refresh…")
         try:
             self.state.snapshot = await self.client.request(
-                "memory_refresh", session_id=self.session_id,
+                "memory_retry" if retry_task_id else "memory_refresh", session_id=self.session_id,
+                **({"task_id": retry_task_id} if retry_task_id else {}),
             )
             self.update_status()
             if self.state.snapshot.get("refresh_queued"):
-                self.status("Current life refresh queued.")
+                if not ((self.state.snapshot.get("continuity") or {}).get(
+                        "maintenance", {}).get("unresolved") or {}).get("total"):
+                    self.status("Current life refresh queued.")
             elif not self.has_class("problem"):
                 self.status("Current life is busy. Try refresh again shortly.")
         except Exception:
@@ -820,6 +841,8 @@ class MemoryScreen(FormModal):
         finally:
             self.committing = False
             self.render_list()
+            if self.connected:
+                self.action_reload(quiet=True)
             # A disabled refresh button must not leave keyboard focus stranded.
             if self.app.focused is None:
                 self.query_one("#memory-table" if self.rows else "#memory-filter").focus()

@@ -595,6 +595,49 @@ async def test_oversized_oldest_exchange_is_held_and_never_skipped(store):
     assert task["stages"]["continuity"]["status"] == "failed"
 
 
+@pytest.mark.parametrize("recoverable_index", [None, 1, 2])
+async def test_automatic_recovery_checks_retained_tasks_in_order(store, recoverable_index):
+    provider = Provider()
+    worker = ContinuityWorker(store, provider, enabled=True)
+    tasks = []
+    for index in range(3):
+        add(store, f"An unfinished project {index}.")
+        task = store.create_maintenance_task(store.maintenance_inputs(limit=1),
+                                              expected_revision=0, control_revision=0)
+        tasks.append(task)
+        store.prepare_maintenance_recovery(task["id"], call_limit=1, fingerprint="original")
+        if index == 0:
+            store.record_maintenance_usage(task["id"], called=True)
+            store.fail_maintenance_stage(task["id"], "continuity", "Exhausted",
+                                          reason_code="unknown")
+        else:
+            fingerprint = ("old-settings" if recoverable_index is not None
+                           and index >= recoverable_index else
+                           worker._recovery_fingerprint("validation.input_limit"))
+            store.fail_maintenance_stage(task["id"], "continuity", "Input too large",
+                                          reason_code="validation.input_limit",
+                                          pause_fingerprint=fingerprint)
+
+    assert [task["id"] for task in store.retained_maintenance_tasks()] == [
+        task["id"] for task in tasks
+    ]
+    assert await worker.run_once() is (recoverable_index is not None)
+    if recoverable_index is None:
+        assert provider.calls == []
+        assert store.continuity_state()["watermark"] == 0
+    else:
+        assert len(provider.calls) == 1
+        document = json.loads(provider.calls[0][-1]["content"])
+        assert [row["exchange_id"] for row in document["exchanges"]] == (
+            tasks[recoverable_index]["input_ids"])
+    assert [store.get_maintenance_stage(task["id"])["status"] for task in tasks] == [
+        "completed" if index == recoverable_index else "failed" for index in range(3)
+    ]
+    assert [task["id"] for task in store.retained_maintenance_tasks()] == [
+        task["id"] for index, task in enumerate(tasks) if index != recoverable_index
+    ]
+
+
 @pytest.mark.parametrize("result,finish", [
     ("not JSON", "stop"), ({"operations": [{"op": "delete", "expected_revision": 0}]}, "stop"),
     (None, "length"), (None, None),

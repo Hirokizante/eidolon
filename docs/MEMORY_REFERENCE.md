@@ -221,8 +221,9 @@ is added to current-life reply context. Manual notes do not create synthetic
 exchanges or external retention entries.
 
 SQLite stores scope/control revisions, source hashes, immutable batch identities,
-stage status, attempts, note revisions, and the input watermark. Commit checks
-evidence and revisions atomically. Stale edits, malformed proposals, cancellation,
+stage status, attempts, note revisions, the input high-water mark, and a separate
+processed/unresolved evidence ledger. Commit checks evidence and revisions
+atomically. Stale edits, malformed proposals, cancellation,
 and incomplete model streams leave the batch pending without partial note updates
 or watermark advancement. Retry backoff grows from 30 seconds to one hour;
 foreground interruption permits immediate retry. Retries preserve the original
@@ -237,8 +238,10 @@ Recognized configuration/authentication and input-limit failures pause unchanged
 settings instead of repeatedly dispatching. A relevant configuration change makes
 the batch eligible within the remaining allowance; explicit Refresh also releases
 the pause. Exhaustion stops automatic calls and remains visible in Run history
-and the main Life indicator. Complete evidence stays retained and newer evidence
-continues to wait behind the oldest unresolved batch. See
+and the main Life indicator. Complete evidence stays retained while newer eligible
+evidence continues under its own normal budget. The high-water mark never proves that older gaps completed.
+Open a retained run and choose Retry batch to request another bounded pass;
+a later successful run does not erase unresolved gaps or their warnings. See
 [bounded recovery](AUXILIARY_MODEL.md#bounded-recovery-and-configuration-pauses) for
 settings, actions, diagnostics, and the limits of this policy.
 

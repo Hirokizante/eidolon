@@ -44,11 +44,11 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 11:
+        if version > 12:
             self.db.close()
             raise ValueError("This database requires a newer Eidolon version")
         self.migration_backup_path: Path | None = None
-        if version < 11 and self.db.execute(
+        if version < 12 and self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone():
             # SQLite's backup API captures a consistent snapshot, including WAL
@@ -59,7 +59,7 @@ class Store:
             backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_dir.chmod(0o700)
             stamp = datetime.now(dt_timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v11-{stamp}.sqlite3"
+            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v12-{stamp}.sqlite3"
             with sqlite3.connect(self.migration_backup_path) as backup:
                 self.db.backup(backup)
             self.migration_backup_path.chmod(0o600)
@@ -139,6 +139,11 @@ class Store:
             model_calls INTEGER NOT NULL DEFAULT 0, usage TEXT,
             error TEXT, next_retry_at TEXT, committed_revision INTEGER,
             updated_at TEXT NOT NULL, PRIMARY KEY(task_id,stage)
+          );
+          CREATE TABLE IF NOT EXISTS continuity_evidence (
+            scope TEXT NOT NULL, exchange_id INTEGER NOT NULL, task_id TEXT,
+            processed INTEGER NOT NULL CHECK(processed IN (0,1)),
+            PRIMARY KEY(scope,exchange_id)
           );
           CREATE TABLE IF NOT EXISTS auxiliary_routing (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -220,6 +225,33 @@ class Store:
                 if column not in stage_columns:
                     self.db.execute(
                         f"ALTER TABLE maintenance_stages ADD COLUMN {column} {declaration}")
+            if "set_aside" not in stage_columns:
+                self.db.execute(
+                    "ALTER TABLE maintenance_stages ADD COLUMN set_aside INTEGER NOT NULL DEFAULT 0")
+            if version < 12:
+                # The legacy watermark proves completion only outside saved gaps.
+                # Preserve immutable task evidence and absent historical reasons.
+                self.db.execute(
+                    "INSERT OR IGNORE INTO continuity_evidence(scope,exchange_id,processed) "
+                    "SELECT c.scope,a.id,1 FROM continuity_scopes c "
+                    "JOIN messages a ON a.role='assistant' AND a.id<=c.watermark "
+                    "JOIN generations g ON g.id=a.generation_id "
+                    "JOIN sessions s ON s.id=g.session_id WHERE s.kind='chat' "
+                    "AND g.memory_eligible=1 AND coalesce(json_extract(g.metadata,'$.memory_scope'),"
+                    "json_extract(g.metadata,'$.scope'),'real_life')=c.scope")
+                for task in self.db.execute(
+                    "SELECT t.*,s.status FROM maintenance_tasks t JOIN maintenance_stages s "
+                    "ON s.task_id=t.id WHERE s.stage='continuity' "
+                    "ORDER BY (s.status='completed') DESC,t.created_at"
+                ).fetchall():
+                    if task["id"].startswith(("narrative:", "review:")):
+                        continue
+                    self.db.executemany(
+                        "INSERT INTO continuity_evidence VALUES (?,?,?,?) "
+                        "ON CONFLICT(scope,exchange_id) DO UPDATE SET "
+                        "task_id=excluded.task_id,processed=excluded.processed",
+                        [(task["scope"], exchange_id, task["id"], int(task["status"] == "completed"))
+                         for exchange_id in json.loads(task["input_ids"])])
             attempt_columns = {row["name"] for row in self.db.execute(
                 "PRAGMA table_info(maintenance_attempts)"
             )}
@@ -254,12 +286,17 @@ class Store:
                     "maintenance_attempts WHERE id=?) AND status!='completed' AND reason IS NULL",
                     (row["id"], row["id"]),
                 )
+            if version < 12:
+                self.db.execute(
+                    "UPDATE maintenance_stages SET set_aside=1 WHERE status!='completed' "
+                    "AND json_extract(reason,'$.code') IN ('validation.input_limit',"
+                    "'validation.output_budget')")
             if version < 6:
                 self.db.execute(
                     "UPDATE outbox SET review_state='pending' WHERE status!='completed' "
                     "AND generation_id IN (SELECT id FROM generations WHERE memory_eligible IS NULL)"
                 )
-            self.db.execute("PRAGMA user_version=11")
+            self.db.execute("PRAGMA user_version=12")
         self.db.commit()
         self.path.chmod(0o600)
 
@@ -665,7 +702,8 @@ class Store:
     def _continuity_exchange_rows(self, *, scope: str, after: int = 0,
                                   limit: int = 8, newest: bool = False,
                                   exclude_session_id: str | None = None,
-                                  exchange_ids: list[int] | None = None) -> list[dict]:
+                                  exchange_ids: list[int] | None = None,
+                                  unassigned: bool = False) -> list[dict]:
         where = ["s.kind='chat'", "g.memory_eligible=1", "a.id>?",
                  "coalesce(json_extract(g.metadata,'$.memory_scope'),"
                  "json_extract(g.metadata,'$.scope'),'real_life')=?"]
@@ -678,6 +716,10 @@ class Store:
                 return []
             where.append("a.id IN (" + ",".join("?" for _ in exchange_ids) + ")")
             params.extend(exchange_ids)
+        if unassigned:
+            where.append("NOT EXISTS (SELECT 1 FROM continuity_evidence e "
+                         "WHERE e.scope=? AND e.exchange_id=a.id)")
+            params.append(scope)
         direction = "DESC" if newest else "ASC"
         rows = self.db.execute(
             "SELECT a.id,g.id AS generation_id,g.document_id,g.session_id,"
@@ -713,6 +755,11 @@ class Store:
         """
         with self._lock:
             return self._continuity_exchange_rows(scope=scope, after=after, limit=limit)
+
+    def maintenance_inputs(self, scope: str = "real_life", limit: int = 8) -> list[dict]:
+        """Unassigned evidence, including gaps below the legacy high-water mark."""
+        with self._lock:
+            return self._continuity_exchange_rows(scope=scope, limit=limit, unassigned=True)
 
     def recent_continuity_inputs(self, after: int = 0, limit: int = 3,
                                  scope: str = "real_life",
@@ -901,6 +948,8 @@ class Store:
                             "remaining": max(0, limit - used), "exhausted": used >= limit,
                             "pass": result.get("recovery_pass", 1)}
         result["paused"] = bool(result.get("pause_fingerprint"))
+        result["set_aside"] = (result["status"] != "completed" and bool(
+            result.get("set_aside") or result["budget"]["exhausted"]))
         return result
 
     def get_maintenance_stage(self, task_id: str, stage: str = "continuity") -> dict | None:
@@ -986,8 +1035,8 @@ class Store:
                 task = self._maintenance_task(task_id)
                 if task["stages"]["continuity"]["status"] == "completed":
                     return task
-            other_pending = self.pending_maintenance_task(scope)
-            if other_pending and other_pending["id"] != task_id:
+            other_pending = self.pending_maintenance_task(scope, include_retained=False)
+            if other_pending and other_pending["id"] != task_id and not existing:
                 raise ValueError("An earlier maintenance batch still needs completion")
             state = self._continuity_scope(scope)
             if (state["revision"] != expected_revision
@@ -1006,11 +1055,16 @@ class Store:
                 if ((not existing and not set(input_ids) <= eligible_ids)
                         or input_ids and input_ids[-1] > state["watermark"]):
                     raise ValueError("Narrative rewrites require existing eligible note evidence")
-            else:
+            elif existing:
                 current = self._continuity_exchange_rows(
-                    scope=scope, after=state["watermark"], limit=len(inputs),
-                )
+                    scope=scope, exchange_ids=input_ids, limit=len(inputs))
+            else:
+                current = self.maintenance_inputs(scope=scope, limit=len(inputs))
             if current != inputs or [entry["id"] for entry in current] != input_ids:
+                if existing:
+                    from ..memory.continuity import ContinuityValidationError
+                    raise ContinuityValidationError("Maintenance evidence changed",
+                                                    code="evidence_changed")
                 raise ValueError("Maintenance inputs changed or would skip eligible evidence")
             input_hash = self._continuity_hash(inputs)
             if existing:
@@ -1035,19 +1089,41 @@ class Store:
                     [(task_id, stage, "pending" if stage == "continuity" else "deferred", stamp)
                      for stage in ("continuity", "summary", "reflection")],
                 )
+            if not rewrite and not review:
+                self.db.executemany(
+                    "INSERT OR IGNORE INTO continuity_evidence VALUES (?,?,?,0)",
+                    [(scope, exchange_id, task_id) for exchange_id in input_ids])
+            return self._maintenance_task(task_id)
+
+    def get_maintenance_task(self, task_id: str) -> dict:
+        with self._lock:
             return self._maintenance_task(task_id)
 
     def pending_maintenance_task(self, scope: str = "real_life",
-                                 stage: str = "continuity") -> dict | None:
+                                 stage: str = "continuity", *,
+                                 include_retained: bool = True) -> dict | None:
         with self._lock:
+            retained = "" if include_retained else (
+                "AND s.set_aside=0 AND s.model_calls-s.pass_start_calls<coalesce(s.recovery_limit,6) ")
             row = self.db.execute(
                 "SELECT t.id FROM maintenance_tasks t JOIN maintenance_stages s ON s.task_id=t.id "
                 "WHERE t.scope=? AND s.stage=? AND s.status IN ('pending','failed') "
-                "ORDER BY t.input_watermark,t.id LIMIT 1", (scope, stage),
+                + retained + "ORDER BY t.input_watermark,t.id LIMIT 1", (scope, stage),
             ).fetchone()
-            # Return the earliest task even during cooldown, so callers cannot
-            # jump to newer evidence while a failed batch still needs retry.
+            # Cooldown still belongs to the active pass; retained work is separate.
             return self._maintenance_task(row["id"]) if row else None
+
+    def retained_maintenance_tasks(self, scope: str = "real_life") -> list[dict]:
+        """List unfinished retained continuity tasks in evidence order."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT t.id FROM maintenance_tasks t JOIN maintenance_stages s ON s.task_id=t.id "
+                "WHERE t.scope=? AND s.stage='continuity' AND s.status IN ('pending','failed') "
+                "AND (s.set_aside=1 OR "
+                "s.model_calls-s.pass_start_calls>=coalesce(s.recovery_limit,6)) "
+                "ORDER BY t.input_watermark,t.id", (scope,),
+            ).fetchall()
+            return [self._maintenance_task(row["id"]) for row in rows]
 
     def prepare_maintenance_recovery(self, task_id: str, *, call_limit: int,
                                      fingerprint: str, retry: bool = False) -> bool:
@@ -1065,18 +1141,20 @@ class Store:
             if retry:
                 self.db.execute(
                     "UPDATE maintenance_stages SET recovery_limit=?,pass_start_calls=model_calls,"
-                    "recovery_pass=recovery_pass+1,pause_fingerprint=NULL,next_retry_at=NULL "
+                    "recovery_pass=recovery_pass+1,pause_fingerprint=NULL,next_retry_at=NULL,set_aside=0 "
                     "WHERE task_id=? AND stage='continuity'", (call_limit, task_id),
                 )
             else:
                 self.db.execute(
                     "UPDATE maintenance_stages SET recovery_limit=coalesce(recovery_limit,?),"
                     "pause_fingerprint=CASE WHEN pause_fingerprint!=? THEN NULL "
-                    "ELSE pause_fingerprint END WHERE task_id=? AND stage='continuity'",
-                    (call_limit, fingerprint, task_id),
+                    "ELSE pause_fingerprint END,"
+                    "set_aside=CASE WHEN pause_fingerprint IS NOT NULL AND pause_fingerprint!=? "
+                    "THEN 0 ELSE set_aside END WHERE task_id=? AND stage='continuity'",
+                    (call_limit, fingerprint, fingerprint, task_id),
                 )
             row = self.get_maintenance_stage(task_id)
-            return not row["paused"] and not row["budget"]["exhausted"]
+            return not row["paused"] and not row["set_aside"]
 
     def fail_maintenance_stage(self, task_id: str, stage: str, error: str,
                                 next_retry_at: str | None = None, *,
@@ -1090,11 +1168,14 @@ class Store:
             self._maintenance_task(task_id)
             self.db.execute(
                 "UPDATE maintenance_stages SET status='failed',attempts=attempts+1,error=?,"
-                "next_retry_at=?,updated_at=?,reason=?,pause_fingerprint=? "
+                "next_retry_at=?,updated_at=?,reason=?,pause_fingerprint=?,"
+                "set_aside=CASE WHEN ? IN ('validation.input_limit','validation.output_budget',"
+                "'validation.evidence_changed') OR "
+                "model_calls-pass_start_calls>=coalesce(recovery_limit,6) THEN 1 ELSE set_aside END "
                 "WHERE task_id=? AND stage=? "
                 "AND status!='completed'",
                 (str(error)[:1000], retry_at, utc_now(), json.dumps(safe_reason(reason_code)),
-                 pause_fingerprint, task_id, stage),
+                 pause_fingerprint, reason_code, task_id, stage),
             )
 
     def maintenance_status(self, scope: str = "real_life") -> dict:
@@ -1132,6 +1213,12 @@ class Store:
                 "SELECT a.* FROM maintenance_attempts a JOIN maintenance_tasks t ON t.id=a.task_id "
                 "WHERE t.scope=? ORDER BY a.started_at DESC LIMIT 1", (scope,),
             ).fetchone()
+            retained_batches = self.db.execute(
+                "SELECT count(*) FROM maintenance_stages s JOIN maintenance_tasks t ON t.id=s.task_id "
+                "WHERE t.scope=? AND s.stage='continuity' AND s.status!='completed' "
+                "AND (s.set_aside=1 OR s.model_calls-s.pass_start_calls>=coalesce(s.recovery_limit,6))",
+                (scope,),
+            ).fetchone()[0]
             unresolved = {"recovering": 0, "configuration_attention": 0, "set_aside": 0}
             from ..memory.diagnostics import problem_state, read_reason
             for row in self.db.execute(
@@ -1145,7 +1232,7 @@ class Store:
             ):
                 saved = self._stage_row(row)
                 condition = ("configuration_attention" if saved["paused"] else
-                             "set_aside" if saved["budget"]["exhausted"] else
+                             "set_aside" if saved["set_aside"] else
                              problem_state(read_reason(json.loads(row[0]) if row[0] else None)))
                 unresolved[condition] += 1
             unresolved["total"] = sum(unresolved.values())
@@ -1155,8 +1242,15 @@ class Store:
                 "AND s.stage='continuity' AND s.status='completed'",
                 (scope,),
             ).fetchone()[0]
+            evidence = {"processed": 0, "unresolved": 0}
+            for row in self.db.execute(
+                "SELECT processed,count(*) FROM continuity_evidence WHERE scope=? GROUP BY processed",
+                (scope,),
+            ):
+                evidence["processed" if row[0] else "unresolved"] = row[1]
         stages = [self._stage_row(stage) for stage in stages]
-        return {"counts": counts, "pending": counts.get("pending", 0) + counts.get("failed", 0),
+        return {"evidence": evidence, "retained_batches": retained_batches, "counts": counts,
+                "pending": counts.get("pending", 0) + counts.get("failed", 0),
                 "unresolved": unresolved, "last_successful_at": successful,
                 "stages_omitted": max(0, sum(counts.values()) - len(stages)),
                 "model_calls": model_calls, "error": error[0] if error else None, "stages": stages,
@@ -1416,16 +1510,20 @@ class Store:
                     or task["expected_revision"] != expected_revision
                     or task["control_revision"] != control_revision):
                 raise ValueError("Continuity state changed; regenerate the proposal")
-            if task_id.startswith(("narrative:", "review:")):
-                current = self._continuity_exchange_rows(
-                    scope=scope, exchange_ids=task["input_ids"], limit=len(task["input_ids"]))
-            else:
-                current = self._continuity_exchange_rows(
-                    scope=scope, after=state["watermark"], limit=len(task["input_ids"]),
-                )
+            current = self._continuity_exchange_rows(
+                scope=scope, exchange_ids=task["input_ids"], limit=len(task["input_ids"]))
+            if not task_id.startswith(("narrative:", "review:")):
+                assigned = self.db.execute(
+                    "SELECT exchange_id FROM continuity_evidence WHERE scope=? AND task_id=? "
+                    "AND processed=0 ORDER BY exchange_id", (scope, task_id),
+                ).fetchall()
+                if [row[0] for row in assigned] != task["input_ids"]:
+                    raise ValueError("Maintenance evidence is already processed or belongs to another batch")
             if (self._continuity_hash(current) != task["input_hash"]
                     or current != task["inputs"]):
-                raise ValueError("Maintenance evidence changed or is no longer eligible")
+                from ..memory.continuity import ContinuityValidationError
+                raise ContinuityValidationError("Maintenance evidence changed or is no longer eligible",
+                                                code="evidence_changed")
             from ..memory.continuity import (
                 POLICY_ARCHIVE_REASONS, is_legacy_rewrite, needs_note_metadata,
                 validate_note_capacity, validate_note_metadata, validate_source_chronology,
@@ -1620,10 +1718,14 @@ class Store:
             new_revision = state["revision"] + int(changed > 0)
             self.db.execute(
                 "UPDATE continuity_scopes SET revision=?,watermark=? WHERE scope=?",
-                (new_revision, task["input_watermark"], scope),
+                (new_revision, max(state["watermark"], task["input_watermark"]), scope),
             )
             self.db.execute(
-                "UPDATE maintenance_stages SET status='completed',attempts=attempts+1,"
+                "UPDATE continuity_evidence SET processed=1 WHERE scope=? AND task_id=?",
+                (scope, task_id),
+            )
+            self.db.execute(
+                "UPDATE maintenance_stages SET status='completed',set_aside=0,attempts=attempts+1,"
                 "error=NULL,reason=NULL,"
                 "next_retry_at=NULL,committed_revision=?,updated_at=? WHERE task_id=? AND stage='continuity'",
                 (new_revision, utc_now(), task_id),

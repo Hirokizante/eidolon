@@ -897,7 +897,7 @@ async def test_v9_history_upgrade_keeps_missing_causes_unknown(tmp_path, monkeyp
             s.store.db.execute("PRAGMA user_version=9")
     reopened = Store(path)
     try:
-        assert reopened.migration_backup_path and ".pre-v11-" in str(reopened.migration_backup_path)
+        assert reopened.migration_backup_path and ".pre-v12-" in str(reopened.migration_backup_path)
         assert reopened.maintenance_attempts(task["id"])[0]["reason"] is None
         stage = reopened.get_maintenance_stage(task["id"])
         assert stage["reason"] is None

@@ -211,7 +211,7 @@ reply path. For the separate image analyst, see [Providers](PROVIDERS.md#use-ima
 `/memory` → **Current life** shows refresh status and actionable notices. Choose
 **Run history**, then Enter on a run, to review its outcome and saved note changes.
 `/runs` opens Run history directly, and Ctrl+P lists the same command. A quiet
-**Life: recovering**, **Life: needs retry**, **Life: budget exhausted**, or
+**Life: recovering**, **Life: needs retry**, **Life: evidence set aside**, or
 **Life: check settings** indicator
 near the composer appears while maintenance has unresolved trouble. It remains
 visible even when optional service-status components are hidden. Automatic work
@@ -270,14 +270,23 @@ reply inclusion, select another model, raise token/context limits, or bypass
 Auxiliary Off. An interrupted dispatched call still counts, including one found
 running after a service restart.
 
-Once allowance is exhausted, automatic requests stop. Run history explains
-**Budget exhausted**, and the main indicator points to `/runs`. The diagnostic
-`set_aside` count includes these exhausted batches. Complete evidence, valid
-notes, and the input watermark remain intact. **Newer evidence still waits behind
-this batch**: progress past gaps, splitting, and a shared daily backlog allowance
-are separate work and are not implemented here. Refresh is the explicit way to
-request another bounded pass. An exhausted batch needs that action even after a
-relevant settings change.
+Once a batch's allowance is exhausted, its automatic requests stop and its complete
+originals are **set aside**. Newer eligible evidence continues under each new
+batch's normal budget. A single oversized exchange or a captured batch that exceeds a reduced response
+plan is also set aside without truncation or a paid request. Run history keeps the original safe cause, evidence
+status, and request history. A newer successful run does not clear an older gap's
+warning. Open `/runs`, select the retained run, and choose **Retry batch** for a
+fresh bounded pass of that batch. Refresh current life also retries the oldest
+pending batch when one exists. Neither action erases lifetime history.
+
+Processed and unresolved evidence are recorded durably, separately from the
+monotonic high-water mark. Setting evidence aside does not mark it processed.
+An explicit retry captures the latest notes and rechecks source eligibility,
+chronology, locks, revisions, and capacity before committing atomically. Older
+preparation evidence cannot reopen or overwrite a newer supported state. Retry
+can fill a missing topic or add support without undoing newer developments.
+Splitting and a shared daily automatic backlog allowance are separate work;
+exhausted batches currently require explicit retry, including after settings changes.
 
 `uv run eidolon doctor` reports auxiliary routing separately from Hindsight
 connectivity. With the service running, it also includes maintenance diagnostics:
@@ -288,7 +297,8 @@ stopped state without that running maintenance view.
 Failures keep existing notes and processing watermarks intact and use bounded
 retry backoff. If an immutable pending batch cannot fit a smaller model, choose
 a larger-capacity target or increase an overly restrictive input allowance, then
-refresh again. The app does not truncate that batch or skip to newer evidence.
+refresh again. The app retains that complete batch unresolved while newer eligible
+evidence can progress.
 Preflight notices distinguish instructions/schema/output-reserve overhead,
 required topic index or target details, an oversized complete source, and an
 insufficient response allowance. These appear as settings attention in status
@@ -430,11 +440,18 @@ same safe attempt representation. Unknown reasons and usage are null. Attempt
 reasons survive restarts. Aggregate outcome and usage counts survive pruning;
 individual attempt details do not.
 Each stage includes `budget` (`limit`, `used`, `remaining`, `exhausted`, `pass`)
-and `paused`. A paused stage exposes its safe `reason` and `configure` action;
+and `paused`, plus `set_aside`. A paused stage exposes its safe `reason` and
+`configure` action;
 an exhausted stage uses `retry_required`. Neither has a scheduled retry time.
-Schema v11 persists the limit, pass boundary, and relevant-configuration pause
-fingerprint. Upgraded lifetime call counts consume the initial allowance; an
-upgrade cannot mint a fresh budget. Fingerprints are private hashes and are not
+Schema v12 adds an evidence ledger and retained-stage state to v11's recovery
+limit, pass boundary, and relevant-configuration pause fingerprint. It preserves
+existing tasks, attempts, note history, and watermarks. Saved unresolved batches
+override the legacy watermark; absent historical reasons remain unknown. The
+service exposes `evidence.processed`, `evidence.unresolved`, and `retained_batches`.
+`memory_retry` takes a `task_id` and queues at most one bounded pass, subject to
+foreground priority and Auxiliary Off. Completed batches cannot be retried.
+Upgraded lifetime call counts consume the initial allowance; an upgrade cannot
+mint a fresh budget. Fingerprints are private hashes and are not
 included in service-facing diagnostics.
 
 Raw prompts, proposals, responses, arbitrary exception text, credentials, URLs,

@@ -760,7 +760,7 @@ async def test_removed_categories_and_actions_are_absent_even_with_old_saved_sta
         assert screen.query_one("#memory-category", Select).value == "replies"
         assert {button.id for button in screen.query(Button)} == {
             "memory-notes", "memory-history", "memory-refresh",
-            "memory-create", "memory-edit", "memory-delete",
+            "memory-create", "memory-edit", "memory-delete", "memory-retry",
         }
         assert not any(method in {"memory_delivery", "memory_review_legacy"}
                        for method, _ in client.calls)
@@ -1147,7 +1147,7 @@ async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_
         selection = composer.selection
         indicator = app.query_one("#service-status", Static)
         assert indicator.display and "/runs" in str(indicator.render())
-        assert {"recovering": "recovering", "set_aside": "budget exhausted",
+        assert {"recovering": "recovering", "set_aside": "evidence set aside",
                 "configuration_attention": "check settings"}[condition] in str(indicator.render())
         await pilot.press("ctrl+p")
         await pilot.press("r", "u", "n", "s", "enter")
@@ -1203,3 +1203,52 @@ def test_run_details_tolerates_hostile_numeric_usage_without_replaying_diagnosti
     assert "Usage: unavailable" in text
     assert "Model: Unavailable" in text
     assert "private.invalid" not in text and DIAGNOSTIC not in text
+
+
+@pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
+async def test_retry_selected_retained_batch_keeps_draft_and_warning(size, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("EIDOLON_ASCII", "1")
+
+    class RetryClient(MemoryClient):
+        def __init__(self):
+            super().__init__()
+            self.retries = []
+
+        async def request(self, method, **params):
+            if method == "memory_retry":
+                self.retries.append(params["task_id"])
+                return {**copy.deepcopy(self.memory), "refresh_queued": True}
+            return await super().request(method, **params)
+
+    client = RetryClient()
+    maintenance = client.memory["continuity"]["maintenance"]
+    maintenance.update(unresolved={"set_aside": 1, "total": 1},
+                       evidence={"processed": 3, "unresolved": 2})
+    maintenance["stages"][0].update(status="failed", set_aside=True, unresolved_count=1)
+    app = RoomApp(AppConfig(), client=client)
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.load_text("Keep this draft 雨")
+        app.open_memory(runs=True)
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one(DataTable).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        retry = screen.query_one("#memory-retry", Button)
+        assert retry.display and not retry.disabled
+        retry.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert client.retries == ["synthetic-task"]
+        assert "set aside" in str(screen.query_one(".form-status", Static).render())
+        assert screen.detail_key == "maintenance:synthetic-task"
+        await pilot.resize_terminal(40, 10)
+        await pilot.pause()
+        assert screen.has_class("too-small")
+        await pilot.resize_terminal(*size)
+        await pilot.pause()
+        await pilot.press("escape", "escape")
+        assert app.focused is composer and composer.text == "Keep this draft 雨"
