@@ -196,10 +196,19 @@ async def test_captured_batch_exceeding_new_response_plan_does_not_block_smaller
         valid = CompactProvider(lambda doc: {"operations": [{"op": "no_change"}]})
         await refresh(service, client, valid)
         assert not valid.calls
-        assert service.store.get_maintenance_stage(original["id"])["set_aside"]
+        assert service.store.get_maintenance_stage(original["id"])["status"] == "split"
         service.store.complete_turn(service.current_session["id"], "Third original.", "Okay.")
         recovery_clock.advance()
         await automatic(service, valid)
         assert len(valid.calls) == 1
-        assert service.store.maintenance_status()["evidence"] == {"processed": 1, "unresolved": 2}
-        assert service.store.pending_maintenance_task()["inputs"] == original["inputs"]
+        # The sibling is assigned unresolved evidence; the newest exchange is
+        # still unassigned until the next ordinary batch is captured.
+        assert service.store.maintenance_status()["evidence"] == {"processed": 1, "unresolved": 1}
+        assert service.store.pending_maintenance_task()["inputs"] == original["inputs"][1:]
+        for _ in range(2):
+            recovery_clock.advance()
+            await automatic(service, valid)
+        assert len(valid.calls) == 3
+        assert service.store.maintenance_status()["evidence"] == {"processed": 3, "unresolved": 0}
+        assert service.store.get_maintenance_stage(original["id"])["status"] == "completed"
+        assert service.store.get_maintenance_task(original["id"])["inputs"] == original["inputs"]

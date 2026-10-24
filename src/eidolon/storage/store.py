@@ -44,11 +44,11 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 12:
+        if version > 13:
             self.db.close()
             raise ValueError("This database requires a newer Eidolon version")
         self.migration_backup_path: Path | None = None
-        if version < 12 and self.db.execute(
+        if version < 13 and self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone():
             # SQLite's backup API captures a consistent snapshot, including WAL
@@ -59,7 +59,7 @@ class Store:
             backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_dir.chmod(0o700)
             stamp = datetime.now(dt_timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v12-{stamp}.sqlite3"
+            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v13-{stamp}.sqlite3"
             with sqlite3.connect(self.migration_backup_path) as backup:
                 self.db.backup(backup)
             self.migration_backup_path.chmod(0o600)
@@ -140,6 +140,12 @@ class Store:
             error TEXT, next_retry_at TEXT, committed_revision INTEGER,
             updated_at TEXT NOT NULL, PRIMARY KEY(task_id,stage)
           );
+          CREATE TABLE IF NOT EXISTS maintenance_lineage (
+            task_id TEXT PRIMARY KEY REFERENCES maintenance_tasks(id),
+            parent_id TEXT NOT NULL REFERENCES maintenance_tasks(id),
+            root_id TEXT NOT NULL REFERENCES maintenance_tasks(id)
+          );
+          CREATE INDEX IF NOT EXISTS maintenance_lineage_root ON maintenance_lineage(root_id);
           CREATE TABLE IF NOT EXISTS continuity_evidence (
             scope TEXT NOT NULL, exchange_id INTEGER NOT NULL, task_id TEXT,
             processed INTEGER NOT NULL CHECK(processed IN (0,1)),
@@ -296,7 +302,7 @@ class Store:
                     "UPDATE outbox SET review_state='pending' WHERE status!='completed' "
                     "AND generation_id IN (SELECT id FROM generations WHERE memory_eligible IS NULL)"
                 )
-            self.db.execute("PRAGMA user_version=12")
+            self.db.execute("PRAGMA user_version=13")
         self.db.commit()
         self.path.chmod(0o600)
 
@@ -927,30 +933,153 @@ class Store:
         result = dict(row)
         for key in ("input_ids", "inputs"):
             result[key] = json.loads(result[key])
+        lineage = self.db.execute(
+            "SELECT parent_id,root_id FROM maintenance_lineage WHERE task_id=?", (task_id,),
+        ).fetchone()
+        result.update(dict(lineage) if lineage else {"parent_id": None, "root_id": task_id})
         result["stages"] = {stage["stage"]: self._stage_row(stage)
                             for stage in self.db.execute(
                                 "SELECT * FROM maintenance_stages WHERE task_id=?", (task_id,),
                             )}
         return result
 
-    @staticmethod
-    def _stage_row(row: sqlite3.Row | dict) -> dict:
+    def _stage_row(self, row: sqlite3.Row | dict) -> dict:
         from ..memory.diagnostics import read_reason
         result = dict(row)
         for key in ("usage", "usage_totals", "committed_execution", "reason", "attempt_counts"):
             result[key] = json.loads(result[key]) if result.get(key) else None
         result["attempt_counts"] = result["attempt_counts"] or {}
         result["reason"] = read_reason(result["reason"])
-        limit = result.get("recovery_limit")
-        limit = limit if limit is not None else 6
-        used = result.get("model_calls", 0) - result.get("pass_start_calls", 0)
-        result["budget"] = {"limit": limit, "used": used,
-                            "remaining": max(0, limit - used), "exhausted": used >= limit,
-                            "pass": result.get("recovery_pass", 1)}
+        if result["stage"] == "continuity":
+            root_id = self._maintenance_root(result["task_id"])
+            result["budget"] = self._maintenance_family_budget(root_id)
+            result["root_id"] = root_id
+            result["split"] = self.maintenance_split(result["task_id"])
+        else:
+            limit = result.get("recovery_limit")
+            limit = limit if limit is not None else 6
+            used = result.get("model_calls", 0) - result.get("pass_start_calls", 0)
+            result["budget"] = {"limit": limit, "used": used,
+                                "remaining": max(0, limit - used), "exhausted": used >= limit,
+                                "pass": result.get("recovery_pass", 1)}
         result["paused"] = bool(result.get("pause_fingerprint"))
-        result["set_aside"] = (result["status"] != "completed" and bool(
-            result.get("set_aside") or result["budget"]["exhausted"]))
+        result["set_aside"] = result["status"] not in {"completed", "split"} and bool(
+            result.get("set_aside") or result["budget"]["exhausted"])
         return result
+
+    def _maintenance_root(self, task_id: str) -> str:
+        row = self.db.execute(
+            "SELECT root_id FROM maintenance_lineage WHERE task_id=?", (task_id,),
+        ).fetchone()
+        return row[0] if row else task_id
+
+    def _maintenance_family_calls(self, root_id: str) -> int:
+        return self.db.execute(
+            "SELECT coalesce(sum(model_calls),0) FROM maintenance_stages WHERE stage='continuity' "
+            "AND (task_id=? OR task_id IN (SELECT task_id FROM maintenance_lineage WHERE root_id=?))",
+            (root_id, root_id),
+        ).fetchone()[0]
+
+    def _maintenance_family_budget(self, root_id: str) -> dict:
+        owner = self.db.execute(
+            "SELECT recovery_limit,pass_start_calls,recovery_pass FROM maintenance_stages "
+            "WHERE task_id=? AND stage='continuity'", (root_id,),
+        ).fetchone()
+        limit = owner["recovery_limit"] if owner["recovery_limit"] is not None else 6
+        used = self._maintenance_family_calls(root_id) - owner["pass_start_calls"]
+        return {"limit": limit, "used": used, "remaining": max(0, limit - used),
+                "exhausted": used >= limit, "pass": owner["recovery_pass"]}
+
+    def maintenance_split(self, task_id: str) -> dict | None:
+        """Safe lineage and leaf outcomes, without copying private source inventories."""
+        with self._lock:
+            rows = self.db.execute(
+                "WITH RECURSIVE children(task_id,parent_id) AS ("
+                "SELECT task_id,parent_id FROM maintenance_lineage WHERE parent_id=? UNION ALL "
+                "SELECT l.task_id,l.parent_id FROM maintenance_lineage l "
+                "JOIN children c ON l.parent_id=c.task_id) "
+                "SELECT c.*,s.status,s.set_aside,s.pause_fingerprint IS NOT NULL AS paused "
+                "FROM children c JOIN maintenance_stages s "
+                "ON s.task_id=c.task_id AND s.stage='continuity' "
+                "JOIN maintenance_tasks t ON t.id=c.task_id ORDER BY t.input_watermark,t.id",
+                (task_id,),
+            ).fetchall()
+            if not rows:
+                return None
+            parents = {row["parent_id"] for row in rows}
+            leaves = [row for row in rows if row["task_id"] not in parents]
+            root_id = self._maintenance_root(task_id)
+            exhausted = self._maintenance_family_budget(root_id)["exhausted"]
+            return {"children": [{key: row[key] for key in ("task_id", "parent_id", "status")}
+                                 for row in rows if row["parent_id"] == task_id],
+                    "completed": sum(row["status"] == "completed" for row in leaves),
+                    "unresolved": sum(row["status"] != "completed" for row in leaves),
+                    "retained": sum(row["status"] != "completed" and bool(
+                        row["set_aside"] or exhausted) for row in leaves),
+                    "paused": sum(row["status"] != "completed" and bool(row["paused"])
+                                  for row in leaves)}
+
+    def split_maintenance_task(self, task_id: str) -> list[str]:
+        """Atomically transfer whole unresolved exchanges to two durable children.
+
+        This splits evidence, never operations from a proposal. Every child is
+        planned against fresh state and must pass the normal atomic commit checks.
+        Specialized rewrites/reviews retain their complete dependency sets.
+        """
+        with self._lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            task = self._maintenance_task(task_id)
+            split = self.maintenance_split(task_id)
+            if split:
+                return [row["task_id"] for row in split["children"]]
+            stage = task["stages"]["continuity"]
+            if (task_id.startswith(("narrative:", "review:")) or len(task["inputs"]) < 2
+                    or stage["status"] != "failed" or stage["budget"]["exhausted"]):
+                return []
+            assigned = [row[0] for row in self.db.execute(
+                "SELECT exchange_id FROM continuity_evidence WHERE task_id=? AND processed=0 "
+                "ORDER BY exchange_id", (task_id,),
+            )]
+            if assigned != task["input_ids"]:
+                raise ValueError("Maintenance evidence is no longer unresolved")
+            if self.db.execute(
+                "SELECT 1 FROM maintenance_attempts WHERE task_id=? AND outcome='running'",
+                (task_id,),
+            ).fetchone():
+                return []
+            middle = len(task["inputs"]) // 2
+            stamp = utc_now()
+            children = []
+            for inputs in (task["inputs"][:middle], task["inputs"][middle:]):
+                ids = [row["exchange_id"] for row in inputs]
+                child_id = str(uuid.uuid5(uuid.NAMESPACE_URL, task_id + ":child:" + str(ids)))
+                self.db.execute(
+                    "INSERT INTO maintenance_tasks VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (child_id, task["scope"], json.dumps(ids), json.dumps(inputs),
+                     self._continuity_hash(inputs), ids[-1], task["expected_revision"],
+                     task["control_revision"], stamp, stamp),
+                )
+                self.db.execute("INSERT INTO maintenance_lineage VALUES (?,?,?)",
+                                (child_id, task_id, task["root_id"]))
+                self.db.executemany(
+                    "INSERT INTO maintenance_stages(task_id,stage,status,updated_at,error,reason) "
+                    "VALUES (?,?,?,?,?,?)",
+                    [(child_id, name, "pending" if name == "continuity" else "deferred", stamp,
+                      stage["error"] if name == "continuity" else None,
+                      json.dumps(stage["reason"]) if name == "continuity" else None)
+                     for name in ("continuity", "summary", "reflection")],
+                )
+                self.db.executemany(
+                    "UPDATE continuity_evidence SET task_id=? WHERE scope=? AND exchange_id=?",
+                    [(child_id, task["scope"], exchange_id) for exchange_id in ids],
+                )
+                children.append(child_id)
+            self.db.execute(
+                "UPDATE maintenance_stages SET status='split',set_aside=0,pause_fingerprint=NULL,"
+                "next_retry_at=NULL,updated_at=? WHERE task_id=? AND stage='continuity'",
+                (stamp, task_id),
+            )
+            return children
 
     def get_maintenance_stage(self, task_id: str, stage: str = "continuity") -> dict | None:
         with self._lock:
@@ -1103,15 +1232,17 @@ class Store:
                                  stage: str = "continuity", *,
                                  include_retained: bool = True) -> dict | None:
         with self._lock:
-            retained = "" if include_retained else (
-                "AND s.set_aside=0 AND s.model_calls-s.pass_start_calls<coalesce(s.recovery_limit,6) ")
-            row = self.db.execute(
+            rows = self.db.execute(
                 "SELECT t.id FROM maintenance_tasks t JOIN maintenance_stages s ON s.task_id=t.id "
                 "WHERE t.scope=? AND s.stage=? AND s.status IN ('pending','failed') "
-                + retained + "ORDER BY t.input_watermark,t.id LIMIT 1", (scope, stage),
-            ).fetchone()
+                "ORDER BY t.input_watermark,t.id", (scope, stage),
+            ).fetchall()
             # Cooldown still belongs to the active pass; retained work is separate.
-            return self._maintenance_task(row["id"]) if row else None
+            for row in rows:
+                task = self._maintenance_task(row["id"])
+                if include_retained or not task["stages"][stage]["set_aside"]:
+                    return task
+            return None
 
     def retained_maintenance_tasks(self, scope: str = "real_life") -> list[dict]:
         """List unfinished retained continuity tasks in evidence order."""
@@ -1119,18 +1250,17 @@ class Store:
             rows = self.db.execute(
                 "SELECT t.id FROM maintenance_tasks t JOIN maintenance_stages s ON s.task_id=t.id "
                 "WHERE t.scope=? AND s.stage='continuity' AND s.status IN ('pending','failed') "
-                "AND (s.set_aside=1 OR "
-                "s.model_calls-s.pass_start_calls>=coalesce(s.recovery_limit,6)) "
                 "ORDER BY t.input_watermark,t.id", (scope,),
             ).fetchall()
-            return [self._maintenance_task(row["id"]) for row in rows]
+            tasks = [self._maintenance_task(row["id"]) for row in rows]
+            return [task for task in tasks if task["stages"]["continuity"]["set_aside"]]
 
     def prepare_maintenance_recovery(self, task_id: str, *, call_limit: int,
                                      fingerprint: str, retry: bool = False) -> bool:
         """Freeze a pass's allowance; only explicit retry can start another pass.
 
-        Lifetime counters are never reset. Future split children must dispatch
-        against their original task's allowance rather than preparing a new one.
+        Lifetime counters are never reset. Split children dispatch against the
+        original task's allowance. Explicit retry reactivates only unresolved leaves.
         """
         if type(call_limit) is not int or not 1 <= call_limit <= 100:
             raise ValueError("Recovery call limit must be an integer from 1 to 100")
@@ -1138,23 +1268,42 @@ class Store:
             row = self.get_maintenance_stage(task_id)
             if row is None or row["status"] == "completed":
                 return False
+            root_id = self._maintenance_root(task_id)
             if retry:
                 self.db.execute(
-                    "UPDATE maintenance_stages SET recovery_limit=?,pass_start_calls=model_calls,"
+                    "UPDATE maintenance_stages SET recovery_limit=?,pass_start_calls=?,"
                     "recovery_pass=recovery_pass+1,pause_fingerprint=NULL,next_retry_at=NULL,set_aside=0 "
-                    "WHERE task_id=? AND stage='continuity'", (call_limit, task_id),
+                    "WHERE task_id=? AND stage='continuity'",
+                    (call_limit, self._maintenance_family_calls(root_id), root_id),
+                )
+                self.db.execute(
+                    "UPDATE maintenance_stages SET pause_fingerprint=NULL,next_retry_at=NULL,"
+                    "set_aside=0 WHERE stage='continuity' AND status!='completed' AND task_id IN "
+                    "(SELECT task_id FROM maintenance_lineage WHERE root_id=?)", (root_id,),
                 )
             else:
                 self.db.execute(
-                    "UPDATE maintenance_stages SET recovery_limit=coalesce(recovery_limit,?),"
+                    "UPDATE maintenance_stages SET recovery_limit=coalesce(recovery_limit,?) "
+                    "WHERE task_id=? AND stage='continuity'", (call_limit, root_id),
+                )
+                self.db.execute(
+                    "UPDATE maintenance_stages SET "
                     "pause_fingerprint=CASE WHEN pause_fingerprint!=? THEN NULL "
                     "ELSE pause_fingerprint END,"
                     "set_aside=CASE WHEN pause_fingerprint IS NOT NULL AND pause_fingerprint!=? "
                     "THEN 0 ELSE set_aside END WHERE task_id=? AND stage='continuity'",
-                    (call_limit, fingerprint, fingerprint, task_id),
+                    (fingerprint, fingerprint, task_id),
                 )
             row = self.get_maintenance_stage(task_id)
             return not row["paused"] and not row["set_aside"]
+
+    def retain_maintenance_task(self, task_id: str) -> None:
+        """Set an unprocessable leaf aside without claiming its evidence was processed."""
+        with self._lock, self.db:
+            self.db.execute(
+                "UPDATE maintenance_stages SET set_aside=1,next_retry_at=NULL "
+                "WHERE task_id=? AND stage='continuity' AND status='failed'", (task_id,),
+            )
 
     def fail_maintenance_stage(self, task_id: str, stage: str, error: str,
                                 next_retry_at: str | None = None, *,
@@ -1166,16 +1315,17 @@ class Store:
         retry_at = self._continuity_time(next_retry_at)
         with self._lock, self.db:
             self._maintenance_task(task_id)
+            exhausted = self.get_maintenance_stage(task_id, stage)["budget"]["exhausted"]
             self.db.execute(
                 "UPDATE maintenance_stages SET status='failed',attempts=attempts+1,error=?,"
                 "next_retry_at=?,updated_at=?,reason=?,pause_fingerprint=?,"
                 "set_aside=CASE WHEN ? IN ('validation.input_limit','validation.output_budget',"
                 "'validation.evidence_changed') OR "
-                "model_calls-pass_start_calls>=coalesce(recovery_limit,6) THEN 1 ELSE set_aside END "
+                "? THEN 1 ELSE set_aside END "
                 "WHERE task_id=? AND stage=? "
-                "AND status!='completed'",
+                "AND status NOT IN ('completed','split')",
                 (str(error)[:1000], retry_at, utc_now(), json.dumps(safe_reason(reason_code)),
-                 pause_fingerprint, reason_code, task_id, stage),
+                 pause_fingerprint, reason_code, exhausted, task_id, stage),
             )
 
     def maintenance_status(self, scope: str = "real_life") -> dict:
@@ -1213,12 +1363,7 @@ class Store:
                 "SELECT a.* FROM maintenance_attempts a JOIN maintenance_tasks t ON t.id=a.task_id "
                 "WHERE t.scope=? ORDER BY a.started_at DESC LIMIT 1", (scope,),
             ).fetchone()
-            retained_batches = self.db.execute(
-                "SELECT count(*) FROM maintenance_stages s JOIN maintenance_tasks t ON t.id=s.task_id "
-                "WHERE t.scope=? AND s.stage='continuity' AND s.status!='completed' "
-                "AND (s.set_aside=1 OR s.model_calls-s.pass_start_calls>=coalesce(s.recovery_limit,6))",
-                (scope,),
-            ).fetchone()[0]
+            retained_batches = 0
             unresolved = {"recovering": 0, "configuration_attention": 0, "set_aside": 0}
             from ..memory.diagnostics import problem_state, read_reason
             for row in self.db.execute(
@@ -1227,12 +1372,17 @@ class Store:
                 "LEFT JOIN maintenance_attempts a ON a.id=(SELECT id FROM maintenance_attempts "
                 "WHERE task_id=s.task_id AND stage=s.stage "
                 "ORDER BY started_at DESC,id DESC LIMIT 1) "
-                "WHERE t.scope=? AND (s.status='failed' OR "
-                "s.status='pending' AND a.outcome='interrupted')", (scope,),
+                "WHERE t.scope=? AND s.status IN ('failed','pending')", (scope,),
             ):
                 saved = self._stage_row(row)
+                if saved["stage"] == "continuity" and saved["set_aside"]:
+                    retained_batches += 1
+                if (saved["status"] == "pending" and not saved["set_aside"]
+                        and not row[0]):
+                    continue
                 condition = ("configuration_attention" if saved["paused"] else
                              "set_aside" if saved["set_aside"] else
+                             "recovering" if saved["status"] == "pending" else
                              problem_state(read_reason(json.loads(row[0]) if row[0] else None)))
                 unresolved[condition] += 1
             unresolved["total"] = sum(unresolved.values())
@@ -1248,7 +1398,7 @@ class Store:
                 (scope,),
             ):
                 evidence["processed" if row[0] else "unresolved"] = row[1]
-        stages = [self._stage_row(stage) for stage in stages]
+            stages = [self._stage_row(stage) for stage in stages]
         return {"evidence": evidence, "retained_batches": retained_batches, "counts": counts,
                 "pending": counts.get("pending", 0) + counts.get("failed", 0),
                 "unresolved": unresolved, "last_successful_at": successful,
@@ -1326,10 +1476,17 @@ class Store:
             ).fetchone()
             if status is None:
                 raise ValueError("Maintenance stage is missing")
-            if status["status"] == "completed":
-                raise ValueError("Maintenance stage is already completed")
+            if status["status"] in {"completed", "split"}:
+                raise ValueError("Maintenance stage is already completed or split")
+            if self.db.execute(
+                "SELECT 1 FROM maintenance_attempts WHERE stage=? AND outcome='running' "
+                "AND (task_id=? OR task_id IN "
+                "(SELECT task_id FROM maintenance_lineage WHERE root_id=?))",
+                (stage, self._maintenance_root(task_id), self._maintenance_root(task_id)),
+            ).fetchone():
+                raise ValueError("Maintenance recovery already has a dispatched attempt")
             recovery = self.get_maintenance_stage(task_id, stage)
-            if recovery["paused"] or recovery["budget"]["exhausted"]:
+            if recovery is None or recovery["paused"] or recovery["budget"]["exhausted"]:
                 raise ValueError("Maintenance recovery is paused or exhausted")
             attempt_id = str(uuid.uuid4())
             self.db.execute(
@@ -1419,7 +1576,8 @@ class Store:
             self._maintenance_task(task_id)
             if called:
                 recovery = self.get_maintenance_stage(task_id, stage)
-                if recovery is None or recovery["paused"] or recovery["budget"]["exhausted"]:
+                if (recovery is None or recovery["status"] in {"completed", "split"}
+                        or recovery["paused"] or recovery["budget"]["exhausted"]):
                     raise ValueError("Maintenance recovery is paused or exhausted")
             if usage and attempt_id:
                 attempt = self.get_maintenance_attempt(attempt_id)
@@ -1496,6 +1654,8 @@ class Store:
             scope = task["scope"]
             if task["stages"]["continuity"]["status"] == "completed":
                 return self.continuity_state(scope)
+            if task["stages"]["continuity"]["status"] == "split":
+                raise ValueError("Split maintenance parents cannot commit a proposal")
             if attempt_id is not None:
                 attempt = self.get_maintenance_attempt(attempt_id)
                 route = self.auxiliary_route()
@@ -1737,6 +1897,20 @@ class Store:
                     "UPDATE maintenance_stages SET committed_execution=? WHERE task_id=? AND stage=?",
                     (json.dumps(attempt), task_id, "continuity"),
                 )
+            parent = task.get("parent_id")
+            while parent:
+                if self.db.execute(
+                    "SELECT 1 FROM maintenance_lineage l JOIN maintenance_stages s "
+                    "ON s.task_id=l.task_id WHERE l.parent_id=? AND s.stage='continuity' "
+                    "AND s.status!='completed'", (parent,),
+                ).fetchone():
+                    break
+                self.db.execute(
+                    "UPDATE maintenance_stages SET status='completed',error=NULL,reason=NULL,"
+                    "set_aside=0,next_retry_at=NULL,updated_at=? "
+                    "WHERE task_id=? AND stage='continuity' AND status='split'", (utc_now(), parent),
+                )
+                parent = self._maintenance_task(parent).get("parent_id")
             return self.continuity_state(scope)
 
     def create_continuity_item(self, content: str, category: str, *,

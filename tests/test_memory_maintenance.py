@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -916,6 +917,58 @@ async def test_foreground_cancellation_preserves_task_without_partial_commit(sto
         "user_name": "River", "companion_name": "Sol",
     }
     await worker.close()
+
+
+@pytest.mark.parametrize("operation,error", [
+    ("finish_maintenance_attempt", sqlite3.OperationalError("Completion storage failure")),
+    ("finish_maintenance_attempt", ValueError("Maintenance evidence is no longer unresolved")),
+    ("split_maintenance_task", sqlite3.OperationalError("Split storage failure")),
+    ("split_maintenance_task", ValueError("Unexpected split failure")),
+    ("split_maintenance_task", ValueError("Maintenance evidence is no longer unresolved suffix")),
+    ("split_maintenance_task", ValueError("Maintenance evidence is no longer unresolved")),
+])
+async def test_finalization_errors_clear_worker_state(store, monkeypatch, operation, error):
+    from eidolon.config import AppConfig, ProviderConfig
+    from eidolon.providers.routing import resolve_auxiliary
+
+    add(store)
+    add(store, "My interview is tomorrow.")
+    config = AppConfig(providers=[ProviderConfig(model="test-model", context_window=32_768)])
+    execution = resolve_auxiliary(config, revision=1)
+    store.reconcile_auxiliary_route(execution.route_fingerprint)
+    worker = ContinuityWorker(store, Provider(result={"operations": []}), execution=execution)
+    assert not await worker.run_once(force=True)
+    assert len(worker.provider.calls) == 1
+    attempt_id = None
+
+    def fail_finalization(*args, **kwargs):
+        nonlocal attempt_id
+        attempt_id = worker._attempt_id
+        assert attempt_id is not None
+        raise error
+
+    unsplittable = (operation == "split_maintenance_task" and type(error) is ValueError
+                    and str(error) == "Maintenance evidence is no longer unresolved")
+    finish_attempt = store.finish_maintenance_attempt
+    with monkeypatch.context() as patch:
+        patch.setattr(store, operation, fail_finalization)
+        if unsplittable:
+            assert not await worker.run_once(force=True)
+        else:
+            with pytest.raises(type(error)) as raised:
+                await worker.run_once(force=True)
+            assert raised.value is error
+
+    assert attempt_id is not None
+    assert worker._attempt_id is None
+    assert worker._dispatched is False
+    assert worker._attempt_identity is None
+    assert worker._active_task is None
+    assert worker._task_id is None
+    # Release a durable attempt left running by the simulated completion error.
+    finish_attempt(attempt_id, "failed", reason_code="validation.schema")
+    worker.provider = Provider()
+    assert await worker.run_once(force=True)
 
 
 @pytest.mark.parametrize("event", [{"type": "tool_call"},

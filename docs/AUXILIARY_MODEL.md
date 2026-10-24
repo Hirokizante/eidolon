@@ -247,14 +247,37 @@ In Preferences → Current life, **Requests per recovery pass** defaults to six
 (`memory.continuity_recovery_calls`, integer 1–100). This is the total dispatched
 auxiliary allowance for one original batch, including its first request,
 corrections, provider rejections, and interrupted or stale dispatched calls.
-Future split-child requests must share this original allowance. Requests that
+All split-child requests share this original allowance. Requests that
 fail local planning or credential preparation before dispatch consume no call.
 The pass limit and consumed calls persist across service restarts. Changing the
 limit affects new batches and explicit retries; it does not enlarge a current pass.
 
 Malformed or invalid proposals receive application-owned correction feedback.
+After an unsuccessful correction, an ordinary batch with multiple exchanges is
+divided in half at complete-exchange boundaries. Each child gets a fresh snapshot
+of current notes and runs through the same proposal validation and atomic commit.
+A captured batch that no longer fits the input or response plan can split before
+dispatch, without consuming a request. Instructions or topic-index overhead and
+configuration/authentication errors require correcting settings instead.
+
+Child and nested-child calls consume the original batch's remaining allowance;
+splitting never creates a new initial budget. Parent/child identities, exact
+source evidence, and completion are durable. Each proposal remains indivisible:
+an archive and its dependent replacement must validate and commit together.
+Existing source eligibility, revision, chronology, protection, and capacity
+checks still apply. Legacy rewrites and capacity reviews retain their complete
+dependency sets rather than splitting their evidence.
+
+Committed children are complete permanently and are never requested or applied
+again after restart or Retry batch. Only unresolved child evidence stays eligible
+for recovery. A single child that still fails validation after correction is set
+aside so its siblings and newer evidence can progress. Exhausting the shared
+budget sets aside every remaining child. Run history shows smaller-group outcomes,
+each child's attempt history, and the shared requests used and remaining; the main
+status retains unresolved warnings without conversation messages or focus changes.
+
 Transient provider failures, timeouts, rate/credit limits, and incomplete output
-use delayed retries, bounded by the same allowance. Input limits and recognized
+use delayed retries, bounded by the same allowance. Unsplittable input limits and recognized
 configuration/authentication failures pause requests. These keep a safe reason
 and no scheduled retry time. A relevant effective configuration change makes the
 batch eligible with its remaining allowance; it never grants new calls. Model or
@@ -272,8 +295,8 @@ running after a service restart.
 
 Once a batch's allowance is exhausted, its automatic requests stop and its complete
 originals are **set aside**. Newer eligible evidence continues under each new
-batch's normal budget. A single oversized exchange or a captured batch that exceeds a reduced response
-plan is also set aside without truncation or a paid request. Run history keeps the original safe cause, evidence
+batch's normal budget. A single oversized exchange is also set aside without
+truncation or a paid request. Run history keeps the original safe cause, evidence
 status, and request history. A newer successful run does not clear an older gap's
 warning. Open `/runs`, select the retained run, and choose **Retry batch** for a
 fresh bounded pass of that batch. Refresh current life also retries the oldest
@@ -285,8 +308,10 @@ An explicit retry captures the latest notes and rechecks source eligibility,
 chronology, locks, revisions, and capacity before committing atomically. Older
 preparation evidence cannot reopen or overwrite a newer supported state. Retry
 can fill a missing topic or add support without undoing newer developments.
-Splitting and a shared daily automatic backlog allowance are separate work;
-exhausted batches currently require explicit retry, including after settings changes.
+A shared daily automatic backlog allowance is separate work; exhausted batches
+currently require explicit retry, including after settings changes. Retrying any
+unresolved member starts one fresh bounded pass shared by its original family,
+preserving completed children, lifetime history, and prior call totals.
 
 `uv run eidolon doctor` reports auxiliary routing separately from Hindsight
 connectivity. With the service running, it also includes maintenance diagnostics:
@@ -448,6 +473,14 @@ limit, pass boundary, and relevant-configuration pause fingerprint. It preserves
 existing tasks, attempts, note history, and watermarks. Saved unresolved batches
 override the legacy watermark; absent historical reasons remain unknown. The
 service exposes `evidence.processed`, `evidence.unresolved`, and `retained_batches`.
+Schema v13 adds immutable parent/root lineage. Split parents have status `split`
+until every child is complete; they cannot dispatch or commit their old proposal.
+Stage and run diagnostics include `root_id` and `split` (direct children plus
+completed/unresolved leaf counts), with the original family's shared `budget`.
+Request, outcome, and usage totals remain local to the task that dispatched them,
+so aggregate status counts each request exactly once. The evidence ledger assigns
+each unresolved exchange to its current leaf in the same transaction that creates
+the children; each successful commit marks only that child's evidence processed.
 `memory_retry` takes a `task_id` and queues at most one bounded pass, subject to
 foreground priority and Auxiliary Off. Completed batches cannot be retried.
 Upgraded lifetime call counts consume the initial allowance; an upgrade cannot

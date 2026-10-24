@@ -201,6 +201,23 @@ def test_empty_reply_context_does_not_dump_diagnostics_or_unsent_entries(status)
     assert DIAGNOSTIC not in text and status not in text
 
 
+@pytest.mark.parametrize("status", ["split", "completed"])
+def test_run_history_describes_smaller_groups_and_the_shared_budget(status):
+    text = run_details({
+        "task_id": "synthetic-parent", "status": status, "attempts": [],
+        "change_count": 0, "changes": [],
+        "split": {"children": [{"task_id": "child-a", "status": "completed"},
+                                {"task_id": "child-b", "status": "pending"}],
+                  "completed": 1, "unresolved": 1},
+        "budget": {"limit": 6, "used": 3, "remaining": 3, "exhausted": False, "pass": 1},
+    }, "UTC")
+    assert "Smaller groups" in text
+    assert "1 complete; 1 unresolved" in text
+    assert "share the original batch's recovery budget" in text
+    assert "3/6 requests used; 3 remaining" in text
+    assert "No changes" not in text and "No notes were changed" not in text
+
+
 @pytest.mark.parametrize("state,created,action", [
     ("open", False, "Updated"), ("open", True, "Added"),
     ("resolved", False, "Archived"), ("archived", False, "Archived"),
@@ -1119,6 +1136,8 @@ async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_
                     "reason": {"version": 1, "code": "validation.output_json",
                                "explanation": DIAGNOSTIC}, "exception": DIAGNOSTIC,
                 }], model_calls=2, attempt_counts={"failed": 1, "committed": 1},
+                    split={"children": [{"task_id": "synthetic-child", "status": "failed"}],
+                           "completed": 1, "unresolved": 1},
                     budget={"limit": 6, "used": 6, "remaining": 0, "exhausted": True, "pass": 1},
                     paused=condition == "configuration_attention",
                     next_action=("configure" if condition == "configuration_attention"
@@ -1165,6 +1184,7 @@ async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_
         assert "synthetic-small" in text and "prompt_tokens: 42" in text
         assert "3.0s" in text and "Attempt history" in text
         assert "6/6 requests used; 0 remaining" in text
+        assert "Smaller groups: 1 complete; 1 unresolved" in text
         if condition == "configuration_attention":
             assert "Requests paused" in text
         else:

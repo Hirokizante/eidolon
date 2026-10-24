@@ -288,7 +288,7 @@ async def test_response_that_ignores_planned_limits_cannot_complete_evidence(
         assert task["stages"]["continuity"]["reason"]["code"] == "validation.output_plan"
 
 
-async def test_reducing_output_cannot_dispatch_a_previously_captured_larger_batch(
+async def test_reducing_output_splits_a_captured_batch_without_dispatching_over_plan(
     tmp_path, monkeypatch,
 ):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
@@ -302,9 +302,13 @@ async def test_reducing_output_cannot_dispatch_a_previously_captured_larger_batc
         provider = CompactProvider(lambda doc: pytest.fail("Unbounded retry dispatched"))
         await refresh(service, client, provider)
         held = service.store.pending_maintenance_task()
-        assert provider.calls == [] and held["inputs"] == original["inputs"]
-        assert held["id"] == original["id"]
+        assert provider.calls == [] and held["inputs"] == original["inputs"][:1]
+        assert held["parent_id"] == original["id"]
         assert held["stages"]["continuity"]["reason"]["code"] == "validation.output_budget"
+        assert held["stages"]["continuity"]["budget"]["used"] == 0
+        parent = service.store.get_maintenance_task(original["id"])
+        assert parent["inputs"] == original["inputs"]
+        assert parent["stages"]["continuity"]["status"] == "split"
 
 
 async def test_explicit_thinking_reserve_cannot_leave_no_room_for_an_answer(tmp_path, monkeypatch):
