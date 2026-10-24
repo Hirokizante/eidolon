@@ -261,9 +261,9 @@ Chronology uses the existing bounded topic and transition language checks; it
 does not prove that an arbitrary paraphrase is faithful, that differently named
 topics are identical, or that the reported event happened at the message time.
 When older background needs substantive rewording of an established claim, the
-conservative result is unresolved work rather than a guessed merge. This guard
-does not enable progress past unresolved older batches: newer evidence still
-waits until that separate recovery work is implemented.
+conservative result is unresolved work rather than a guessed merge. Exhausted or
+oversized original batches are retained separately, allowing newer eligible
+evidence to progress. Retry batch rechecks this guard against the latest notes.
 
 Dates, promise metadata and closing a topic still depend on complete original
 statements. Generated prose cannot establish those changes. These deterministic
@@ -323,9 +323,10 @@ A missing or invalid `op` produces specific correction instructions for the next
 retry, including after a service restart. Unknown fields and invalid evidence still
 reject the whole proposal. Failed attempts preserve the pending batch, existing
 notes and watermark. A pass defaults to six dispatched auxiliary calls. After
-exhaustion, automatic calls stop and newer evidence still waits; explicit Refresh
-starts a fresh bounded pass with lifetime history intact. Recognized configuration
-failures pause unchanged settings until a relevant change or explicit Refresh.
+exhaustion, that batch is set aside while newer eligible evidence continues.
+Run history → Retry batch starts a fresh bounded pass with lifetime history intact;
+a newer success leaves the older unresolved warning visible. Recognized
+configuration failures pause unchanged settings until a relevant change or explicit Refresh.
 See [bounded recovery](AUXILIARY_MODEL.md#bounded-recovery-and-configuration-pauses).
 Diagnostics use application-owned text; raw model output and
 arbitrary schema error details are not persisted or replayed as instructions.

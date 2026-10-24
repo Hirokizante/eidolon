@@ -190,7 +190,7 @@ class ContinuityWorker:
             await asyncio.gather(task, return_exceptions=True)
 
     def _batch(self, inputs: list[dict], state: dict) -> list[dict]:
-        """Keep the oldest contiguous prefix; never advance across unseen inputs."""
+        """Keep an oldest-first prefix of unassigned complete exchanges."""
         result = []
         limit = self._response_limits("ordinary").max_operations
         for row in inputs:
@@ -565,7 +565,8 @@ class ContinuityWorker:
             task["id"], call_limit=self.recovery_calls,
             fingerprint=self._recovery_fingerprint(reason_code))
         saved = self.store.get_maintenance_stage(task["id"])
-        retry = (None if paused or saved["budget"]["exhausted"] else
+        retry = (None if paused or saved["budget"]["exhausted"]
+                 or reason_code == "validation.evidence_changed" else
                  (datetime.now(dt_timezone.utc) + timedelta(seconds=delay)).isoformat())
         self.store.fail_maintenance_stage(task["id"], "continuity", reason,
                                           next_retry_at=retry, reason_code=reason_code,
@@ -573,8 +574,8 @@ class ContinuityWorker:
                                           if paused else None)
         self._last_result = reason
 
-    async def run_once(self, *, force: bool = False) -> bool:
-        """Commit at most one batch, including validated no-change; retry in order.
+    async def run_once(self, *, force: bool = False, retry_task_id: str | None = None) -> bool:
+        """Commit at most one batch; retain gaps separately from newer progress.
 
         Manual force bypasses activation, batching, and retry delay but cannot
         bypass evidence, eligibility, locks, or revision validation.
@@ -596,7 +597,18 @@ class ContinuityWorker:
                 self.counter = await asyncio.to_thread(TokenCounter, self.model)
             state = self.store.continuity_state(scope=self.scope, limit=None, maintenance=True)
             state["source_exchanges"] = self._source_exchanges(state)
-            task = self.store.pending_maintenance_task(scope=self.scope, stage="continuity")
+            task = (self.store.get_maintenance_task(retry_task_id) if retry_task_id else
+                    self.store.pending_maintenance_task(scope=self.scope, stage="continuity",
+                                                        include_retained=force))
+            # Recheck configuration-paused work after relevant settings change.
+            if task is None and not force:
+                retained = self.store.pending_maintenance_task(scope=self.scope)
+                if retained and self.store.prepare_maintenance_recovery(
+                    retained["id"], call_limit=self.recovery_calls,
+                    fingerprint=self._recovery_fingerprint(
+                        (retained["stages"]["continuity"].get("reason") or {}).get("code")),
+                ):
+                    task = retained
             now = datetime.now(dt_timezone.utc)
             if task:
                 if not self.store.prepare_maintenance_recovery(
@@ -625,9 +637,7 @@ class ContinuityWorker:
                     resume_task_id=task["id"],
                 )
             else:
-                inputs = self.store.continuity_inputs(after=state["watermark"],
-                                                       limit=self.batch_exchanges,
-                                                       scope=self.scope)
+                inputs = self.store.maintenance_inputs(limit=self.batch_exchanges, scope=self.scope)
                 current = active_items(state["items"], scope=self.scope)
                 review = (not inputs and state.get("active_count", len(current)) > self.max_notes
                           and any(not (item.get("locked") or item.get("user_created")
@@ -646,7 +656,7 @@ class ContinuityWorker:
                     self._last_result = "coalescing eligible exchanges"
                     return False
                 # If a single source cannot fit, persist it for explicit retry;
-                # do not skip ahead to smaller or newer exchanges.
+                # keep its originals unresolved while allowing newer batches to progress.
                 try:
                     bounded = inputs if rewrite or review else self._batch(inputs, state)
                 except ContinuityValidationError:

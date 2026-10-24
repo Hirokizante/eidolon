@@ -45,6 +45,8 @@ class ContinuityValidationError(ValueError):
                        "scope and optional metadata are supplied by the app. No new notes or archives.",
         "schema_op": "Each operation must use the JSON key op with a value of upsert, resolve, "
                      "archive, no_change or defer. Do not name this key operation, action or type.",
+        "evidence_changed": "The retained originals changed or are no longer eligible. "
+                            "The batch is kept unresolved; retry only after reviewing eligibility.",
         "source": "Evidence must copy a complete original message with its correct source identity.",
         "batch_source": "Updates must cite an exchange from this batch. Prior sources alone "
                         "may only convert an open legacy note to narrative while preserving "

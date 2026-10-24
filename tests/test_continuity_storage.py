@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -62,7 +63,7 @@ def test_v8_upgrade_has_consistent_backup_and_preserves_exchange_identities(tmp_
         store.db.execute("PRAGMA user_version=6")
     upgraded = Store(path)  # Original connection still has its WAL open.
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
         assert upgraded.continuity_inputs() == [original]
         assert upgraded.pending_outbox()[0] == outbox
         assert upgraded.migration_backup_path.stat().st_mode & 0o777 == 0o600
@@ -578,3 +579,46 @@ def test_old_unresolved_run_stays_discoverable_beyond_recent_history(store):
                  if stage["task_id"] == task["id"] and stage["stage"] == "continuity")
     assert older["status"] == "completed" and older["unresolved_count"] == 1
     assert status["stages_omitted"] == 6
+
+
+def test_v11_migration_preserves_failed_gap_below_watermark_without_inventing_reason(tmp_path):
+    path = tmp_path / "upgrade.db"
+    store = Store(path)
+    old = exchange(store, "My earlier project needs attention.")
+    failed = task_for(store, [old])
+    store.fail_maintenance_stage(failed["id"], "continuity", "Legacy diagnostic")
+    newer = exchange(store, "A later exchange.")
+    # A legacy watermark alone cannot negate the saved failed originals.
+    with store.db:
+        store.db.execute("UPDATE continuity_scopes SET watermark=?", (newer["id"],))
+        store.db.execute("UPDATE maintenance_stages SET reason=NULL,model_calls=6 "
+                         "WHERE task_id=? AND stage='continuity'", (failed["id"],))
+        store.db.execute("DROP TABLE continuity_evidence")
+        store.db.execute("ALTER TABLE maintenance_stages DROP COLUMN set_aside")
+        store.db.execute("PRAGMA user_version=11")
+    store.close()
+    for _ in range(2):
+        store = Store(path)
+        try:
+            assert store.maintenance_status()["evidence"] == {"processed": 1, "unresolved": 1}
+            assert store.pending_maintenance_task()["inputs"] == failed["inputs"]
+            stage = store.get_maintenance_stage(failed["id"])
+            assert stage["reason"] is None and stage["set_aside"]
+            assert store.maintenance_inputs() == []
+        finally:
+            store.close()
+    with closing(Store(path)) as store:
+        store.prepare_maintenance_recovery(failed["id"], call_limit=2,
+                                           fingerprint="synthetic", retry=True)
+        resumed = store.create_maintenance_task(
+            failed["inputs"], expected_revision=0, control_revision=0,
+            resume_task_id=failed["id"],
+        )
+        operations = [{"op": "no_change", "expected_revision": 0, "sources": []}]
+        commit(store, resumed, operations)
+        commit(store, resumed, operations)  # Duplicate delivery is harmless.
+        assert store.maintenance_status()["evidence"] == {"processed": 2, "unresolved": 0}
+        assert store.continuity_state()["watermark"] == newer["id"]
+    with closing(Store(path)) as reopened:
+        assert reopened.maintenance_status()["evidence"] == {"processed": 2, "unresolved": 0}
+        assert reopened.pending_maintenance_task() is None

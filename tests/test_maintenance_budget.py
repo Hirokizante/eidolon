@@ -393,6 +393,11 @@ async def test_optional_background_reference_limit_keeps_the_index_and_allows_pr
                                           note["observed_at"]))
             service.store.db.execute("UPDATE continuity_scopes SET watermark=?",
                                      (evidence[-1]["exchange_id"],))
+            # This fixture represents completed maintenance, including its durable
+            # evidence accounting; the watermark alone no longer proves completion.
+            service.store.db.executemany(
+                "INSERT INTO continuity_evidence(scope,exchange_id,processed) "
+                "VALUES ('real_life',?,1)", [(row["exchange_id"],) for row in evidence])
         service.store.complete_turn(service.current_session["id"], "Hello.", "Hello.")
         seen = []
 
