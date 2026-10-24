@@ -782,29 +782,36 @@ class ContinuityWorker:
                              immediate=outcome == "stale")
             return False
         finally:
-            if self._attempt_id is not None:
-                self.store.finish_maintenance_attempt(self._attempt_id, outcome,
-                                                      reason_code=reason_code)
-            if task and reason_code and reason_code.startswith("validation."):
-                # One precise correction precedes subdivision. Input/response
-                # planning failures can split without paying for a futile call.
-                # Reviews and legacy conversions keep their whole dependency set.
-                saved = self.store.get_maintenance_task(task["id"])
-                stage = saved["stages"]["continuity"]
-                splittable = reason_code not in {
-                    "validation.evidence_changed", "validation.input_overhead",
-                    "validation.input_state",
-                }
-                if splittable and (stage["attempts"] >= 2 or reason_code in {
-                    "validation.input_limit", "validation.output_budget",
-                }):
-                    children = self.store.split_maintenance_task(task["id"])
-                    if children:
-                        self._last_result = "split into smaller complete-exchange groups"
-                    elif saved.get("parent_id") and len(saved["inputs"]) == 1:
-                        self.store.retain_maintenance_task(task["id"])
-            self._attempt_id = None
-            self._dispatched = False
-            self._attempt_identity = None
-            self._active_task = None
-            self._task_id = None
+            try:
+                if self._attempt_id is not None:
+                    self.store.finish_maintenance_attempt(self._attempt_id, outcome,
+                                                          reason_code=reason_code)
+                if task and reason_code and reason_code.startswith("validation."):
+                    # One precise correction precedes subdivision. Input/response
+                    # planning failures can split without paying for a futile call.
+                    # Reviews and legacy conversions keep their whole dependency set.
+                    saved = self.store.get_maintenance_task(task["id"])
+                    stage = saved["stages"]["continuity"]
+                    splittable = reason_code not in {
+                        "validation.evidence_changed", "validation.input_overhead",
+                        "validation.input_state",
+                    }
+                    if splittable and (stage["attempts"] >= 2 or reason_code in {
+                        "validation.input_limit", "validation.output_budget",
+                    }):
+                        try:
+                            children = self.store.split_maintenance_task(task["id"])
+                        except ValueError as exc:
+                            if str(exc) != "Maintenance evidence is no longer unresolved":
+                                raise
+                            children = []
+                        if children:
+                            self._last_result = "split into smaller complete-exchange groups"
+                        elif saved.get("parent_id") and len(saved["inputs"]) == 1:
+                            self.store.retain_maintenance_task(task["id"])
+            finally:
+                self._attempt_id = None
+                self._dispatched = False
+                self._attempt_identity = None
+                self._active_task = None
+                self._task_id = None
