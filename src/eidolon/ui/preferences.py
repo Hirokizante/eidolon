@@ -80,7 +80,12 @@ FIELDS = (
                     "continuity", "integer"),
     PreferenceField("continuity_recovery_calls", "Requests per recovery pass",
                     "From 1 to 100; default 6, including the first request and corrections. "
-                    "Refresh starts a new pass; automatic retries stop when it is used up.",
+                    "Retry starts a new pass. Retained work also shares a daily allowance.",
+                    "continuity", "integer"),
+    PreferenceField("continuity_daily_retry_calls", "Daily automatic retry requests",
+                    "From 0 to 100; default 6 across the entire backlog. 0 pauses backlog retries. "
+                    "At most one opportunity per ten minutes; renews at midnight UTC. "
+                    "After recovery starts, limit edits apply next period. /runs shows remaining calls.",
                     "continuity", "integer"),
     PreferenceField("continuity_idle_seconds", "Idle time before update",
                     "Seconds from 1 to 86400; default 600 (ten minutes).",

@@ -44,11 +44,11 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 13:
+        if version > 14:
             self.db.close()
             raise ValueError("This database requires a newer Eidolon version")
         self.migration_backup_path: Path | None = None
-        if version < 13 and self.db.execute(
+        if version < 14 and self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone():
             # SQLite's backup API captures a consistent snapshot, including WAL
@@ -59,7 +59,7 @@ class Store:
             backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_dir.chmod(0o700)
             stamp = datetime.now(dt_timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v13-{stamp}.sqlite3"
+            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v14-{stamp}.sqlite3"
             with sqlite3.connect(self.migration_backup_path) as backup:
                 self.db.backup(backup)
             self.migration_backup_path.chmod(0o600)
@@ -151,6 +151,11 @@ class Store:
             processed INTEGER NOT NULL CHECK(processed IN (0,1)),
             PRIMARY KEY(scope,exchange_id)
           );
+          CREATE TABLE IF NOT EXISTS maintenance_daily_allowance (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            period TEXT NOT NULL, call_limit INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0,
+            next_opportunity_at TEXT
+          );
           CREATE TABLE IF NOT EXISTS auxiliary_routing (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1),
             revision INTEGER NOT NULL, fingerprint TEXT NOT NULL
@@ -227,10 +232,22 @@ class Store:
                 ("pass_start_calls", "INTEGER NOT NULL DEFAULT 0"),
                 ("recovery_pass", "INTEGER NOT NULL DEFAULT 1"),
                 ("pause_fingerprint", "TEXT"),
+                ("recovery_source", "TEXT NOT NULL DEFAULT 'initial'"),
+                ("automatic_last_at", "TEXT"),
             ):
                 if column not in stage_columns:
                     self.db.execute(
                         f"ALTER TABLE maintenance_stages ADD COLUMN {column} {declaration}")
+            attempt_columns = {row["name"] for row in self.db.execute(
+                "PRAGMA table_info(maintenance_attempts)")}
+            for column, declaration in (
+                ("recovery_source", "TEXT"),
+                ("recovery_pass", "INTEGER"),
+                ("daily_period", "TEXT"),
+            ):
+                if column not in attempt_columns:
+                    self.db.execute(
+                        f"ALTER TABLE maintenance_attempts ADD COLUMN {column} {declaration}")
             if "set_aside" not in stage_columns:
                 self.db.execute(
                     "ALTER TABLE maintenance_stages ADD COLUMN set_aside INTEGER NOT NULL DEFAULT 0")
@@ -302,7 +319,7 @@ class Store:
                     "UPDATE outbox SET review_state='pending' WHERE status!='completed' "
                     "AND generation_id IN (SELECT id FROM generations WHERE memory_eligible IS NULL)"
                 )
-            self.db.execute("PRAGMA user_version=13")
+            self.db.execute("PRAGMA user_version=14")
         self.db.commit()
         self.path.chmod(0o600)
 
@@ -954,6 +971,10 @@ class Store:
             root_id = self._maintenance_root(result["task_id"])
             result["budget"] = self._maintenance_family_budget(root_id)
             result["root_id"] = root_id
+            result["recovery_source"] = self.db.execute(
+                "SELECT recovery_source FROM maintenance_stages "
+                "WHERE task_id=? AND stage='continuity'", (root_id,),
+            ).fetchone()[0]
             result["split"] = self.maintenance_split(result["task_id"])
         else:
             limit = result.get("recovery_limit")
@@ -1240,7 +1261,9 @@ class Store:
             # Cooldown still belongs to the active pass; retained work is separate.
             for row in rows:
                 task = self._maintenance_task(row["id"])
-                if include_retained or not task["stages"][stage]["set_aside"]:
+                if include_retained or (not task["stages"][stage]["set_aside"]
+                                        and not task["stages"][stage]["paused"]
+                                        and task["stages"][stage]["recovery_source"] != "automatic"):
                     return task
             return None
 
@@ -1255,9 +1278,126 @@ class Store:
             tasks = [self._maintenance_task(row["id"]) for row in rows]
             return [task for task in tasks if task["stages"]["continuity"]["set_aside"]]
 
+    def automatic_maintenance_tasks(self, scope: str = "real_life") -> list[dict]:
+        """Rotate original families, then their unresolved leaves, across opportunities."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT t.id FROM maintenance_tasks t JOIN maintenance_stages s ON s.task_id=t.id "
+                "LEFT JOIN maintenance_lineage l ON l.task_id=t.id "
+                "JOIN maintenance_stages root ON root.task_id=coalesce(l.root_id,t.id) "
+                "AND root.stage='continuity' "
+                "WHERE t.scope=? AND s.stage='continuity' AND s.status IN ('pending','failed') "
+                "ORDER BY coalesce(root.automatic_last_at,''),coalesce(s.automatic_last_at,''),"
+                "t.input_watermark,t.id", (scope,),
+            ).fetchall()
+            tasks = [self._maintenance_task(row["id"]) for row in rows]
+            return [task for task in tasks if task["stages"]["continuity"]["set_aside"]
+                    or task["stages"]["continuity"]["paused"]
+                    or task["stages"]["continuity"]["recovery_source"] == "automatic"]
+
+    def maintenance_daily_allowance(self, limit: int = 6, *, now: datetime | None = None) -> dict:
+        """A UTC calendar allowance; never rewind or reset it for configuration edits.
+
+        The limit freezes at the first opportunity in a period. Status reads do
+        not freeze a not-yet-used period. A backwards clock cannot mint calls.
+        """
+        if type(limit) is not int or not 0 <= limit <= 100:
+            raise ValueError("Daily retry calls must be an integer from 0 to 100")
+        now = now or datetime.now(dt_timezone.utc)
+        now = now.astimezone(dt_timezone.utc)
+        period = now.date().isoformat()
+        with self._lock:
+            saved = self.db.execute("SELECT * FROM maintenance_daily_allowance").fetchone()
+            used = 0
+            next_at = saved["next_opportunity_at"] if saved else None
+            if saved and saved["period"] >= period:
+                period, limit, used = saved["period"], saved["call_limit"], saved["used"]
+        resets = (datetime.fromisoformat(period).replace(tzinfo=dt_timezone.utc)
+                  + timedelta(days=1)).isoformat()
+        if used >= limit:
+            next_at = max(next_at or resets, resets)
+        return {"period": period, "limit": limit, "used": used,
+                "remaining": max(0, limit - used), "exhausted": used >= limit,
+                "resets_at": resets, "next_opportunity_at": next_at}
+
+    def automatic_maintenance_schedule(self, row: dict, *, fingerprint: str, daily_limit: int,
+                                       now: datetime | None = None) -> dict:
+        """Describe the same gates used by automatic activation, without mutating them."""
+        now = now or datetime.now(dt_timezone.utc)
+        code = (row.get("reason") or {}).get("code")
+        if row.get("pause_fingerprint") == fingerprint:
+            return {"next_action": "configure", "next_retry_at": None}
+        if code == "validation.evidence_changed":
+            return {"next_action": "retry_required", "next_retry_at": None}
+        if not daily_limit:
+            return {"next_action": "automatic_disabled", "next_retry_at": None}
+        daily = self.maintenance_daily_allowance(daily_limit, now=now)
+        ready = max(filter(None, (
+            daily["next_opportunity_at"], row.get("next_retry_at"),
+            (datetime.fromisoformat(row["updated_at"]) + timedelta(minutes=10)).isoformat(),
+        )))
+        return {"next_action": "daily_exhausted" if daily["exhausted"] else "retry_scheduled",
+                "next_retry_at": ready}
+
+    def activate_automatic_maintenance(self, task_id: str, *, call_limit: int, daily_limit: int,
+                                       fingerprint: str, now: datetime) -> bool:
+        """Reserve one paced opportunity, without charging an undispatched request."""
+        with self._lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.get_maintenance_stage(task_id)
+            if row is None or row["status"] not in {"pending", "failed"}:
+                return False
+            schedule = self.automatic_maintenance_schedule(
+                row, fingerprint=fingerprint, daily_limit=daily_limit, now=now)
+            if (schedule["next_action"] != "retry_scheduled"
+                    or datetime.fromisoformat(schedule["next_retry_at"]) > now):
+                return False
+            daily = self.maintenance_daily_allowance(daily_limit, now=now)
+            next_at = (now + timedelta(minutes=10)).isoformat()
+            self.db.execute(
+                "INSERT INTO maintenance_daily_allowance VALUES (1,?,?,?,?) "
+                "ON CONFLICT(singleton) DO UPDATE SET period=excluded.period,"
+                "call_limit=excluded.call_limit,used=excluded.used,"
+                "next_opportunity_at=excluded.next_opportunity_at",
+                (daily["period"], daily["limit"], daily["used"], next_at),
+            )
+            root_id = row["root_id"]
+            if row["budget"]["exhausted"]:
+                self.db.execute(
+                    "UPDATE maintenance_stages SET recovery_limit=?,pass_start_calls=?,"
+                    "recovery_pass=recovery_pass+1 WHERE task_id=? AND stage='continuity'",
+                    (call_limit, self._maintenance_family_calls(root_id), root_id),
+                )
+            self.db.execute(
+                "UPDATE maintenance_stages SET recovery_source='automatic',automatic_last_at=? "
+                "WHERE task_id=? AND stage='continuity'", (now.isoformat(), root_id),
+            )
+            # Only this leaf is released; unchanged paused siblings remain held.
+            self.db.execute(
+                "UPDATE maintenance_stages SET set_aside=0,pause_fingerprint=NULL,"
+                "next_retry_at=NULL,automatic_last_at=? WHERE task_id=? AND stage='continuity'",
+                (now.isoformat(), task_id),
+            )
+            return True
+
+    def _charge_automatic_maintenance(self, task_id: str, now: datetime | None,
+                                      daily_limit: int) -> str | None:
+        """Charge in the same transaction as dispatch and lifetime accounting."""
+        row = self.get_maintenance_stage(task_id)
+        if row["recovery_source"] != "automatic":
+            return None
+        daily = self.maintenance_daily_allowance(daily_limit, now=now)
+        if not daily_limit or daily["exhausted"]:
+            raise ValueError("Automatic daily maintenance allowance is exhausted")
+        self.db.execute(
+            "UPDATE maintenance_daily_allowance SET period=?,call_limit=?,used=? WHERE singleton=1",
+            (daily["period"], daily["limit"], daily["used"] + 1),
+        )
+        return daily["period"]
+
     def prepare_maintenance_recovery(self, task_id: str, *, call_limit: int,
                                      fingerprint: str, retry: bool = False) -> bool:
-        """Freeze a pass's allowance; only explicit retry can start another pass.
+        """Freeze a pass's allowance; explicit retry requests a fresh user pass.
 
         Lifetime counters are never reset. Split children dispatch against the
         original task's allowance. Explicit retry reactivates only unresolved leaves.
@@ -1272,7 +1412,8 @@ class Store:
             if retry:
                 self.db.execute(
                     "UPDATE maintenance_stages SET recovery_limit=?,pass_start_calls=?,"
-                    "recovery_pass=recovery_pass+1,pause_fingerprint=NULL,next_retry_at=NULL,set_aside=0 "
+                    "recovery_pass=recovery_pass+1,recovery_source='user',"
+                    "pause_fingerprint=NULL,next_retry_at=NULL,set_aside=0 "
                     "WHERE task_id=? AND stage='continuity'",
                     (call_limit, self._maintenance_family_calls(root_id), root_id),
                 )
@@ -1425,7 +1566,8 @@ class Store:
             return self.auxiliary_route()
 
     def start_maintenance_attempt(self, task_id: str, provenance: dict,
-                                  stage: str = "continuity") -> str:
+                                  stage: str = "continuity", *, now: datetime | None = None,
+                                  daily_limit: int = 6) -> str:
         from ..memory.proposals import CONTRACT_VERSIONS
         from ..providers.maintenance import CAPABILITY_SOURCES, OUTPUT_MODES
 
@@ -1488,11 +1630,13 @@ class Store:
             recovery = self.get_maintenance_stage(task_id, stage)
             if recovery is None or recovery["paused"] or recovery["budget"]["exhausted"]:
                 raise ValueError("Maintenance recovery is paused or exhausted")
+            daily_period = self._charge_automatic_maintenance(task_id, now, daily_limit)
             attempt_id = str(uuid.uuid4())
             self.db.execute(
-                "INSERT INTO maintenance_attempts(id,task_id,stage,provenance,started_at,outcome) "
-                "VALUES (?,?,?,?,?,'running')",
-                (attempt_id, task_id, stage, serialized, utc_now()),
+                "INSERT INTO maintenance_attempts(id,task_id,stage,provenance,started_at,outcome,"
+                "recovery_source,recovery_pass,daily_period) VALUES (?,?,?,?,?,'running',?,?,?)",
+                (attempt_id, task_id, stage, serialized, utc_now(),
+                 recovery["recovery_source"], recovery["budget"]["pass"], daily_period),
             )
             self.db.execute(
                 "UPDATE maintenance_stages SET model_calls=model_calls+1 WHERE task_id=? AND stage=?",
@@ -1563,7 +1707,8 @@ class Store:
 
     def record_maintenance_usage(self, task_id: str, stage: str = "continuity", *,
                                   usage: dict | None = None, called: bool = False,
-                                  attempt_id: str | None = None) -> None:
+                                  attempt_id: str | None = None, now: datetime | None = None,
+                                  daily_limit: int = 6) -> None:
         if stage not in {"continuity", "summary", "reflection"}:
             raise ValueError("Invalid maintenance stage")
         if usage is not None:
@@ -1579,6 +1724,7 @@ class Store:
                 if (recovery is None or recovery["status"] in {"completed", "split"}
                         or recovery["paused"] or recovery["budget"]["exhausted"]):
                     raise ValueError("Maintenance recovery is paused or exhausted")
+                self._charge_automatic_maintenance(task_id, now, daily_limit)
             if usage and attempt_id:
                 attempt = self.get_maintenance_attempt(attempt_id)
                 if not attempt or attempt["task_id"] != task_id or attempt["stage"] != stage:

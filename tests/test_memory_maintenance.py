@@ -597,7 +597,11 @@ async def test_oversized_oldest_exchange_is_held_and_never_skipped(store):
 
 
 @pytest.mark.parametrize("recoverable_index", [None, 1, 2])
-async def test_automatic_recovery_checks_retained_tasks_in_order(store, recoverable_index):
+async def test_automatic_recovery_checks_retained_tasks_in_order(store, recoverable_index,
+                                                                monkeypatch):
+    from test_maintenance_recovery import clock
+    controlled = clock.__wrapped__(monkeypatch)
+    monkeypatch.setattr("eidolon.storage.store.datetime", controlled)
     provider = Provider()
     worker = ContinuityWorker(store, provider, enabled=True)
     tasks = []
@@ -609,8 +613,10 @@ async def test_automatic_recovery_checks_retained_tasks_in_order(store, recovera
         store.prepare_maintenance_recovery(task["id"], call_limit=1, fingerprint="original")
         if index == 0:
             store.record_maintenance_usage(task["id"], called=True)
-            store.fail_maintenance_stage(task["id"], "continuity", "Exhausted",
-                                          reason_code="unknown")
+            store.fail_maintenance_stage(
+                task["id"], "continuity", "Input too large",
+                reason_code="validation.input_limit",
+                pause_fingerprint=worker._recovery_fingerprint("validation.input_limit"))
         else:
             fingerprint = ("old-settings" if recoverable_index is not None
                            and index >= recoverable_index else
@@ -622,6 +628,7 @@ async def test_automatic_recovery_checks_retained_tasks_in_order(store, recovera
     assert [task["id"] for task in store.retained_maintenance_tasks()] == [
         task["id"] for task in tasks
     ]
+    controlled.advance(600)
     assert await worker.run_once() is (recoverable_index is not None)
     if recoverable_index is None:
         assert provider.calls == []

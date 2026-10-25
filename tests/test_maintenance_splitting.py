@@ -157,7 +157,9 @@ async def test_unprocessable_single_child_is_set_aside_while_sibling_commits(
     tmp_path, monkeypatch, clock,
 ):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
-        await client.request("save_preferences", preferences={"continuity_enabled": True})
+        await client.request("save_preferences", preferences={
+            "continuity_enabled": True, "continuity_daily_retry_calls": 0,
+        })
         for text in ("A difficult project.", "An ordinary project."):
             service.store.complete_turn(service.current_session["id"], text, "Understood.")
         provider = CompactProvider(lambda doc: {"operations": []} if (
@@ -171,7 +173,7 @@ async def test_unprocessable_single_child_is_set_aside_while_sibling_commits(
         detail = await client.request("memory_continuity_run", task_id=parent_id)
         assert detail["split"]["completed"] == 1 and detail["split"]["unresolved"] == 1
         assert detail["budget"]["used"] == 5 and detail["budget"]["remaining"] == 1
-        assert detail["next_action"] == "retry_required"
+        assert detail["next_action"] == "automatic_disabled"
         assert len(provider.calls) == 5
         assert service.maintenance_status()["evidence"] == {"processed": 1, "unresolved": 1}
         assert service.maintenance_status()["unresolved"]["set_aside"] == 1

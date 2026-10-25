@@ -26,6 +26,7 @@ class UserPreferences(IdentityConfig):
     continuity_batch_exchanges: int = Field(default=8, ge=1, le=32)
     continuity_idle_seconds: int = Field(default=600, ge=1, le=86400)
     continuity_recovery_calls: int = Field(default=6, ge=1, le=100, strict=True)
+    continuity_daily_retry_calls: int = Field(default=6, ge=0, le=100, strict=True)
     recall_budget: str = "low"
     max_memories: int = Field(default=12, ge=1, le=50)
     avatar_enabled: bool = False
@@ -75,6 +76,7 @@ class UserPreferences(IdentityConfig):
             continuity_batch_exchanges=config.memory.continuity_batch_exchanges,
             continuity_idle_seconds=config.memory.continuity_idle_seconds,
             continuity_recovery_calls=config.memory.continuity_recovery_calls,
+            continuity_daily_retry_calls=config.memory.continuity_daily_retry_calls,
             recall_budget=config.memory.recall_budget,
             max_memories=config.memory.max_memories, avatar_enabled=config.avatar.enabled,
             search_depth=config.tavily.depth, search_results=config.tavily.max_results,
@@ -100,6 +102,7 @@ class UserPreferences(IdentityConfig):
         candidate.memory.continuity_batch_exchanges = self.continuity_batch_exchanges
         candidate.memory.continuity_idle_seconds = self.continuity_idle_seconds
         candidate.memory.continuity_recovery_calls = self.continuity_recovery_calls
+        candidate.memory.continuity_daily_retry_calls = self.continuity_daily_retry_calls
         candidate.memory.recall_budget = self.recall_budget
         candidate.memory.max_memories = self.max_memories
         candidate.avatar.enabled = self.avatar_enabled

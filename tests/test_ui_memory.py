@@ -1135,13 +1135,18 @@ async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_
                     "model": "synthetic-small", "usage": {"prompt_tokens": 42},
                     "reason": {"version": 1, "code": "validation.output_json",
                                "explanation": DIAGNOSTIC}, "exception": DIAGNOSTIC,
+                    "recovery_source": "automatic", "recovery_pass": 2,
+                    "daily_period": "2026-10-14",
                 }], model_calls=2, attempt_counts={"failed": 1, "committed": 1},
+                    daily_allowance={"limit": 6, "used": 6, "remaining": 0, "exhausted": True,
+                                     "resets_at": "2026-10-15T00:00:00+00:00"},
                     split={"children": [{"task_id": "synthetic-child", "status": "failed"}],
                            "completed": 1, "unresolved": 1},
                     budget={"limit": 6, "used": 6, "remaining": 0, "exhausted": True, "pass": 1},
                     paused=condition == "configuration_attention",
                     next_action=("configure" if condition == "configuration_attention"
-                                 else "retry_required"),
+                                 else "daily_exhausted"),
+                    next_retry_at="2026-10-15T00:00:00+00:00",
                     last_successful_at="2026-10-14T04:01:00+00:00")
             return result
 
@@ -1184,11 +1189,13 @@ async def test_main_problem_indicator_opens_safe_attempt_history_without_losing_
         assert "synthetic-small" in text and "prompt_tokens: 42" in text
         assert "3.0s" in text and "Attempt history" in text
         assert "6/6 requests used; 0 remaining" in text
+        assert "Automatic backlog retries: 6/6 used; 0 remaining" in text
+        assert "Automatic backlog retry" in text
         assert "Smaller groups: 1 complete; 1 unresolved" in text
         if condition == "configuration_attention":
             assert "Requests paused" in text
         else:
-            assert "new bounded recovery pass" in text
+            assert "Shared daily allowance exhausted" in text
         assert "Previous version" in text and OLD_NOTE_TEXT in text
         assert DIAGNOSTIC not in text
         scroll = screen.query_one("#memory-detail-scroll", VerticalScroll)
