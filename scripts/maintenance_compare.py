@@ -135,7 +135,9 @@ def recovery_summary(path: Path, *, expected_scenarios: set[str] = RECOVERY_SCEN
             if prop.get("name") == "maintenance_assessment"]
     if len(rows) != len(expected_scenarios) or {row["scenario"] for row in rows} != expected_scenarios:
         raise ValueError("Missing or duplicate recovery scenarios")
-    if any(row["mode"] != "scripted" or row["calls"] != len(row["attempts"]) for row in rows):
+    if any(row["mode"] != "scripted" or row["calls"] != len(row["attempts"])
+           or row["attempt_outcomes"] != dict(Counter(a["outcome"] for a in row["attempts"]))
+           for row in rows):
         raise ValueError("Invalid synthetic attempt accounting")
     return {"mode": "scripted", "samples": len(rows),
             "calls": sum(row["calls"] for row in rows),

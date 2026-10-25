@@ -80,10 +80,10 @@ unresolved evidence gap each. Successful newer work does not erase those gaps.
 | Chronology-unsafe old preparation | 6 | 6 | Newer note preserved; old evidence retained |
 | Small talk | 1 | 0 | Justified no-change |
 
-The JSON retains every attempt's outcome, safe reason code, local elapsed time,
-and available counters. The provider fabricates 42 input and 7 output tokens per
-call solely to check durable usage accounting. These are **not measured model
-usage or prices**. Scenario wall time excludes waiting through real backoff:
+The JSON retains every attempt's outcome in recorded execution order, safe reason
+code, local elapsed time, and available counters. The provider fabricates 42 input
+and 7 output tokens per call solely to check durable usage accounting. These are
+**not measured model usage or prices**. Scenario wall time excludes waiting through real backoff:
 controlled time advances eligibility, while stored attempt duration uses the real
 storage clock. The recovery suite does not estimate production latency.
 
@@ -114,7 +114,8 @@ uv run python scripts/maintenance_compare.py \
 Replace `<printed-run-id>` with the run directory printed by the evaluator. The
 comparison prints only aggregates; recovery JUnit properties contain synthetic
 counts and safe categories. It refuses failing JUnit reports and incomplete or
-duplicate recovery scenario sets. Raw first-attempt reports remain private even
+duplicate recovery scenario sets, and per-scenario outcome counts that disagree
+with the recorded attempts. Raw first-attempt reports remain private even
 when their workload is synthetic. Review generated output under
 [the privacy guide](PRIVACY.md#sharing-diagnostics) before sharing it.
 
@@ -139,6 +140,12 @@ Ruff, source/evaluator compilation, `uv build`, staged/all-file privacy and
 secret checks, manual privacy/history checks, dependency auditing and diff
 whitespace checks passed. No type checker is configured in this repository;
 compilation is reported separately from behavioral validation.
+
+The review follow-up passed 52 tests across `test_maintenance_compare.py`,
+`test_maintenance_assessment.py`, and `test_maintenance_baseline.py` in 2.68 seconds
+with four workers and work stealing. This run refreshed the recovery aggregate
+after adding per-scenario count validation and restoring recorded execution order.
+The broader validation results above are from the original assessment.
 
 ## Terminal review
 

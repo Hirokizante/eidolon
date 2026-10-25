@@ -105,9 +105,14 @@ async def test_recovery_assessment(tmp_path, monkeypatch, clock, record_property
             details = [await active.handle("memory_continuity_run", {"task_id": row["task_id"]})
                        for row in stages]
             attempts = [attempt for detail in details for attempt in detail["attempts"]]
-            # Parent stages also appear in the aggregate. Deduplicate by durable ID.
-            attempts = list({attempt["id"]: attempt for attempt in attempts}.values())
+            # Parent stages also appear in the aggregate. Deduplicate by durable ID,
+            # then restore execution order from the recorded storage clock.
+            attempts = sorted({attempt["id"]: attempt for attempt in attempts}.values(),
+                              key=lambda attempt: attempt["started_at"])
             counts = Counter(attempt["outcome"] for attempt in attempts)
+            if counts["failed"] and counts["committed"]:
+                assert attempts[0]["outcome"] == "failed"
+                assert attempts[-1]["outcome"] == "committed"
             expected_calls = {"configuration": 1, "split": 4, "retained_gap": 7,
                               "chronology": 6, "justified_no_change": 1}.get(scenario, 2)
             assert provider.calls == maintenance["model_calls"] == len(attempts) == expected_calls

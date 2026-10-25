@@ -72,7 +72,8 @@ def test_live_quality_requires_review_and_identical_route():
         compare.compare_reports(old, new)
 
 
-def test_recovery_summary_keeps_failed_attempts_and_refuses_failed_suites(tmp_path):
+@pytest.fixture
+def recovery_junit(tmp_path):
     import json
     import xml.etree.ElementTree as ET
 
@@ -89,13 +90,44 @@ def test_recovery_summary_keeps_failed_attempts_and_refuses_failed_suites(tmp_pa
     }))
     path = tmp_path / "results.xml"
     ET.ElementTree(suite).write(path)
-    result = compare.recovery_summary(path, expected_scenarios={"malformed"})
+    return path
+
+
+def test_recovery_summary_keeps_failed_attempts_and_refuses_failed_suites(recovery_junit):
+    import xml.etree.ElementTree as ET
+
+    result = compare.recovery_summary(recovery_junit, expected_scenarios={"malformed"})
     assert result["failed_attempts"] == 1 and result["recovered_scenarios"] == 1
     assert result["calls"] == 2 and result["unresolved_evidence"] == 0
+    assert result["committed_attempts"] == 1
+    assert result["attempt_outcomes"] == {"failed": 1, "committed": 1}
+    suite = ET.parse(recovery_junit).getroot()
+    case = suite.find("testcase")
     ET.SubElement(case, "failure", message="synthetic failure")
-    ET.ElementTree(suite).write(path)
+    ET.ElementTree(suite).write(recovery_junit)
     with pytest.raises(ValueError):
-        compare.recovery_summary(path, expected_scenarios={"malformed"})
+        compare.recovery_summary(recovery_junit, expected_scenarios={"malformed"})
+
+
+@pytest.mark.parametrize("outcomes", [
+    {"failed": 2},
+    {"committed": 2},
+    {"failed": 2, "committed": 1},
+    {"failed": 1},
+    {"failed": 1, "committed": 1, "configuration_error": 1},
+])
+def test_recovery_summary_refuses_mismatched_outcome_counts(recovery_junit, outcomes):
+    import json
+    import xml.etree.ElementTree as ET
+
+    suite = ET.parse(recovery_junit).getroot()
+    prop = suite.find(".//property")
+    row = json.loads(prop.attrib["value"])
+    row["attempt_outcomes"] = outcomes
+    prop.set("value", json.dumps(row))
+    ET.ElementTree(suite).write(recovery_junit)
+    with pytest.raises(ValueError, match="Invalid synthetic attempt accounting"):
+        compare.recovery_summary(recovery_junit, expected_scenarios={"malformed"})
 
 
 @pytest.mark.parametrize("mutation", ["extra_dispatch", "invalid_review", "false_quality"])
