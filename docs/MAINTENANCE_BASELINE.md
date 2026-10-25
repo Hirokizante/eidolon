@@ -8,6 +8,8 @@ production auxiliary route resolver, `ContinuityWorker.run_once()`, local
 validator, and real temporary SQLite storage. It never starts the application
 service, recovery scheduler, Hindsight, dialogue generation, or memory delivery.
 This evaluation is opt-in; ordinary tests use scripts or mocked HTTP exclusively.
+See the [paired reliability assessment](MAINTENANCE_ASSESSMENT.md) for the frozen
+baseline comparison, separately measured recovery, terminal review and validation limits.
 
 ## Offline execution
 
@@ -50,18 +52,21 @@ capacity, legacy conversion, optional date/promise metadata, uncertainty,
 negation, attribution, fiction, and paraphrased developments. Each case includes
 a written rubric and desired state checks independent of the scripted answer.
 Fixture-local references bind to real source and note identities at runtime.
-For ordinary maintenance, the scripted adapter translates those historical
+For task-specific maintenance, the scripted adapter translates those historical
 fixture identities into the current request-local proposal references. It keeps
 the fixture's substantive judgments and expectations unchanged. Live responses
-receive no such translation. Capacity reviews and legacy conversions retain
-their existing contract, and reports record each actual task's prompt/schema hashes.
+receive no such translation. Ordinary work, capacity reviews and legacy conversions
+each use their production compact contract, with each actual task's prompt/schema hashes.
 
 The report records workload hashes, the tested Git revision, dirty status,
 hashes of relevant application/evaluator files and `uv.lock`, exact model and
 endpoint, auxiliary mode (`inherit` or `separate`), safe effective request
-options, prompt/schema hashes, and transport/output mode. The current production
-contract is prompt-only JSON over OpenAI-compatible Chat Completions; the report
-does not claim JSON schema enforcement. Each sample also records the actual
+options, prompt/schema hashes, and transport/output mode. Production uses
+OpenAI-compatible Chat Completions with verified schema output, supported JSON
+mode, or prompt-only JSON according to the exact configured route's capability
+record. Unknown support stays prompt-only; JSON mode is not schema enforcement.
+The evaluator forwards production output controls and records their capability
+provenance; it does not independently prove enforcement. Each sample records the actual
 request endpoint when dispatched. Headers and resolved credentials are excluded.
 
 The [pre-change scripted reference](../tests/fixtures/maintenance_baseline_prechange_v1.json)
@@ -91,7 +96,8 @@ charges on the selected endpoint. They require both `--mode live` and
 The evaluator reads only `provider`, `providers`, and `auxiliary` from that file.
 It does not load personal prompts, identity, histories, memory settings, or default
 app configuration. Both separate and inherited routing use the current production
-resolver, including its existing limitations and inherited request settings.
+resolver, including maintenance-specific effective settings that exclude dialogue
+stops and unrelated options in both modes.
 Use a dedicated minimal profile to make those settings reproducible. For example:
 
 ```yaml

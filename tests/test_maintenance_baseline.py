@@ -265,3 +265,36 @@ async def test_live_cost_estimate_uses_only_reported_tokens_and_explicit_prices(
     assert report["summary"]["estimated_cost_usd"]["total"] == pytest.approx(0.0015)
     assert report["summary"]["cost"] is None
     assert report["summary"]["useful_faithful_rate"] is None
+
+
+async def test_report_preserves_verified_output_provenance(tmp_path, monkeypatch, workload):
+    from test_maintenance_output import profile_with_support
+
+    fixture, sources, digest = workload
+    monkeypatch.setenv("EIDOLON_HOME", str(tmp_path / "verified-state"))
+    monkeypatch.setattr(baseline, "load_workload", lambda: (
+        {**fixture, "cases": fixture["cases"][:1]}, sources, digest))
+    config = AppConfig(providers=[profile_with_support(json_schema="enforced", json_object=True)])
+    monkeypatch.setattr(baseline, "read_profile", lambda *args, **kwargs: config)
+    payloads = []
+    def respond(request):
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, text=sse('{"operations":[{"op":"no_change"}]}'))
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda: httpx.MockTransport(
+        respond))
+    path = await baseline.run(argparse.Namespace(mode="live", allow_real_model=True,
+        provider_config=None, repetitions=1))
+    report = json.loads(path.read_text())
+    assert report["identity"]["output_mode"] == "json_schema"
+    assert report["identity"]["schema_enforcement"] is True
+    assert report["identity"]["capability_source"] == "configured_verification"
+    assert payloads[0]["response_format"]["type"] == "json_schema"
+
+
+def test_versioned_workload_still_matches_frozen_prechange_reference(workload):
+    fixture, _, digest = workload
+    frozen = json.loads((Path(__file__).parent / "fixtures/maintenance_baseline_prechange_v1.json")
+                        .read_text())
+    assert digest == frozen["workload_sha256"]
+    assert fixture["id"] == frozen["workload"]
+    assert [case["id"] for case in fixture["cases"]] == [case["case_id"] for case in frozen["cases"]]

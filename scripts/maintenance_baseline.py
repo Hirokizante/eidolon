@@ -34,6 +34,7 @@ from eidolon.memory.maintenance import ContinuityWorker, numeric_usage
 from eidolon.providers.openai import (
     OpenAIProvider, ProviderCapabilityError, ProviderError, ProviderOutputLimitError,
 )
+from eidolon.providers.maintenance import MaintenanceOutput, maintenance_output
 from eidolon.providers.routing import configured_route_fingerprint, resolve_auxiliary
 from eidolon.storage import Store
 
@@ -246,6 +247,11 @@ class ObservedProvider:
         self.messages: list[dict] = []
         self.endpoint: str | None = None
         self.usage: dict = {}
+
+    def maintenance_output(self, task_id: str) -> MaintenanceOutput:
+        if isinstance(self.provider, OpenAIProvider):
+            return self.provider.maintenance_output(task_id)
+        return maintenance_output(self.config, task_id)
 
     async def stream(self, messages: list[dict], **kwargs: Any) -> AsyncIterator[dict]:
         if self.calls:
@@ -470,7 +476,8 @@ async def run(args: argparse.Namespace) -> Path:
             "endpoint": profile.endpoint if live else "scripted://offline",
             "model": profile.model if live else "scripted-fixture-v1",
             "transport": "openai-compatible-chat-completions" if live else "scripted",
-            "output_mode": "prompt-only-json", "schema_enforcement": False}, "rows": []}
+            "schema_enforcement": live and execution.provenance()["output_mode"] == "json_schema"},
+        "rows": []}
     path = directory / "report.json"
     atomic_write(directory / "workload.json", json.dumps(workload, indent=2))
     atomic_write(directory / "sources.json", json.dumps(sources, indent=2))

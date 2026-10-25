@@ -323,6 +323,9 @@ not remove its synthetic bank or set `verified`/`retain_enabled` for you.
 
 For an opt-in Current Life evaluation through the production maintenance worker
 and local storage, see [First-attempt Current Life baseline](MAINTENANCE_BASELINE.md).
+The [reliability assessment](MAINTENANCE_ASSESSMENT.md) pairs its frozen workload
+with revised first attempts and reports unattended recovery separately, including
+failed attempts, retained evidence, usage coverage and terminal review limits.
 It provides offline scripted checks and explicitly enabled, synthetic real-model
 trials with recovery disabled, usage measurements, and human quality review.
 
