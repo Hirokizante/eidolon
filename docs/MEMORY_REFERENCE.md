@@ -231,16 +231,24 @@ task/evidence identity across restart while capturing current configuration and
 participant names for the new attempt. Each original batch defaults to six dispatched
 requests per pass (`memory.continuity_recovery_calls`, 1–100), including correction,
 rejected, interrupted, and stale requests. Planning or credential failures before
-dispatch do not count. The frozen allowance survives restart; only explicit Refresh
-starts a new pass. Settings changes do not replenish an existing pass.
+dispatch do not count. The frozen pass allowance survives restart. Explicit Refresh
+starts a new user-requested pass; paced backlog recovery can start a bounded
+automatic pass. Settings changes do not replenish an existing pass.
 
 Recognized configuration/authentication and input-limit failures pause unchanged
 settings instead of repeatedly dispatching. A relevant configuration change makes
-the batch eligible within the remaining allowance; explicit Refresh also releases
-the pause. Exhaustion stops automatic calls and remains visible in Run history
+the batch eligible gradually under the shared daily allowance; explicit Refresh
+also releases the pause. Exhaustion sets the evidence aside and remains visible in Run history
 and the main Life indicator. Complete evidence stays retained while newer eligible
 evidence continues under its own normal budget. The high-water mark never proves that older gaps completed.
-Open a retained run and choose Retry batch to request another bounded pass;
+The backlog shares six automatic retry calls per UTC day by default
+(`memory.continuity_daily_retry_calls`, 0–100; 0 pauses automatic backlog retries),
+with one opportunity per ten minutes and new evidence first. Families take turns.
+Usage, the accounting period, and pacing survive restart; daily limit edits after
+the first opportunity apply next period. Unchanged configuration failures receive
+no daily probes. Run history shows remaining calls, next eligibility, and whether
+each attempt was automatic or user-requested.
+Open a retained run and choose Retry batch to request a separate bounded pass;
 a later successful run does not erase unresolved gaps or their warnings. See
 [bounded recovery](AUXILIARY_MODEL.md#bounded-recovery-and-configuration-pauses) for
 settings, actions, diagnostics, and the limits of this policy.

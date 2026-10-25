@@ -196,12 +196,21 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         parts.append("Complete evidence is set aside; newer eligible evidence continues.")
     if row.get("paused"):
         parts.append("Requests paused until relevant settings change or an explicit Refresh.")
+    daily = row.get("daily_allowance")
+    if daily:
+        parts.append(f"Automatic backlog retries: {daily['used']}/{daily['limit']} used; "
+                     f"{daily['remaining']} remaining across all batches. Renews "
+                     + local_time(daily.get("resets_at"), timezone_name) + ".")
     if "attempts" in row and isinstance(row["attempts"], list):
         action = {
             "complete": "Complete; no retry needed.",
             "running": "Refreshing now; foreground work has priority.",
             "configure": "Check the auxiliary model in /preferences, then refresh current life.",
             "retry_required": "Use Retry batch to start a new bounded recovery pass.",
+            "automatic_disabled": "Automatic backlog retries are paused in /preferences. "
+                                  "Use Retry batch for a bounded pass.",
+            "daily_exhausted": "Shared daily allowance exhausted. Next eligibility: " + local_time(
+                row.get("next_retry_at"), timezone_name) + "; Retry batch requests a separate pass.",
             "retry_scheduled": "Automatic retry after " + local_time(
                 row.get("next_retry_at"), timezone_name) + "; foreground work has priority.",
             "automatic_check": "Waiting for the next automatic maintenance check.",
@@ -235,6 +244,11 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             date = local_time(attempt.get("started_at"), timezone_name)
             detail = [f"{index}. {outcome} · " + date,
                       "Model: " + model_label(attempt.get("model")) + " · " + duration]
+            source = {"initial": "Original batch", "automatic": "Automatic backlog retry",
+                      "user": "User-requested retry"}.get(attempt.get("recovery_source"))
+            if source:
+                detail.append(source + (" · UTC day " + attempt["daily_period"]
+                                       if attempt.get("daily_period") else ""))
             if attempt.get("ended_at"):
                 detail.append("Ended: " + local_time(attempt["ended_at"], timezone_name))
             cause = read_reason(attempt.get("reason"))
@@ -695,7 +709,7 @@ class MemoryScreen(FormModal):
             message = ("Current life needs configuration attention. Check /preferences." if
                        unresolved.get("configuration_attention") else
                        f"{retained} {'batch' if retained == 1 else 'batches'} set aside. "
-                       "Open Run history to retry." if
+                       "Open Run history for retry timing and allowance." if
                        unresolved.get("set_aside") else
                        "Current life is recovering. Open Run history for causes and next steps.")
             self.status(message, problem=True)

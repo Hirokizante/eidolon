@@ -84,6 +84,7 @@ def public_attempt(attempt: dict | None) -> dict | None:
               }.items()}
     return {**{key: attempt.get(key) for key in (
         "id", "task_id", "stage", "started_at", "ended_at", "outcome", "elapsed_seconds",
+        "recovery_source", "recovery_pass", "daily_period",
     )}, "reason": read_reason(attempt.get("reason")),
         "model": model_label(attempt.get("provenance", {}).get("model")),
         "usage": safe_usage(attempt.get("usage")), **output}

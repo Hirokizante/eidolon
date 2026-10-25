@@ -18,7 +18,7 @@ async def test_exhausted_old_batch_does_not_block_new_evidence_after_restart(
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         await client.request("save_preferences", preferences={
             "continuity_enabled": True, "continuity_idle_seconds": 1,
-            "continuity_recovery_calls": 1,
+            "continuity_recovery_calls": 1, "continuity_daily_retry_calls": 0,
         })
         service.store.complete_turn(service.current_session["id"], "My house move is upcoming.",
                                     "Understood.")

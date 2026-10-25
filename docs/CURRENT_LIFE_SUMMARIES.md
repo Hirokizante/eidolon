@@ -263,7 +263,14 @@ topics are identical, or that the reported event happened at the message time.
 When older background needs substantive rewording of an established claim, the
 conservative result is unresolved work rather than a guessed merge. Exhausted or
 oversized original batches are retained separately, allowing newer eligible
-evidence to progress. Retry batch rechecks this guard against the latest notes.
+evidence to progress. Retained families take turns under a separate shared daily
+allowance (default six automatic calls, one opportunity per ten minutes, renewing
+at midnight UTC). New evidence has priority. Relevant configuration edits release
+work gradually, while unchanged configuration failures stay paused across days.
+Both budgets and daily usage survive restart. Preferences → Current life exposes
+both limits; /runs shows remaining daily calls, next eligibility, and automatic
+versus user-requested attempts. Retry batch requests a separate bounded pass and
+rechecks chronology against the latest notes. See [recovery settings](AUXILIARY_MODEL.md#bounded-recovery-and-configuration-pauses).
 
 Dates, promise metadata and closing a topic still depend on complete original
 statements. Generated prose cannot establish those changes. These deterministic

@@ -63,7 +63,7 @@ def test_v8_upgrade_has_consistent_backup_and_preserves_exchange_identities(tmp_
         store.db.execute("PRAGMA user_version=6")
     upgraded = Store(path)  # Original connection still has its WAL open.
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 14
         assert upgraded.continuity_inputs() == [original]
         assert upgraded.pending_outbox()[0] == outbox
         assert upgraded.migration_backup_path.stat().st_mode & 0o777 == 0o600

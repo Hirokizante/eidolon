@@ -120,6 +120,7 @@ class ContinuityWorker:
                  scope: Scope = "real_life", batch_exchanges: int = 8,
                  idle_seconds: int = 600, enabled: bool = False,
                  max_notes: int = DEFAULT_MAX_NOTES, recovery_calls: int = 6,
+                 daily_retry_calls: int = 6,
                  timeout: float = 60, max_input_chars: int | None = None,
                  max_output_chars: int = 24_000, execution: Any = None,
                  commit_result: Any = None, identity: IdentityConfig | None = None):
@@ -140,6 +141,9 @@ class ContinuityWorker:
             raise ValueError("Recovery calls must be an integer from 1 to 100")
         self.max_notes = max_notes
         self.recovery_calls = recovery_calls
+        if type(daily_retry_calls) is not int or not 0 <= daily_retry_calls <= 100:
+            raise ValueError("Daily retry calls must be an integer from 0 to 100")
+        self.daily_retry_calls = daily_retry_calls
         self.enabled = enabled
         self.timeout = timeout
         self.execution = execution
@@ -177,7 +181,14 @@ class ContinuityWorker:
         return {**status, "running": bool(self._active_task and not self._active_task.done()),
                 "enabled": self.enabled, "last_result": self._last_result,
                 "batch_exchanges": self.batch_exchanges, "idle_seconds": self.idle_seconds,
-                "max_notes": self.max_notes, "recovery_calls": self.recovery_calls}
+                "max_notes": self.max_notes, "recovery_calls": self.recovery_calls,
+                "daily_retry_calls": self.daily_retry_calls,
+                "daily_allowance": self.daily_allowance}
+
+    @property
+    def daily_allowance(self) -> dict:
+        return self.store.maintenance_daily_allowance(
+            self.daily_retry_calls, now=datetime.now(dt_timezone.utc))
 
     def cancel(self) -> None:
         if self._active_task and not self._active_task.done():
@@ -525,10 +536,13 @@ class ContinuityWorker:
                     "output": output.provenance() if output else original_output,
                 })
             self._attempt_id = self.store.start_maintenance_attempt(
-                task["id"], provenance,
+                task["id"], provenance, now=datetime.now(dt_timezone.utc),
+                daily_limit=self.daily_retry_calls,
             )
         else:
-            self.store.record_maintenance_usage(task["id"], "continuity", called=True)
+            self.store.record_maintenance_usage(
+                task["id"], "continuity", called=True, now=datetime.now(dt_timezone.utc),
+                daily_limit=self.daily_retry_calls)
         self._dispatched = True
 
     def _recovery_fingerprint(self, reason_code: str | None = None) -> str:
@@ -553,6 +567,11 @@ class ContinuityWorker:
             if reason_code == "validation.input_state":
                 settings["max_notes"] = self.max_notes
         return digest(settings)
+
+    def recovery_schedule(self, stage: dict) -> dict:
+        return self.store.automatic_maintenance_schedule(
+            stage, fingerprint=self._recovery_fingerprint((stage.get("reason") or {}).get("code")),
+            daily_limit=self.daily_retry_calls, now=datetime.now(dt_timezone.utc))
 
     def _failed(self, task: dict, *, reason: str, reason_code: str,
                 immediate: bool = False) -> None:
@@ -613,17 +632,23 @@ class ContinuityWorker:
                     task = next((self.store.get_maintenance_task(row["task_id"])
                                  for row in self.store.maintenance_split(task["id"])["children"]
                                  if row["status"] != "completed"), None)
-            # Recheck configuration-paused work after relevant settings change.
-            if task is None and not force:
-                for retained in self.store.retained_maintenance_tasks(scope=self.scope):
-                    if self.store.prepare_maintenance_recovery(
-                        retained["id"], call_limit=self.recovery_calls,
-                        fingerprint=self._recovery_fingerprint(
-                            (retained["stages"]["continuity"].get("reason") or {}).get("code")),
-                    ):
-                        task = retained
-                        break
             now = datetime.now(dt_timezone.utc)
+            # Initial/user-requested passes and unassigned evidence precede backlog
+            # recovery. Only one retained opportunity is released per activation.
+            if (task is None and not force and self.daily_retry_calls
+                    and not self.store.maintenance_inputs(limit=1, scope=self.scope)):
+                daily = self.store.maintenance_daily_allowance(self.daily_retry_calls, now=now)
+                next_at = daily["next_opportunity_at"]
+                if not daily["exhausted"] and (not next_at or aware_time(next_at) <= now):
+                    for retained in self.store.automatic_maintenance_tasks(scope=self.scope):
+                        if self.store.activate_automatic_maintenance(
+                            retained["id"], call_limit=self.recovery_calls,
+                            daily_limit=self.daily_retry_calls, now=now,
+                            fingerprint=self._recovery_fingerprint(
+                                (retained["stages"]["continuity"].get("reason") or {}).get("code")),
+                        ):
+                            task = self.store.get_maintenance_task(retained["id"])
+                            break
             if task:
                 if not self.store.prepare_maintenance_recovery(
                     task["id"], call_limit=self.recovery_calls,

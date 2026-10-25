@@ -531,8 +531,9 @@ async def test_identity_preferences_literal_drafts_resize_and_discard(
 
 
 @pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
+@pytest.mark.parametrize("setting", ["continuity_recovery_calls", "continuity_daily_retry_calls"])
 async def test_current_life_recovery_budget_saves_by_keyboard_without_losing_draft(
-    size, monkeypatch,
+    size, monkeypatch, setting,
 ):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("EIDOLON_ASCII", "1")
@@ -549,12 +550,12 @@ async def test_current_life_recovery_budget_saves_by_keyboard_without_losing_dra
         screen = app.screen
         screen.query_one("#preference-category", Select).value = "continuity"
         await pilot.pause()
-        field = screen.query_one("#pref-continuity_recovery_calls", Input)
+        field = screen.query_one("#pref-" + setting, Input)
         field.focus()
         await pilot.press("end", "backspace", "3")
         await pilot.press("ctrl+s")
         await pilot.pause()
         assert ("save_preferences", {"preferences": {
-            "continuity_recovery_calls": 3}}) in client.calls
-        assert app.config.memory.continuity_recovery_calls == 3
+            setting: 3}}) in client.calls
+        assert getattr(app.config.memory, setting) == 3
         assert app.focused is composer and composer.text == "Draft 雨 café"

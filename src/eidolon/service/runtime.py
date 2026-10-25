@@ -169,6 +169,7 @@ class RoomService:
             idle_seconds=config.memory.continuity_idle_seconds,
             max_notes=config.memory.continuity_max_notes,
             recovery_calls=config.memory.continuity_recovery_calls,
+            daily_retry_calls=config.memory.continuity_daily_retry_calls,
             enabled=config.memory.continuity_enabled,
             timeout=execution.timeout_seconds if execution else 60,
             max_input_chars=execution.context_chars if execution else None,
@@ -208,6 +209,7 @@ class RoomService:
                                              ("batch_exchanges", "continuity_batch_exchanges"),
                                              ("max_notes", "continuity_max_notes"),
                                              ("recovery_calls", "continuity_recovery_calls"),
+                                             ("daily_retry_calls", "continuity_daily_retry_calls"),
                                              ("idle_seconds", "continuity_idle_seconds")):
                         actual = getattr(self.continuity_worker, attribute,
                                          getattr(self._auxiliary_source.memory, field))
@@ -413,17 +415,30 @@ class RoomService:
                        "retry_required" if exhausted else
                        "retry_scheduled" if automatic and row.get("next_retry_at") else
                        "automatic_check" if automatic else "refresh")
+        schedule = {"next_action": next_action,
+                    "next_retry_at": row.get("next_retry_at") if automatic and not (
+                        completed or paused or exhausted) else None}
+        if (not completed and can_run and automatic and not unfinished
+                and (exhausted or paused or row.get("recovery_source") == "automatic")):
+            schedule = self.continuity_worker.recovery_schedule(row)
+        elif (unfinished and automatic
+              and (exhausted or paused or row.get("recovery_source") == "automatic")):
+            children = [self.maintenance_stage(self.store.get_maintenance_stage(child["task_id"]))
+                        for child in split["children"] if child["status"] != "completed"]
+            timed = [child for child in children if child["next_retry_at"]]
+            selected = min(timed, key=lambda child: child["next_retry_at"]) if timed else next(
+                (child for child in children if child["next_action"] != "configure"), children[0])
+            schedule = {key: selected[key] for key in ("next_action", "next_retry_at")}
+        daily = self.continuity_worker.daily_allowance
         return {**{key: row.get(key) for key in (
             "task_id", "stage", "status", "attempts", "model_calls", "attempt_counts",
             "updated_at", "change_count", "unresolved_count", "budget", "paused", "set_aside",
-            "root_id", "split",
+            "root_id", "split", "recovery_source",
         )}, "reason": None if completed else read_reason(row.get("reason")),
             "paused": paused,
             "usage": safe_usage(row.get("usage")),
             "usage_totals": safe_usage(row.get("usage_totals")),
-            "next_action": next_action,
-            "next_retry_at": row.get("next_retry_at") if automatic and not (
-                completed or paused or exhausted) else None}
+            "daily_allowance": daily, **schedule}
 
     def memory_state(self, session_id: str | None = None) -> dict:
         """Private, bounded inspection data; reading never triggers recall or retention."""

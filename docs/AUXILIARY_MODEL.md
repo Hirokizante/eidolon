@@ -222,7 +222,11 @@ time, duration, and numeric usage when the provider supplies it. They also show
 aggregate outcomes, recorded usage across attempts, the next action or earliest
 automatic retry time, last successful maintenance, and existing before/after note
 comparisons. Recovery details include the pass number, request limit, used and
-remaining calls, exhaustion, and whether requests are paused. Unknown usage stays unavailable; recorded totals exclude unknown
+remaining calls, exhaustion, and whether requests are paused. The shared daily
+allowance shows used/remaining calls, its renewal time, and the next eligibility
+or action. Attempts distinguish original-batch, automatic backlog, and
+user-requested passes; automatic attempts record their UTC accounting day.
+Unknown usage stays unavailable; recorded totals exclude unknown
 usage and should not be treated as complete billing totals. Foreground work can
 delay a scheduled retry beyond the displayed time. With automatic updates off,
 use **Refresh current life** after correcting settings.
@@ -280,7 +284,9 @@ Transient provider failures, timeouts, rate/credit limits, and incomplete output
 use delayed retries, bounded by the same allowance. Unsplittable input limits and recognized
 configuration/authentication failures pause requests. These keep a safe reason
 and no scheduled retry time. A relevant effective configuration change makes the
-batch eligible with its remaining allowance; it never grants new calls. Model or
+batch eligible for paced recovery under the shared daily allowance. A pass with
+remaining calls keeps its original limit; an exhausted pass can start another
+bounded automatic pass. Configuration edits never reset daily usage. Model or
 output changes do not release an authentication pause on an unchanged connection.
 Changing an enable/use switch, batching/idle setting, UI preference, or restarting
 cannot release a configuration pause or replenish the budget. If a credential's
@@ -293,8 +299,8 @@ reply inclusion, select another model, raise token/context limits, or bypass
 Auxiliary Off. An interrupted dispatched call still counts, including one found
 running after a service restart.
 
-Once a batch's allowance is exhausted, its automatic requests stop and its complete
-originals are **set aside**. Newer eligible evidence continues under each new
+Once a batch's pass allowance is exhausted, its complete originals are **set aside**
+for paced backlog recovery. Newer eligible evidence continues under each new
 batch's normal budget. A single oversized exchange is also set aside without
 truncation or a paid request. Run history keeps the original safe cause, evidence
 status, and request history. A newer successful run does not clear an older gap's
@@ -308,10 +314,36 @@ An explicit retry captures the latest notes and rechecks source eligibility,
 chronology, locks, revisions, and capacity before committing atomically. Older
 preparation evidence cannot reopen or overwrite a newer supported state. Retry
 can fill a missing topic or add support without undoing newer developments.
-A shared daily automatic backlog allowance is separate work; exhausted batches
-currently require explicit retry, including after settings changes. Retrying any
-unresolved member starts one fresh bounded pass shared by its original family,
-preserving completed children, lifetime history, and prior call totals.
+**Daily automatic retry requests** (`memory.continuity_daily_retry_calls`, integer
+0–100, default 6) is a separate shared allowance across the entire retained
+backlog, including configuration-triggered recovery. Set it to 0 to pause automatic
+backlog retries while allowing new evidence and explicit Retry. At most one
+retained opportunity starts every ten minutes, subject to failure backoff and
+foreground priority. Initial/user-requested passes and new eligible evidence run
+first. Original families take turns, then their unresolved children; a difficult
+family cannot consume every opportunity ahead of its peers. Completed children
+remain complete.
+
+The daily accounting period renews at **midnight UTC**, independently of the room
+timezone and daily-room reset hour. Its limit freezes at the first automatic
+opportunity; later limit edits apply to the next period. Usage, period, pacing,
+and rotation survive restart. Backlog size, repeated activation, toggling controls,
+and configuration edits do not replenish it. An undispatched planning failure
+uses no call but still observes pacing. Every dispatched automatic correction,
+child request, rejection, interruption, and stale call consumes both its bounded
+family pass and the shared daily allowance. A reactivated family keeps its
+remaining pass, or starts a fresh bounded pass when the prior one is exhausted.
+
+Unchanged recognized configuration/authentication failures stay paused across
+midnight; they receive no daily probes. Relevant settings changes release only
+one eligible opportunity at a time. Model/output edits cannot fix an authentication
+pause on the same connection. Explicit **Retry batch** (or Refresh) starts a
+separate bounded user-requested pass even when the daily automatic allowance is
+exhausted. Follow-up requests in that pass use its family limit without consuming
+automatic daily calls. Retrying any unresolved member preserves completed
+children, lifetime history, and prior call totals. Automatic Off and Auxiliary Off
+keep their existing independent effects; explicit Retry still requires an auxiliary
+model and foreground availability.
 
 `uv run eidolon doctor` reports auxiliary routing separately from Hindsight
 connectivity. With the service running, it also includes maintenance diagnostics:
@@ -466,8 +498,11 @@ reasons survive restarts. Aggregate outcome and usage counts survive pruning;
 individual attempt details do not.
 Each stage includes `budget` (`limit`, `used`, `remaining`, `exhausted`, `pass`)
 and `paused`, plus `set_aside`. A paused stage exposes its safe `reason` and
-`configure` action;
-an exhausted stage uses `retry_required`. Neither has a scheduled retry time.
+`configure` action while its relevant configuration remains unchanged.
+Retained stages expose `retry_scheduled` with earliest eligibility or
+`daily_exhausted` with the next available period. `automatic_disabled` means the
+backlog allowance is set to zero; `retry_required` applies to evidence that is no
+longer eligible. With automatic updates off, use explicit Refresh/Retry.
 Schema v12 adds an evidence ledger and retained-stage state to v11's recovery
 limit, pass boundary, and relevant-configuration pause fingerprint. It preserves
 existing tasks, attempts, note history, and watermarks. Saved unresolved batches
@@ -486,6 +521,15 @@ foreground priority and Auxiliary Off. Completed batches cannot be retried.
 Upgraded lifetime call counts consume the initial allowance; an upgrade cannot
 mint a fresh budget. Fingerprints are private hashes and are not
 included in service-facing diagnostics.
+
+Schema v14 persists the shared UTC `daily_allowance` (`period`, `limit`, `used`,
+`remaining`, `exhausted`, `resets_at`, `next_opportunity_at`), pacing, family/leaf
+rotation, and pass source. This allowance appears in service status and Run history.
+Attempts retain `recovery_source` (`initial`, `automatic`, or `user`),
+`recovery_pass`, and `daily_period`; pre-upgrade attempts leave these fields null
+rather than guessing their source. Lifetime request counts, outcomes, usage,
+evidence, and note history are preserved. Earliest eligibility is not a promised
+dispatch time: foreground work, new evidence, and other retained families have priority.
 
 Raw prompts, proposals, responses, arbitrary exception text, credentials, URLs,
 and full provenance are excluded from failure details. Reasons come from a

@@ -32,7 +32,9 @@ async def automatic(service, provider):
 
 async def test_default_budget_exhausts_and_manual_retry_keeps_history(tmp_path, monkeypatch, clock):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
-        await client.request("save_preferences", preferences={"continuity_enabled": True})
+        await client.request("save_preferences", preferences={
+            "continuity_enabled": True, "continuity_daily_retry_calls": 0,
+        })
         service.store.complete_turn(service.current_session["id"], "An unfinished project.", "Okay.")
         provider = CompactProvider(lambda doc: {"operations": []})
         await refresh(service, client, provider)
@@ -45,7 +47,7 @@ async def test_default_budget_exhausts_and_manual_retry_keeps_history(tmp_path, 
         stage = status["stages"][0]
         assert stage["budget"] == {"limit": 6, "used": 6, "remaining": 0,
                                    "exhausted": True, "pass": 1}
-        assert stage["next_action"] == "retry_required"
+        assert stage["next_action"] == "automatic_disabled"
         assert stage["next_retry_at"] is None
         task_id = stage["task_id"]
         original = service.store.pending_maintenance_task()["inputs"]
@@ -158,6 +160,7 @@ async def test_restart_preserves_pass_pause_and_lifetime_usage(tmp_path, monkeyp
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         await client.request("save_preferences", preferences={
             "continuity_enabled": True, "continuity_recovery_calls": 2,
+            "continuity_daily_retry_calls": 0,
         })
         service.store.complete_turn(service.current_session["id"], "An open project.", "Okay.")
 
@@ -250,7 +253,7 @@ async def test_foreground_interruption_consumes_last_call_and_preserves_notes(
         task_id = status["latest_attempt"]["task_id"]
         detail = await client.request("memory_continuity_run", task_id=task_id)
         assert detail["attempts"][0]["outcome"] == "interrupted"
-        assert detail["budget"]["remaining"] == 0 and detail["next_action"] == "retry_required"
+        assert detail["budget"]["remaining"] == 0 and detail["next_action"] == "retry_scheduled"
         assert service.store.get_continuity_item(note["id"]) == note
         assert service.store.continuity_state()["watermark"] == 0
         clock.advance()
@@ -338,7 +341,7 @@ async def test_abandoned_dispatched_call_is_interrupted_and_exhausted_on_restart
             assert detail["attempts"][0]["id"] == attempt
             assert detail["attempts"][0]["outcome"] == "interrupted"
             assert detail["budget"]["remaining"] == 0
-            assert detail["next_action"] == "retry_required"
+            assert detail["next_action"] == "retry_scheduled"
             assert restarted.maintenance_status()["unresolved"]["set_aside"] == 1
             restarted.store.complete_turn(restarted.current_session["id"], "New evidence.", "Okay.")
             clock.advance()
