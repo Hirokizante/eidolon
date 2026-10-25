@@ -1,0 +1,650 @@
+{
+  "workload": "eidolon-maintenance-first-attempt-v1",
+  "workload_sha256": "6bb0d0abcdfc8da426867651a38d590b372a54887a49433b0382aa0f41a8751a",
+  "mode": "scripted",
+  "recovery_enabled": false,
+  "baseline": {
+    "samples": 17,
+    "outcomes": {
+      "accepted_change": 10,
+      "accepted_no_change": 6,
+      "validation_rejection": 1
+    },
+    "failed_attempts": 1,
+    "expected_changes": 10,
+    "justified_no_change": 6,
+    "unjustified_no_change": 0,
+    "unresolved_expectations": 1,
+    "requests": 17,
+    "usage": null,
+    "monetary_cost": null,
+    "latency_seconds": {
+      "known_samples": 0,
+      "sum_known": null
+    },
+    "reviewed_samples": 0,
+    "useful_faithful": null,
+    "unsafe": null
+  },
+  "candidate": {
+    "samples": 17,
+    "outcomes": {
+      "accepted_change": 11,
+      "accepted_no_change": 6
+    },
+    "failed_attempts": 0,
+    "expected_changes": 11,
+    "justified_no_change": 6,
+    "unjustified_no_change": 0,
+    "unresolved_expectations": 0,
+    "requests": 17,
+    "usage": null,
+    "monetary_cost": null,
+    "latency_seconds": {
+      "known_samples": 17,
+      "sum_known": 0.5236756649974268
+    },
+    "reviewed_samples": 0,
+    "useful_faithful": null,
+    "unsafe": null
+  },
+  "application_improvement_demonstrated": true,
+  "model_quality_improvement_demonstrated": null,
+  "changed_samples": [
+    {
+      "sample_id": "paraphrased-closure:1",
+      "before": "validation_rejection",
+      "after": "accepted_change",
+      "expectation_match": true
+    }
+  ],
+  "limits": "Scripted outcomes establish application behavior only. Unknown usage, cost, historical latency and unreviewed safety remain unknown. No numeric reliability threshold is assumed.",
+  "recovery": {
+    "mode": "scripted",
+    "samples": 10,
+    "calls": 29,
+    "failed_attempts": 20,
+    "attempt_outcomes": {
+      "failed": 19,
+      "committed": 9,
+      "configuration_error": 1
+    },
+    "committed_attempts": 9,
+    "recovered_scenarios": 6,
+    "justified_no_change": 1,
+    "unresolved_evidence": 3,
+    "latency_seconds": 0.9602291259798221,
+    "usage_kind": "Fabricated counters test accounting only; live token cost is unknown.",
+    "scenarios": [
+      {
+        "scenario": "chronology",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 6,
+        "attempt_outcomes": {
+          "failed": 6
+        },
+        "recovered_failure": false,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 1,
+          "unresolved": 1
+        },
+        "useful_notes": 0,
+        "latency_seconds": 0.09263462500530295,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 252,
+          "completion_tokens": 42
+        },
+        "attempts": [
+          {
+            "outcome": "failed",
+            "reason_code": "validation.chronology",
+            "elapsed_seconds": 0.001997,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.chronology",
+            "elapsed_seconds": 0.001907,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.chronology",
+            "elapsed_seconds": 0.001774,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.chronology",
+            "elapsed_seconds": 0.001585,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.chronology",
+            "elapsed_seconds": 0.001652,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.chronology",
+            "elapsed_seconds": 0.001371,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "configuration",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 1,
+        "attempt_outcomes": {
+          "configuration_error": 1
+        },
+        "recovered_failure": false,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 0,
+          "unresolved": 1
+        },
+        "useful_notes": 0,
+        "latency_seconds": 0.036629000009270385,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 42,
+          "completion_tokens": 7
+        },
+        "attempts": [
+          {
+            "outcome": "configuration_error",
+            "reason_code": "configuration",
+            "elapsed_seconds": 0.001336,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "empty",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 2,
+        "attempt_outcomes": {
+          "failed": 1,
+          "committed": 1
+        },
+        "recovered_failure": true,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 1,
+          "unresolved": 0
+        },
+        "useful_notes": 1,
+        "latency_seconds": 0.0488655410008505,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 84,
+          "completion_tokens": 14
+        },
+        "attempts": [
+          {
+            "outcome": "failed",
+            "reason_code": "validation.output_json",
+            "elapsed_seconds": 0.001358,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.006859,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "justified_no_change",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 1,
+        "attempt_outcomes": {
+          "committed": 1
+        },
+        "recovered_failure": false,
+        "justified_no_change": true,
+        "evidence": {
+          "processed": 1,
+          "unresolved": 0
+        },
+        "useful_notes": 0,
+        "latency_seconds": 0.03990129200974479,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 42,
+          "completion_tokens": 7
+        },
+        "attempts": [
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.007057,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "malformed",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 2,
+        "attempt_outcomes": {
+          "failed": 1,
+          "committed": 1
+        },
+        "recovered_failure": true,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 1,
+          "unresolved": 0
+        },
+        "useful_notes": 1,
+        "latency_seconds": 0.20536470899241976,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 84,
+          "completion_tokens": 14
+        },
+        "attempts": [
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001434,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.007985,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "restart",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 2,
+        "attempt_outcomes": {
+          "failed": 1,
+          "committed": 1
+        },
+        "recovered_failure": true,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 1,
+          "unresolved": 0
+        },
+        "useful_notes": 1,
+        "latency_seconds": 0.08939237499726005,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 84,
+          "completion_tokens": 14
+        },
+        "attempts": [
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001327,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.007112,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "retained_gap",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 7,
+        "attempt_outcomes": {
+          "failed": 6,
+          "committed": 1
+        },
+        "recovered_failure": false,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 1,
+          "unresolved": 1
+        },
+        "useful_notes": 1,
+        "latency_seconds": 0.24610920797567815,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 294,
+          "completion_tokens": 49
+        },
+        "attempts": [
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001494,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001263,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001868,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001568,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001376,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001226,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.007949,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "split",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 4,
+        "attempt_outcomes": {
+          "failed": 2,
+          "committed": 2
+        },
+        "recovered_failure": true,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 2,
+          "unresolved": 0
+        },
+        "useful_notes": 2,
+        "latency_seconds": 0.10078358399914578,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 168,
+          "completion_tokens": 28
+        },
+        "attempts": [
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001293,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "failed",
+            "reason_code": "validation.schema",
+            "elapsed_seconds": 0.001161,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.007478,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.025311,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "transient",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 2,
+        "attempt_outcomes": {
+          "failed": 1,
+          "committed": 1
+        },
+        "recovered_failure": true,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 1,
+          "unresolved": 0
+        },
+        "useful_notes": 1,
+        "latency_seconds": 0.04988191698794253,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 84,
+          "completion_tokens": 14
+        },
+        "attempts": [
+          {
+            "outcome": "failed",
+            "reason_code": "unavailable",
+            "elapsed_seconds": 0.001315,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.00722,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "truncated",
+        "mode": "scripted",
+        "samples": 1,
+        "calls": 2,
+        "attempt_outcomes": {
+          "failed": 1,
+          "committed": 1
+        },
+        "recovered_failure": true,
+        "justified_no_change": false,
+        "evidence": {
+          "processed": 1,
+          "unresolved": 0
+        },
+        "useful_notes": 1,
+        "latency_seconds": 0.050666875002207235,
+        "usage_kind": "fabricated provider counters; accounting check only",
+        "usage": {
+          "prompt_tokens": 84,
+          "completion_tokens": 14
+        },
+        "attempts": [
+          {
+            "outcome": "failed",
+            "reason_code": "validation.output_incomplete",
+            "elapsed_seconds": 0.001292,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          },
+          {
+            "outcome": "committed",
+            "reason_code": null,
+            "elapsed_seconds": 0.006925,
+            "usage": {
+              "prompt_tokens": 42,
+              "completion_tokens": 7
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "assessment": {
+    "version": 1,
+    "date": "2026-10-25",
+    "issue": "https://github.com/Hirokizante/eidolon/issues/14",
+    "parent": "https://github.com/Hirokizante/eidolon/issues/1",
+    "review": "Synthetic aggregate reviewed for privacy and expected outcomes. No live-model quality verdicts.",
+    "candidate_application": {
+      "revision": "595b7f942b20fda25ece72fd5164a622a86f1bbd",
+      "dirty": true,
+      "source_sha256": {
+        "src/eidolon/memory/__init__.py": "af990e36f2a4c797e2b0713762c0b07bc2b672e7b8049b993b3bc2a092a64253",
+        "src/eidolon/memory/continuity.py": "5f59605527ca6cdca7939dae1b847d926c5c3b23459ff5e533849973da23b967",
+        "src/eidolon/memory/coordinator.py": "55f61c295a4122085ebe9ad053372c65668a1b63c02e0a2da909194091ca60a2",
+        "src/eidolon/memory/diagnostics.py": "ac411895dfed297537929e0b59767fda34f4ad653e423a72db495aee67b3624d",
+        "src/eidolon/memory/hindsight.py": "e316d45f2198fb8d6f04685c9ed13fe77d4eb281900335aed490cd37b71b9019",
+        "src/eidolon/memory/maintenance.py": "768d27552137e536951e459c049478d9c5ede48be1dcb22d3562536769ad11cd",
+        "src/eidolon/memory/maintenance_budget.py": "5e472716ed11fb84b5d23a8ed7d32df72aaca81180c1f1afd9f6052273cceb3b",
+        "src/eidolon/memory/models.py": "2975e35558f98671bb7682a60121f0bf5b0e4a5b18777101391f2cd574eeee6d",
+        "src/eidolon/memory/proposals.py": "79b5344eaddcd43a8cb3521b6ccd012a04eb466f9db3a911b468d383ce4d85ba",
+        "src/eidolon/memory/query.py": "6343f4e09cc40c6b3650593d5e2ca258cd16757125afa31eac961713c2df4012",
+        "src/eidolon/memory/recovery.py": "e15f99409fa9e15f94d8a0c9122dfbcc7314be17c924709aa734e1a900a81aba",
+        "src/eidolon/memory/runtime.py": "3c6576642d680d3af2627c5eb834d3721988e4642892ec0e2b72661cf05c2e4d",
+        "src/eidolon/storage/store.py": "6abed8be21bead05b7a68ec1f82293493d5ff22d7adb8644df4b8cdd89ea6721",
+        "src/eidolon/providers/openai.py": "400f8483766f64ccdea3d2dda98a8276cbb38cbec649f16487e473f44be5e964",
+        "src/eidolon/providers/routing.py": "e64603dcc811f806b8ef3313a5b68c3374955a5c983487819563a8b7a3467107",
+        "src/eidolon/providers/context.py": "30775f00a9838dbd844d33a4ab8c18f5274839e38b9fa6b548d25aef67053936",
+        "src/eidolon/providers/metrics.py": "05efa0670019f92fc91ef8bc340c889c9ec8ae953ca53ef96d36cf209c0e9e1a",
+        "src/eidolon/config.py": "1d5cdcdb35fc2c4230635145c12d6c147523c218b3182b8df1ba4783f3c41b5c",
+        "uv.lock": "f2dbafc5c1b8612dbefbdaaab65fe401018da226262b388681540856e3bc7998",
+        "scripts/maintenance_baseline.py": "a21b1c9c2787c6a61acc2716c9704d704009699c30bf9ec15c8c88d640d87a70"
+      }
+    },
+    "assessment_source_sha256": {
+      "scripts/maintenance_compare.py": "b82c26184fff31e1c6f322dd9f2b8cda556f27a64d3d08dc5b94e89d1ffcf9dc",
+      "tests/test_maintenance_compare.py": "52f7647463d1392eb8e3f440f405b958019b83ad00621bdbd9d9ae1a975ed30d",
+      "tests/test_maintenance_assessment.py": "e7d6f356580193333c86746e5bab0a39e68c2df29c9005bd32010513ad68264a"
+    },
+    "validation": {
+      "focused_boundary_tests": 407,
+      "final_assessment_tests": 47,
+      "full_suite_tests": 2852,
+      "full_suite_failures": 0,
+      "full_suite_skips": 0,
+      "full_suite_seconds": 166.35,
+      "pytest_options": "-n 4 --dist worksteal",
+      "checks": [
+        "ruff",
+        "compileall",
+        "build",
+        "privacy",
+        "secret-history",
+        "dependency-audit",
+        "diff-check"
+      ],
+      "standards_review": "No findings",
+      "spec_review": "False-positive improvement finding fixed and independently verified; no remaining findings",
+      "live_trials_performed": false,
+      "review_followup_tests": 52,
+      "review_followup_seconds": 2.68
+    }
+  }
+}
