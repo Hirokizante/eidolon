@@ -1,5 +1,6 @@
 """Paced shared retained-evidence recovery through the service API."""
 from datetime import datetime, timezone
+from unittest.mock import Mock
 
 import pytest
 
@@ -14,6 +15,52 @@ def daily_clock(monkeypatch):
     clock.instant = datetime(2026, 10, 25, 12, tzinfo=timezone.utc)
     monkeypatch.setattr("eidolon.storage.store.datetime", clock)
     return clock
+
+
+@pytest.mark.parametrize("opportunity", [
+    "first", "ready", "pacing", "exhausted", "disabled", "unassigned",
+])
+async def test_backlog_scan_requires_an_available_shared_opportunity(
+    tmp_path, monkeypatch, daily_clock, opportunity,
+):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={
+            "continuity_enabled": True, "continuity_recovery_calls": 1,
+            "continuity_daily_retry_calls": 1 if opportunity == "exhausted" else 2,
+        })
+        service.store.complete_turn(service.current_session["id"], "An open project.", "Okay.")
+        failed = CompactProvider(lambda doc: {"operations": []})
+        await refresh(service, client, failed)
+        daily_clock.advance(600)
+        if opportunity != "first":
+            await automatic(service, failed)
+            daily_clock.advance(599 if opportunity == "pacing" else 600)
+        worker = service.continuity_worker
+        if opportunity == "disabled":
+            # The frozen daily limit is still positive; the current setting wins.
+            worker.daily_retry_calls = 0
+        elif opportunity == "unassigned":
+            service.store.complete_turn(service.current_session["id"], "A newer project.", "Okay.")
+        scan = Mock(wraps=service.store.automatic_maintenance_tasks)
+        allowance = Mock(wraps=service.store.maintenance_daily_allowance)
+        monkeypatch.setattr(service.store, "automatic_maintenance_tasks", scan)
+        monkeypatch.setattr(service.store, "maintenance_daily_allowance", allowance)
+        provider = CompactProvider(lambda doc: {"operations": [{"op": "no_change"}]})
+        worker.provider = provider
+
+        await worker.run_once()
+
+        if opportunity in {"first", "ready"}:
+            scan.assert_called_once_with(scope=worker.scope)
+            assert len(provider.calls) == 1
+        else:
+            scan.assert_not_called()
+            if opportunity in {"disabled", "unassigned"}:
+                allowance.assert_not_called()
+            else:
+                allowance.assert_called_once_with(worker.daily_retry_calls, now=daily_clock.instant)
+            if opportunity != "unassigned":
+                assert not provider.calls
 
 
 async def test_daily_allowance_is_shared_and_rotates_behind_new_evidence(

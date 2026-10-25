@@ -635,17 +635,20 @@ class ContinuityWorker:
             now = datetime.now(dt_timezone.utc)
             # Initial/user-requested passes and unassigned evidence precede backlog
             # recovery. Only one retained opportunity is released per activation.
-            if (task is None and not force
+            if (task is None and not force and self.daily_retry_calls
                     and not self.store.maintenance_inputs(limit=1, scope=self.scope)):
-                for retained in self.store.automatic_maintenance_tasks(scope=self.scope):
-                    if self.store.activate_automatic_maintenance(
-                        retained["id"], call_limit=self.recovery_calls,
-                        daily_limit=self.daily_retry_calls, now=now,
-                        fingerprint=self._recovery_fingerprint(
-                            (retained["stages"]["continuity"].get("reason") or {}).get("code")),
-                    ):
-                        task = self.store.get_maintenance_task(retained["id"])
-                        break
+                daily = self.store.maintenance_daily_allowance(self.daily_retry_calls, now=now)
+                next_at = daily["next_opportunity_at"]
+                if not daily["exhausted"] and (not next_at or aware_time(next_at) <= now):
+                    for retained in self.store.automatic_maintenance_tasks(scope=self.scope):
+                        if self.store.activate_automatic_maintenance(
+                            retained["id"], call_limit=self.recovery_calls,
+                            daily_limit=self.daily_retry_calls, now=now,
+                            fingerprint=self._recovery_fingerprint(
+                                (retained["stages"]["continuity"].get("reason") or {}).get("code")),
+                        ):
+                            task = self.store.get_maintenance_task(retained["id"])
+                            break
             if task:
                 if not self.store.prepare_maintenance_recovery(
                     task["id"], call_limit=self.recovery_calls,
