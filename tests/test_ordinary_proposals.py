@@ -1,6 +1,7 @@
 """Compact maintenance through the service and frozen proposal compiler."""
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -189,7 +190,7 @@ async def test_compact_update_and_closure_preserve_one_topic(tmp_path, monkeypat
         assert service.store.pending_maintenance_task() is None
 
 
-@pytest.mark.parametrize("failure", ["source", "note", "stale"])
+@pytest.mark.parametrize("failure", ["source", "background_source", "note", "stale"])
 async def test_unsafe_or_stale_compact_proposal_cannot_partially_commit(
     tmp_path, monkeypatch, failure,
 ):
@@ -204,7 +205,10 @@ async def test_unsafe_or_stale_compact_proposal_cannot_partially_commit(
                 service.store.create_continuity_item("An authored garden note.", "thread")
                 return {"operations": [valid]}
             invalid = {**valid, "topic": "Other interview detail"}
-            invalid.update({"sources": ["s9999"]} if failure == "source" else {"note_ref": "n999"})
+            if failure in {"source", "background_source"}:
+                invalid["sources"] = ["s9999" if failure == "source" else "background9999"]
+            else:
+                invalid["note_ref"] = "n999"
             return {"operations": [valid, invalid]}
 
         provider = CompactProvider(respond)
@@ -247,3 +251,97 @@ async def test_optional_candidates_keep_supported_metadata_and_uncertainty_in_pr
         assert ("event_at" in note) is has_candidates
         assert note.get("promise_owner") == ("user" if has_candidates else None)
         assert note.get("promise_kind") == ("conversation" if has_candidates else None)
+
+
+@pytest.mark.parametrize("batches", [1, 32])
+async def test_batch_example_citations_keep_working_as_backlog_support_accumulates(
+    tmp_path, monkeypatch, batches,
+):
+    from test_current_life_policy import seed_note
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        original = seed_note(service.store)
+        await client.request("save_preferences", preferences={"continuity_batch_exchanges": 1})
+        start = datetime.now(timezone.utc) + timedelta(days=1)
+        for index in range(batches):
+            service.store.complete_turn(
+                service.current_session["id"],
+                f"My creative project now has {index + 1} sketches.", "Understood.",
+                metadata={"user_message_at": (start + timedelta(minutes=index)).isoformat()},
+            )
+
+        def respond(doc):
+            note = doc["items"][0]
+            # Replay the prompt's concrete s1 citation. It must keep identifying
+            # batch evidence after saved background and its citations accumulate.
+            sources = list(dict.fromkeys([
+                "s1", *[source["source_ref"] for source in note["sources"][:7]],
+            ]))
+            return {"operations": [{
+                "op": "upsert", "note_ref": note["note_ref"], "topic": note["topic"],
+                "importance": "low", "category": "thread",
+                "content": doc["exchanges"][0]["user_content"].replace("My ", "The user's "),
+                "sources": sources,
+            }]}
+
+        provider = CompactProvider(respond)
+        for index in range(batches):
+            await refresh(service, client, provider)
+            saved = service.store.get_continuity_item(original["id"])
+            assert saved["revision"] == original["revision"] + index + 1
+            assert saved["content"] == f"The user's creative project now has {index + 1} sketches."
+            assert len(saved["sources"]) == min(index + 2, 8)
+            assert saved["sources"][0]["excerpt"] == (
+                f"My creative project now has {index + 1} sketches.")
+            assert service.store.pending_maintenance_task() is None
+        assert len(provider.calls) == batches
+        assert service.maintenance_status()["evidence"]["unresolved"] == 0
+
+
+async def test_background_only_change_rejects_whole_patch_and_batch_refs_correct_retry(
+    tmp_path, monkeypatch,
+):
+    from test_current_life_policy import seed_note
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        note = seed_note(service.store)
+        service.store.complete_turn(
+            service.current_session["id"],
+            "My creative project now has sketches. My garden project needs more soil.",
+            "Understood.",
+        )
+        before = service.store.continuity_state()
+
+        def respond(doc):
+            current = doc["items"][0]
+            background = current["sources"][0]["source_ref"]
+            assert background.startswith("background")
+            batch = doc["batch_source_refs"]
+            assert batch == list(doc["exchanges"][0]["source_refs"].values())
+            assert background not in batch
+            support = next(row for row in doc["supporting_exchanges"]
+                           if row["exchange_id"] == current["sources"][0]["exchange_id"])
+            assert support["source_refs"]["user"] == background
+            corrected = "previous_rejection" in doc
+            return {"operations": [{
+                "op": "upsert", "topic": "Garden project", "importance": "low",
+                "category": "thread", "content": "The user's garden project needs more soil.",
+                "sources": [batch[0]],
+            }, {
+                "op": "upsert", "note_ref": current["note_ref"], "topic": current["topic"],
+                "importance": "low", "category": "thread",
+                "content": "The user's creative project now has sketches.",
+                "sources": [background, batch[0]] if corrected else [background],
+            }]}
+
+        provider = CompactProvider(respond)
+        await refresh(service, client, provider)
+        assert service.store.continuity_state() == before
+        task = service.store.pending_maintenance_task()
+        assert task["stages"]["continuity"]["reason"]["code"] == "validation.batch_source"
+        await refresh(service, client, provider)
+        assert service.store.pending_maintenance_task() is None
+        assert service.store.get_continuity_item(note["id"])["content"] == (
+            "The user's creative project now has sketches.")
+        assert service.store.continuity_state()["active_count"] == 2
+        assert len(provider.calls) == 2

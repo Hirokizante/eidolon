@@ -410,8 +410,15 @@ the evidence and reports the limiting condition; it is not a successful no-chang
 and does not complete a partial set of operations. Increase the relevant allowance
 and refresh to reconsider the retained work.
 
-Note references (`n1`, etc.) and source references (`s1`, etc.) are bounded and
-local to the displayed request; reusing them from another request is unsupported.
+Note references (`n1`, etc.) and source references are bounded and local to the
+displayed request; reusing them from another request is unsupported. In ordinary
+requests, `s1`, `s2`, etc. identify batch evidence and `background1`, `background2`,
+etc. identify saved supporting evidence. `batch_source_refs` lists the current
+batch's citations. Every upsert and non-replacement archive must cite relevant
+batch evidence; background citations alone cannot justify a change. Each operation
+may cite at most eight sources total. Select batch evidence first, retain only
+necessary older support, and drop redundant citations as history accumulates.
+The compiler still rejects a whole proposal containing an invalid operation.
 The compiler captures independent copies of the displayed reference tables,
 source exchanges, and note snapshot before awaiting the model. It supplies item
 IDs, expected revisions, scope, narrative format, derived origin, original source
