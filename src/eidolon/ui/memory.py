@@ -18,7 +18,7 @@ from eidolon.memory.coordinator import (
     CONTEXT_PREFIX, CONTEXT_SUFFIX, CONTINUITY_PREFIX, render_record,
 )
 from eidolon.memory.models import MemoryRecord
-from eidolon.memory.diagnostics import model_label, read_reason, safe_usage
+from eidolon.memory.diagnostics import model_label, read_reason, reason_details, safe_usage
 from eidolon.ui.forms import FormModal
 from eidolon.ui.memory_notes import (
     NOTE_CATEGORIES, NOTE_IMPORTANCE, NoteDeleteScreen, NoteEditorScreen,
@@ -175,7 +175,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
     if row.get("status") in descriptions and not reason:
         parts.append(descriptions[row["status"]])
     if reason:
-        parts.append(reason["explanation"])
+        parts.append(reason_details(reason))
     split = row.get("split")
     if split:
         parts.append(f"Smaller groups: {split['completed']} complete; "
@@ -195,7 +195,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
     if row.get("set_aside") and not budget.get("exhausted"):
         parts.append("Complete evidence is set aside; newer eligible evidence continues.")
     if row.get("paused"):
-        parts.append("Requests paused until relevant settings change or an explicit Refresh.")
+        parts.append("Requests paused; see the next action below. Explicit Retry keeps prior history.")
     daily = row.get("daily_allowance")
     if daily:
         parts.append(f"Automatic backlog retries: {daily['used']}/{daily['limit']} used; "
@@ -206,6 +206,10 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             "complete": "Complete; no retry needed.",
             "running": "Refreshing now; foreground work has priority.",
             "configure": "Check the auxiliary model in /preferences, then refresh current life.",
+            "defer": "Wait until relevant evidence or target state changes; "
+                     "Retry batch requests a separate bounded pass.",
+            "repair": "Saved evidence needs repair. This batch stays unresolved; "
+                      "ordinary corrections are paused.",
             "retry_required": "Use Retry batch to start a new bounded recovery pass.",
             "automatic_disabled": "Automatic backlog retries are paused in /preferences. "
                                   "Use Retry batch for a bounded pass.",
@@ -253,7 +257,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
                 detail.append("Ended: " + local_time(attempt["ended_at"], timezone_name))
             cause = read_reason(attempt.get("reason"))
             if cause:
-                detail.append(cause["explanation"])
+                detail.append(reason_details(cause))
             elif attempt.get("outcome") not in {"committed", "running"}:
                 detail.append("No safe cause was recorded for this attempt.")
             usage = safe_usage(attempt.get("usage"))

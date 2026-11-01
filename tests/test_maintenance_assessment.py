@@ -114,7 +114,7 @@ async def test_recovery_assessment(tmp_path, monkeypatch, clock, record_property
                 assert attempts[0]["outcome"] == "failed"
                 assert attempts[-1]["outcome"] == "committed"
             expected_calls = {"configuration": 1, "split": 4, "retained_gap": 7,
-                              "chronology": 6, "justified_no_change": 1}.get(scenario, 2)
+                              "chronology": 2, "justified_no_change": 1}.get(scenario, 2)
             assert provider.calls == maintenance["model_calls"] == len(attempts) == expected_calls
             assert not dialogue.requests
             notes = active.store.continuity_state()["items"]
@@ -123,6 +123,9 @@ async def test_recovery_assessment(tmp_path, monkeypatch, clock, record_property
             if scenario == "chronology":
                 assert notes == before
                 assert {a["reason"]["code"] for a in attempts} == {"validation.chronology"}
+                failed = next(row for row in stages if row["status"] == "failed")
+                assert failed["next_action"] == "defer"
+                assert failed["budget"]["remaining"] == 4
             elif scenario == "configuration":
                 assert maintenance["unresolved"]["configuration_attention"] == 1
                 assert not notes

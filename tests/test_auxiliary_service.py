@@ -762,8 +762,9 @@ async def test_safe_attempt_reasons_survive_success_and_restart(tmp_path, monkey
         task_id = status["latest_attempt"]["task_id"]
         failed = (await client.request("memory_continuity_run", task_id=task_id))["attempts"][0]
         assert failed["reason"] == {
-            "version": 1, "code": "validation.output_json",
+            "version": 2, "code": "validation.output_json",
             "explanation": "The model did not return a valid JSON object.",
+            "disposition": "correct", "attempt_id": failed["id"],
         }
         assert failed["usage"] is None
         assert failed["elapsed_seconds"] >= 0
@@ -898,7 +899,7 @@ async def test_v9_history_upgrade_keeps_missing_causes_unknown(tmp_path, monkeyp
             s.store.db.execute("PRAGMA user_version=9")
     reopened = Store(path)
     try:
-        assert reopened.migration_backup_path and ".pre-v14-" in str(reopened.migration_backup_path)
+        assert reopened.migration_backup_path and ".pre-v15-" in str(reopened.migration_backup_path)
         assert reopened.maintenance_attempts(task["id"])[0]["reason"] is None
         stage = reopened.get_maintenance_stage(task["id"])
         assert stage["reason"] is None

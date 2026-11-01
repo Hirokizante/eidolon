@@ -1223,13 +1223,64 @@ def test_run_details_tolerates_hostile_numeric_usage_without_replaying_diagnosti
     text = run_details({
         "status": "failed", "changes": [], "attempts": [{
             "outcome": "failed", "model": "https://private.invalid/?credential=synthetic",
-            "reason": {"version": 999, "code": "unavailable", "explanation": DIAGNOSTIC},
+            "reason": {"version": 999, "code": "unavailable", "explanation": DIAGNOSTIC,
+                       "disposition": "repair", "operation_index": 2, "target_ref": "n1"},
             "usage": {"prompt_tokens": 10 ** 400, DIAGNOSTIC: 42},
         }],
     }, "UTC")
     assert "Usage: unavailable" in text
     assert "Model: Unavailable" in text
     assert "private.invalid" not in text and DIAGNOSTIC not in text
+    assert "Operation 2" not in text and "target n1" not in text
+    assert "Saved evidence needs repair" not in text
+
+
+@pytest.mark.parametrize("action,code", [("defer", "validation.topic_support"),
+                                       ("repair", "validation.saved_support")])
+@pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
+async def test_run_history_explains_cause_and_attempt_local_recovery(size, action, code, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("EIDOLON_ASCII", "1")
+    attempt_id = "00000000-0000-4000-8000-000000000032"
+
+    class DiagnosticClient(MemoryClient):
+        async def request(self, method, **params):
+            result = await super().request(method, **params)
+            if method == "memory_continuity_run":
+                result.update(status="failed", paused=True, next_action=action, changes=[],
+                              reason={"version": 2, "code": code, "disposition": action},
+                              attempts=[{
+                                  "id": attempt_id, "outcome": "failed", "model": "synthetic",
+                                  "reason": {"version": 2, "code": code, "disposition": action,
+                                             "explanation": DIAGNOSTIC, "operation_index": 2,
+                                             "target_ref": "n1", "source_refs": ["s1"],
+                                             "field": "sources", "attempt_id": attempt_id},
+                              }])
+            return result
+
+    app = RoomApp(AppConfig(), client=DiagnosticClient())
+    async with app.run_test(size=size) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("Draft 雨 café")
+        app.open_memory(runs=True)
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one(DataTable).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        text = detail_text(screen)
+        assert "Operation 2" in text and "target n1" in text and "sources s1" in text
+        assert "field sources" in text
+        assert "References belong to attempt " + attempt_id in text
+        assert ("relevant evidence or target state changes" if action == "defer"
+                else "Saved evidence needs repair") in text
+        assert DIAGNOSTIC not in text
+        await pilot.resize_terminal(40, 10)
+        await pilot.pause()
+        assert screen.has_class("too-small")
+        await pilot.resize_terminal(*size)
+        await pilot.press("escape", "escape")
+        assert app.focused is composer and composer.text == "Draft 雨 café"
 
 
 @pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])

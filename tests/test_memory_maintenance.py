@@ -803,7 +803,8 @@ async def test_topic_rejection_feedback_prevents_unrelated_note_overwrite(store)
                                             topic=original["topic"])
         else:
             assert document["previous_rejection"] == (
-                "An existing item needs evidence about the same topic")
+                "The cited batch evidence does not concern the target note’s topic. "
+                "Use evidence about that topic or create a separate note.")
         return result
 
     worker = ContinuityWorker(store, Provider(transform=propose))

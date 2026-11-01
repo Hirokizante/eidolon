@@ -22,7 +22,9 @@ from eidolon.images import ImageStore, MAX_UPLOAD_BYTES
 from eidolon.mcp import MCPManager
 from eidolon.memory import HindsightMemory, OutboxDispatcher
 from eidolon.memory.maintenance import ContinuityWorker, synthetic_maintenance_test
-from eidolon.memory.diagnostics import model_label, public_attempt, read_reason, safe_usage
+from eidolon.memory.diagnostics import (
+    model_label, public_attempt, read_reason, recovery_outcome, safe_usage,
+)
 from eidolon.memory.recovery import ManagedMemoryService
 from eidolon.providers import OpenAIProvider, ProviderError
 from eidolon.providers.maintenance import OutputSupportCache, maintenance_output
@@ -429,6 +431,10 @@ class RoomService:
             selected = min(timed, key=lambda child: child["next_retry_at"]) if timed else next(
                 (child for child in children if child["next_action"] != "configure"), children[0])
             schedule = {key: selected[key] for key in ("next_action", "next_retry_at")}
+        disposition = (row.get("reason") or {}).get("disposition")
+        if (not completed and can_run and paused and disposition in {"defer", "repair"}
+                and schedule["next_action"] in {"configure", "defer", "repair"}):
+            schedule = {"next_action": disposition, "next_retry_at": None}
         daily = self.continuity_worker.daily_allowance
         return {**{key: row.get(key) for key in (
             "task_id", "stage", "status", "attempts", "model_calls", "attempt_counts",
@@ -438,7 +444,8 @@ class RoomService:
             "paused": paused,
             "usage": safe_usage(row.get("usage")),
             "usage_totals": safe_usage(row.get("usage_totals")),
-            "daily_allowance": daily, **schedule}
+            "daily_allowance": daily,
+            "recovery_outcome": recovery_outcome(row.get("recovery_state")), **schedule}
 
     def memory_state(self, session_id: str | None = None) -> dict:
         """Private, bounded inspection data; reading never triggers recall or retention."""

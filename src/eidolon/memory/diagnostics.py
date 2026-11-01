@@ -9,7 +9,21 @@ from .proposals import CONTRACT_VERSIONS
 from eidolon.providers.maintenance import CAPABILITY_SOURCES, OUTPUT_MODES
 
 
-REASON_VERSION = 1
+REASON_VERSION = 2
+LEGACY_REASON_CODES = frozenset({
+    "authentication", "configuration", "interrupted", "rate_or_credit_limit", "stale",
+    "thinking_timeout", "timeout", "unavailable", "unknown", "validation.archive_reason",
+    "validation.batch_source", "validation.capacity", "validation.capacity_task",
+    "validation.chronology", "validation.content", "validation.date",
+    "validation.evidence_changed", "validation.input_limit", "validation.input_overhead",
+    "validation.input_state", "validation.legacy_task", "validation.narrative",
+    "validation.output_budget", "validation.output_incomplete", "validation.output_json",
+    "validation.output_limit", "validation.output_plan", "validation.output_tokens",
+    "validation.promise_commitment", "validation.promise_qualified",
+    "validation.promise_scheduled", "validation.reference", "validation.schema",
+    "validation.schema_op", "validation.source", "validation.terminal", "validation.topic",
+    "validation.unsupported",
+})
 REASONS = {
     "unknown": "The refresh could not finish. Its cause is unavailable.",
     "interrupted": "The auxiliary request was interrupted; its evidence is kept for retry.",
@@ -30,17 +44,108 @@ CONFIGURATION_REASONS = {"configuration", "authentication", "validation.input_li
                          "validation.output_budget"}
 
 
-def safe_reason(code: str | None, version: int | None = REASON_VERSION) -> dict | None:
-    """An absent legacy reason stays absent; unknown versions never replay saved prose."""
+DISPOSITIONS = {"correct", "resnapshot", "resize", "repair", "defer", "pause", "transport_retry"}
+RECOVERY_OUTCOMES = {"unchanged", "repair", "deferred", "pending", "resolved"}
+DIAGNOSTIC_FIELDS = {"op", "sources", "note_ref", "topic", "importance", "content", "category",
+                     "origin", "scope", "event_at", "follow_up_at", "expires_at", "promise_source",
+                     "promise_owner", "promise_kind", "expected_revision", "archive_reason",
+                     "decision_reason", "replaces_ref", "content_format"}
+RECOVERY_LABELS = {
+    "correct": "Correct the proposal using the supplied evidence.",
+    "resnapshot": "Take a fresh snapshot before requesting another proposal.",
+    "resize": "Use a smaller complete-evidence group or adjust response capacity.",
+    "repair": "Saved evidence needs repair before this update can proceed.",
+    "defer": "Wait until relevant evidence or target state changes, or request an explicit retry.",
+    "pause": "Check the auxiliary settings before retrying.",
+    "transport_retry": "Retry the provider request after its backoff delay.",
+}
+
+
+def recovery_disposition(code: str) -> str:
+    if code in {"stale", "validation.revision"}:
+        return "resnapshot"
+    if code == "validation.saved_support":
+        return "repair"
+    if code == "validation.evidence_changed":
+        return "defer"
+    if code in {"validation.input_limit", "validation.output_budget", "validation.output_tokens",
+                "validation.output_limit", "validation.output_plan"}:
+        return "resize"
+    if code in CONFIGURATION_REASONS:
+        return "pause"
+    return "correct" if code.startswith("validation.") else "transport_retry"
+
+
+def recovery_outcome(value: dict | None) -> str | None:
+    outcome = value.get("outcome") if isinstance(value, dict) else None
+    return outcome if isinstance(outcome, str) and outcome in RECOVERY_OUTCOMES else None
+
+
+def safe_context(value: dict) -> dict:
+    result = {}
+    index = value.get("operation_index")
+    if type(index) is int and 1 <= index <= 32:
+        result["operation_index"] = index
+    if isinstance(value.get("field"), str) and value["field"] in DIAGNOSTIC_FIELDS:
+        result["field"] = value["field"]
+    target = value.get("target_ref")
+    if isinstance(target, str) and re.fullmatch(r"n[1-9][0-9]{0,2}", target):
+        result["target_ref"] = target
+    sources = value.get("source_refs")
+    if isinstance(sources, list):
+        result["source_refs"] = list(dict.fromkeys(ref for ref in sources[:8]
+            if isinstance(ref, str) and re.fullmatch(r"(?:s|background)[1-9][0-9]{0,3}", ref)
+            and int(re.search(r"[0-9]+$", ref)[0]) <= 1024))
+    attempt = value.get("attempt_id")
+    if isinstance(attempt, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", attempt):
+        result["attempt_id"] = attempt
+    return result
+
+
+def safe_reason(code: str | None, version: int | None = REASON_VERSION, *,
+                context: dict | None = None, disposition: str | None = None) -> dict | None:
+    """Reconstruct only allowlisted rules and bounded application-owned context."""
     if code is None:
         return None
-    code = code if (type(version) is int and version == REASON_VERSION and isinstance(code, str)
-                    and code in REASONS) else "unknown"
-    return {"version": REASON_VERSION, "code": code, "explanation": REASONS[code]}
+    if type(version) is not int or version not in {1, REASON_VERSION}:
+        code, context, disposition = "unknown", None, None
+    code = code if isinstance(code, str) and code in REASONS else "unknown"
+    if version == 1:
+        if code not in LEGACY_REASON_CODES or code == "validation.unsupported":
+            code = "unknown"
+        return {"version": 1, "code": code, "explanation": REASONS[code]}
+    return {"version": REASON_VERSION, "code": code, "explanation": REASONS[code],
+            "disposition": disposition if isinstance(disposition, str) and disposition in DISPOSITIONS
+                           else recovery_disposition(code), **safe_context(context or {})}
 
 
 def read_reason(value: dict | None) -> dict | None:
-    return safe_reason(value.get("code"), value.get("version")) if isinstance(value, dict) else None
+    return (safe_reason(value.get("code"), value.get("version"), context=value,
+                        disposition=value.get("disposition")) if isinstance(value, dict) else None)
+
+
+def reason_details(value: dict | None) -> str:
+    """Shared safe Run details text, including the scope of local references."""
+    reason = read_reason(value)
+    if reason is None:
+        return "No safe cause was recorded."
+    parts = [reason["explanation"]]
+    if reason.get("disposition"):
+        parts.append("Recovery: " + RECOVERY_LABELS[reason["disposition"]])
+    context = []
+    if "operation_index" in reason:
+        context.append("Operation " + str(reason["operation_index"]))
+    if "target_ref" in reason:
+        context.append("target " + reason["target_ref"])
+    if reason.get("source_refs"):
+        context.append("sources " + ", ".join(reason["source_refs"]))
+    if "field" in reason:
+        context.append("field " + reason["field"])
+    if context:
+        parts.append("; ".join(context) + ".")
+        if reason.get("attempt_id"):
+            parts.append("References belong to attempt " + reason["attempt_id"] + ".")
+    return "\n".join(parts)
 
 
 def problem_state(reason: dict | None) -> str:
