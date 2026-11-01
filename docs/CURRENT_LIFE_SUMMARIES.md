@@ -221,11 +221,46 @@ alongside the existing summary and new exchanges. Updates must also cite the
 current task's evidence. A separate legacy conversion pass uses all of a named
 note's existing evidence and preserves its category, scope and optional metadata.
 Sources from unrelated notes or an
-unseen older speaker cannot be attached. Upserts retain only the explicitly cited
-current support, up to eight messages; earlier revisions keep superseded evidence.
+unseen older speaker cannot be attached. Updates identify prior support for
+carried-forward claims in `retained_sources`, within the same eight-citation cap.
+If identified support cannot fit, the app keeps the update pending and preserves
+the existing note. Upserts retain only the explicitly cited current support,
+up to eight messages. Durable note-to-original associations also
+retain earlier evidence independently of that selected list, with revision and task
+provenance. Associations distinguish current, background, superseded, disputed and
+retracted evidence. Retention and migration do not certify semantic relevance;
+unknown support quality remains unknown. Complete original bodies stay in the
+existing exchange store. Neither associations nor historical bodies are appended
+to every request or to the dialogue continuity prompt.
 Source eligibility, complete snapshots, locks, scope and revisions are rechecked at
-commit. Revoking an earlier source invalidates the summary, including when new
-evidence is added.
+commit. Revoking a selected source invalidates the summary. Retained background
+associations remain recorded, with eligibility rechecked before any later repair.
+
+Mechanical source damage is detected locally. A maintenance response can explicitly
+report insufficient or unrelated saved support using `report_support`; word overlap
+alone never classifies historical evidence as unrelated. A separate
+`current-life-evidence-repair-v1` request supplies one unprotected note and at most
+32 associated historical source candidates, rechecking original identities,
+snapshots, scope and eligibility. It can restore up to eight selected citations,
+reclassify associations, or leave support unresolved. Repair preserves note text,
+state, dates and all other metadata. Locked, suppressed and authored notes cannot
+be repaired automatically. Retracted, deleted, changed or ineligible originals
+cannot be adopted. Earlier revisions remain immutable.
+
+Every repair dispatch uses the original task's root recovery pass and applicable
+shared daily allowance. Restoring support does not mark that task's new evidence
+processed: ordinary maintenance must resume and commit separately. Mechanical
+damage without a pending batch uses a standalone bounded repair. Failed or
+inconclusive repair preserves the note, records a safe cause, and defers equivalent
+requests until relevant state changes or an explicit retry is requested. Run
+history distinguishes **Evidence repaired** from ordinary successful maintenance
+and keeps prior failures visible. Private service note inspection includes
+`evidence_associations` for provenance review.
+
+Schema v16 upgrades backfill eligible current and historical associations in one
+transaction after the normal private SQLite backup. Notes, history, unresolved
+work and request budgets remain intact; unknown support quality stays unknown.
+Reopening the migrated database neither duplicates associations nor resets calls.
 
 ### Replay and source chronology
 

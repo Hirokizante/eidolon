@@ -36,6 +36,9 @@ class ContinuityValidationError(ValueError):
     """An unsupported proposal; none of the batch should be committed."""
 
     REASONS = {
+        "support_preservation": "The focused update cannot retain its identified prior support "
+                                "within the citation allowance. The note is unchanged.",
+        "repair_unresolved": "Historical originals could not establish support; the note is unchanged.",
         "reference": "Use only the note_ref and source_refs supplied in this request.",
         "schema": "The model returned malformed continuity operations.",
         "capacity_task": "Capacity review permits only archive with note_ref and decision_reason, "

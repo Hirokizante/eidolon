@@ -208,8 +208,8 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             "configure": "Check the auxiliary model in /preferences, then refresh current life.",
             "defer": "Wait until relevant evidence or target state changes; "
                      "Retry batch requests a separate bounded pass.",
-            "repair": "Saved evidence needs repair. This batch stays unresolved; "
-                      "ordinary corrections are paused.",
+            "repair": "Review eligible historical originals in a bounded evidence repair. "
+                      "This batch stays unresolved until ordinary maintenance resumes.",
             "retry_required": "Use Retry batch to start a new bounded recovery pass.",
             "automatic_disabled": "Automatic backlog retries are paused in /preferences. "
                                   "Use Retry batch for a bounded pass.",
@@ -227,7 +227,8 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         total = row.get("model_calls", len(row["attempts"]))
         counts = row.get("attempt_counts") or {}
         totals = ", ".join(f"{counts[key]} {label}" for key, label in (
-            ("failed", "failed"), ("committed", "succeeded"), ("interrupted", "interrupted"),
+            ("failed", "failed"), ("committed", "succeeded"), ("repaired", "evidence repaired"),
+            ("interrupted", "interrupted"),
             ("stale", "outdated"), ("configuration_error", "configuration rejected"),
         ) if counts.get(key))
         parts.append(f"Attempt history · {total} requests · newest first"
@@ -240,7 +241,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             parts.append("Only the latest 100 attempts are retained; aggregate counts include "
                          "older requests. Older outcomes may be unavailable after an upgrade.")
         for index, attempt in enumerate(row["attempts"], 1):
-            outcome = {"committed": "Succeeded", "failed": "Failed", "interrupted": "Interrupted",
+            outcome = {"committed": "Succeeded", "repaired": "Evidence repaired", "failed": "Failed", "interrupted": "Interrupted",
                        "configuration_error": "Configuration rejected", "stale": "Outdated",
                        "running": "Running"}.get(attempt.get("outcome"), "Unavailable")
             elapsed = attempt.get("elapsed_seconds")
@@ -258,8 +259,11 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             cause = read_reason(attempt.get("reason"))
             if cause:
                 detail.append(reason_details(cause))
-            elif attempt.get("outcome") not in {"committed", "running"}:
+            elif attempt.get("outcome") not in {"committed", "repaired", "running"}:
                 detail.append("No safe cause was recorded for this attempt.")
+            if attempt.get("outcome") == "repaired":
+                detail.append("Saved citations restored; note wording preserved. "
+                              "The original batch requires a separate maintenance result.")
             usage = safe_usage(attempt.get("usage"))
             detail.append("Usage: " + (", ".join(f"{key}: {value}" for key, value in usage.items())
                                       if usage else "unavailable"))

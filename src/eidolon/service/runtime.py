@@ -432,6 +432,9 @@ class RoomService:
                 (child for child in children if child["next_action"] != "configure"), children[0])
             schedule = {key: selected[key] for key in ("next_action", "next_retry_at")}
         disposition = (row.get("reason") or {}).get("disposition")
+        if (not completed and can_run and not exhausted and not paused
+                and disposition == "repair"):
+            schedule = {"next_action": "repair", "next_retry_at": row.get("next_retry_at")}
         if (not completed and can_run and paused and disposition in {"defer", "repair"}
                 and schedule["next_action"] in {"configure", "defer", "repair"}):
             schedule = {"next_action": disposition, "next_retry_at": None}
@@ -474,7 +477,7 @@ class RoomService:
         continuity["items"] = [{
             **{key: value for key, value in item.items()
                if key not in {"sources", "last_followup_evidence"}},
-            "source_count": len(item.get("sources", [])),
+            "source_count": len(item["sources"]) if isinstance(item.get("sources"), list) else 0,
             "detail_available": True,
         } for item in continuity["items"]]
         history = [{
@@ -1137,7 +1140,11 @@ class RoomService:
             item_id = params.get("item_id")
             if not isinstance(item_id, str) or not item_id or len(item_id) > 200:
                 raise ValueError("Choose a current life item to inspect")
-            return self.store.get_continuity_item(item_id)
+            item = self.store.get_continuity_item(item_id)
+            if item is not None:
+                from ..storage.support import associations
+                item["evidence_associations"] = associations(self.store, item_id, item["scope"])
+            return item
         if method == "memory_continuity_history":
             history_id = params.get("history_id")
             if type(history_id) is not int or history_id < 1:

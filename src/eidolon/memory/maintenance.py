@@ -225,6 +225,8 @@ class ContinuityWorker:
         return ResponseLimits.for_task(task_id, self.output_tokens, self.max_output_chars)
 
     def _messages(self, task: dict, state: dict) -> list[dict]:
+        if task.get("repair_target"):
+            return self._repair_messages(task, state)
         # Every active topic is mandatory context. Detailed bodies and complete
         # supporting exchanges are optional, but index-only notes cannot be targets.
         limits = self._response_limits(task["id"])
@@ -412,6 +414,53 @@ class ContinuityWorker:
                                                     code="input_state")
         return messages()
 
+    def _contract_id(self, task: dict) -> str:
+        return "repair:" + task["id"] if task.get("repair_target") else task["id"]
+
+    def _damaged_note(self, state: dict) -> dict | None:
+        from ..storage.support import pending_repair
+        return next((item for item in state["items"] if item.get("invalidated")
+                     and not (item.get("locked") or item.get("user_created")
+                              or item.get("suppressed") or item.get("origin") == "user_note")
+                     and not pending_repair(self.store, item["id"], self.scope)), None)
+
+    def _repair_messages(self, task: dict, state: dict) -> list[dict]:
+        """Supply one protected-text target and at most 32 historical originals."""
+        from ..storage.support import candidates, identified_sources
+        target = next((item for item in state["items"] if item["id"] == task["repair_target"]), None)
+        if target is None:
+            raise ContinuityValidationError("Repair target is absent", code="revision")
+        if (target.get("locked") or target.get("user_created") or target.get("suppressed")
+                or target.get("origin") == "user_note"):
+            raise ContinuityValidationError("Repair target is protected", code="protected")
+        historical = candidates(self.store, target["id"], self.scope)
+        if not historical:
+            raise ContinuityValidationError("No eligible historical originals", code="repair_unresolved")
+        state["repair_target"] = target["id"]
+        state["repair_candidates"] = historical
+        ids = sorted({source["exchange_id"] for source in historical})
+        rows = self.store.continuity_evidence(ids, scope=self.scope)
+        state["source_exchanges"] = rows
+        limits = self._response_limits(self._contract_id(task))
+        document = {"items": [{**target, "sources": identified_sources(target.get("sources"))}],
+                    "topic_index": [], "exchanges": rows,
+                    "supporting_exchanges": [], "scope": self.scope,
+                    "response_limits": limits.document()}
+        _, instructions, _, request_type = task_contract(self._contract_id(task))
+        request = request_type(document, inputs=rows, state=state, scope=self.scope,
+                               timezone=self.timezone, max_notes=self.max_notes)
+        messages = [{"role": "system", "content": instructions},
+                    {"role": "user", "content": json.dumps(request.document, ensure_ascii=False)}]
+        output = self._output(self._contract_id(task))
+        response_format = output.response_format if output else None
+        chars = sum(len(json.dumps(message, ensure_ascii=False)) for message in messages)
+        if response_format:
+            chars += len(json.dumps(response_format, ensure_ascii=False))
+        if ((self.max_input_chars is not None and chars > self.max_input_chars)
+                or not self.budget.fits(self.counter.request(messages, response_format=response_format))):
+            raise ContinuityValidationError("Historical context exceeds allowance", code="input_limit")
+        return messages
+
     def _source_exchanges(self, state: dict) -> list[dict]:
         ids = list(dict.fromkeys(source["exchange_id"] for item in state.get("items", [])
                                  if not item.get("invalidated")
@@ -459,13 +508,13 @@ class ContinuityWorker:
         finished = False
         reasoning_seen = False
         messages = self._messages(task, state)
-        _, _, _, request_type = task_contract(task["id"])
+        _, _, _, request_type = task_contract(self._contract_id(task))
         request = request_type(json.loads(messages[-1]["content"]), inputs=task["inputs"],
                                state=state, scope=self.scope, timezone=self.timezone,
                                max_notes=self.max_notes)
         self._request_references = request.references
         record = getattr(self.store, "record_request_metrics", None)
-        output = output or self._output(task["id"])
+        output = output or self._output(self._contract_id(task))
         options = {"output": output} if output is not None else {}
 
         def record_metrics(**values: Any) -> None:
@@ -529,7 +578,7 @@ class ContinuityWorker:
             raise ContinuityValidationError("The maintenance stream did not finish cleanly",
                                             code="output_incomplete")
         proposal = parse_proposal("".join(chunks))
-        limits = self._response_limits(task["id"])
+        limits = self._response_limits(self._contract_id(task))
         if self.counter.value(proposal) > limits.response_tokens:
             raise ContinuityValidationError("Response exceeds planned tokens", code="output_plan")
         return request.compile(proposal)
@@ -544,13 +593,13 @@ class ContinuityWorker:
                                 "provider_schema_hash")}
             if output is not None:
                 provenance.update(output.provenance())
-            contract, instructions, schema, _ = task_contract(task["id"])
+            contract, instructions, schema, _ = task_contract(self._contract_id(task))
             provenance["contract"] = contract
             provenance["prompt_hash"] = hashlib.sha256(instructions.encode()).hexdigest()
             provenance["schema_hash"] = digest({
                 "contract": contract, "schema": schema.model_json_schema(),
             })
-            if (task["id"].startswith(("narrative:", "review:"))
+            if (task.get("repair_target") or task["id"].startswith(("narrative:", "review:"))
                     or any(provenance[key] != value for key, value in original_output.items())):
                 provenance["execution_fingerprint"] = digest({
                     "execution": provenance["execution_fingerprint"],
@@ -579,11 +628,16 @@ class ContinuityWorker:
         notes = [{key: value for key, value in item.items() if key in fields}
                  for item in state["items"] if item["id"] in targets]
         notes.sort(key=lambda item: item["id"])
+        from ..storage.support import associations, identified_sources
+        support = [{key: entry[key] for key in ("exchange_id", "document_id", "role", "input_hash",
+                                               "support_role", "disposition", "eligible")}
+                   for note in notes for entry in associations(self.store, note["id"], self.scope)]
         ids = list(dict.fromkeys([*task["input_ids"], *(source["exchange_id"]
-            for note in notes for source in note.get("sources", []))]))
+            for note in notes for source in identified_sources(note.get("sources")))]))
         originals = [row for start in range(0, len(ids), 32)
                      for row in self.store.continuity_evidence(ids[start:start + 32], scope=self.scope)]
-        return digest({"notes": notes, "originals": originals, "scope": self.scope})
+        return digest({"notes": notes, "originals": originals, "scope": self.scope,
+                       "associations": support})
 
     def _recovery_fingerprint(self, reason_code: str | None = None, *,
                               stage: dict | None = None) -> str:
@@ -623,10 +677,11 @@ class ContinuityWorker:
                 targets: list[str] | None = None) -> dict:
         stage = task.get("stages", {}).get("continuity", {})
         attempts = stage.get("attempts", 0)
-        delay = 0 if immediate else min(3600, 30 * 2 ** min(attempts, 7))
+        delay = (0 if immediate or reason_code == "validation.saved_support" else
+                 min(3600, 30 * 2 ** min(attempts, 7)))
         from .diagnostics import CONFIGURATION_REASONS, safe_reason
         diagnostic = diagnostic or safe_reason(reason_code, context={"attempt_id": self._attempt_id})
-        targets = targets or []
+        targets = targets or ([task["repair_target"]] if task.get("repair_target") else [])
         fingerprint = self._invariant_fingerprint(task["id"], targets)
         previous = [attempt.get("recovery_state") or {}
                     for attempt in self.store.maintenance_attempts(task["id"])]
@@ -641,10 +696,24 @@ class ContinuityWorker:
         unchanged = invariant and any(saved.get("fingerprint") == fingerprint
                                       and saved.get("code") == reason_code for saved in previous)
         disposition = "defer" if unchanged else diagnostic["disposition"]
+        from ..storage.support import pending_repair
+        duplicate_repair = (reason_code == "validation.saved_support" and bool(targets)
+                            and pending_repair(self.store, targets[0], self.scope,
+                                               exclude_task_id=task["id"]))
+        if duplicate_repair:
+            disposition = "defer"
         diagnostic["disposition"] = disposition
-        blocked = disposition in {"defer", "repair"}
+        repairing = bool(task.get("repair_target"))
+        if repairing:
+            disposition = "defer"
+            diagnostic["disposition"] = disposition
+        blocked = disposition == "defer"
         paused = reason_code in CONFIGURATION_REASONS or blocked
         recovery = {"fingerprint": fingerprint, "targets": targets, "code": reason_code,
+                    "repair_target": (task.get("repair_target") or
+                                      (targets[0] if reason_code == "validation.saved_support"
+                                       and not duplicate_repair
+                                       and targets else None)),
                     "references": self._request_references,
                     "outcome": "unchanged" if unchanged else "repair" if disposition == "repair"
                                else "deferred" if blocked else "pending"}
@@ -748,9 +817,19 @@ class ContinuityWorker:
                     review_task_id=task["id"] if task["id"].startswith("review:") else None,
                     review_key=str(self.max_notes),
                     resume_task_id=task["id"],
+                    repair_target=((task["stages"]["continuity"].get("recovery_state") or {})
+                                   .get("repair_target") if task["id"].startswith("repair:") else None),
                 )
             else:
                 inputs = self.store.maintenance_inputs(limit=self.batch_exchanges, scope=self.scope)
+                damaged = self._damaged_note(state)
+                if not inputs and damaged is not None:
+                    task = self.store.create_maintenance_task(
+                        [], scope=self.scope, expected_revision=state["revision"],
+                        control_revision=state["control_revision"], repair_target=damaged["id"])
+                    self._failed(task, reason="Saved evidence needs repair", reason_code="validation.saved_support",
+                                 targets=[damaged["id"]])
+                    return False
                 current = active_items(state["items"], scope=self.scope)
                 review = (not inputs and state.get("active_count", len(current)) > self.max_notes
                           and any(not (item.get("locked") or item.get("user_created")
@@ -811,6 +890,15 @@ class ContinuityWorker:
             ):
                 self._last_result = "recovery paused or exhausted"
                 return False
+            recovery = task["stages"]["continuity"].get("recovery_state") or {}
+            if recovery.get("repair_target") and recovery.get("outcome") != "resolved":
+                task["repair_target"] = recovery["repair_target"]
+            if not task.get("repair_target"):
+                damaged = self._damaged_note(state)
+                if damaged is not None:
+                    self._failed(task, reason="Saved evidence needs repair", reason_code="validation.saved_support",
+                                 targets=[damaged["id"]])
+                    return False
             self._task_id = task["id"]
             # The task may be from an older worker configuration. Enforce the
             # allowance again without truncating its immutable evidence set.
@@ -819,7 +907,7 @@ class ContinuityWorker:
             if claim and not claim(task["id"], "continuity"):
                 self._last_result = "already claimed"
                 return False
-            output = self._output(task["id"])
+            output = self._output(self._contract_id(task))
             operations = await self._propose(
                 task, state, output=output, on_dispatch=lambda: self._start_attempt(task, output))
             if self.commit_result is not None:
@@ -829,8 +917,8 @@ class ContinuityWorker:
                                              expected_revision=state["revision"],
                                              control_revision=state["control_revision"],
                                              attempt_id=self._attempt_id, max_notes=self.max_notes)
-            outcome = "committed"
-            self._last_result = "committed"
+            outcome = "repaired" if task.get("repair_target") else "committed"
+            self._last_result = outcome
             return True
         except asyncio.CancelledError:
             outcome = "interrupted"
