@@ -135,7 +135,14 @@ async def test_damaged_saved_support_routes_to_repair_without_futile_corrections
         assert stage["reason"]["code"] == "validation.saved_support"
         assert stage["reason"]["disposition"] == "repair"
         assert stage["next_action"] == "repair"
-        assert stage["budget"]["remaining"] == 5
+        assert stage["budget"]["remaining"] == 6  # Mechanical damage needs no model diagnosis.
+        clock.advance(86400)
+        await automatic(service, provider)
+        assert len(provider.calls) == 1
+        assert json.loads(provider.calls[0][-1]["content"])["contract"] == (
+            "current-life-evidence-repair-v1")
+        # The ordinary-only provider cannot answer this contract; keep the
+        # failed repair visible and do not dispatch equivalent corrections.
         clock.advance(86400)
         await automatic(service, provider)
         assert len(provider.calls) == 1

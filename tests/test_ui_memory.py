@@ -218,6 +218,19 @@ def test_run_history_describes_smaller_groups_and_the_shared_budget(status):
     assert "No changes" not in text and "No notes were changed" not in text
 
 
+def test_run_details_distinguishes_evidence_repair_from_completed_maintenance():
+    text = run_details({
+        "status": "pending", "attempts": [{"outcome": "repaired", "model": "synthetic",
+                                           "started_at": "2026-10-14T04:00:00+00:00"}],
+        "attempt_counts": {"repaired": 1}, "model_calls": 1,
+        "next_action": "automatic_check", "change_count": 0,
+    }, "UTC")
+    assert "Evidence repaired" in text and "1 evidence repaired" in text
+    assert "note wording preserved" in text
+    assert "original batch requires a separate maintenance result" in text
+    assert "No safe cause" not in text
+
+
 @pytest.mark.parametrize("state,created,action", [
     ("open", False, "Updated"), ("open", True, "Added"),
     ("resolved", False, "Archived"), ("archived", False, "Archived"),

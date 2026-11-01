@@ -64,6 +64,8 @@ RECOVERY_LABELS = {
 def recovery_disposition(code: str) -> str:
     if code in {"stale", "validation.revision"}:
         return "resnapshot"
+    if code in {"validation.repair_unresolved", "validation.support_preservation"}:
+        return "defer"
     if code == "validation.saved_support":
         return "repair"
     if code == "validation.evidence_changed":

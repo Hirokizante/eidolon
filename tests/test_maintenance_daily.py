@@ -7,6 +7,7 @@ import pytest
 from test_maintenance_recovery import automatic, clock as recovery_clock
 from test_ordinary_proposals import CompactProvider, refresh
 from test_service import room
+from test_current_life_policy import seed_note
 
 
 @pytest.fixture
@@ -15,6 +16,38 @@ def daily_clock(monkeypatch):
     clock.instant = datetime(2026, 10, 25, 12, tzinfo=timezone.utc)
     monkeypatch.setattr("eidolon.storage.store.datetime", clock)
     return clock
+
+
+async def test_historical_repair_uses_the_root_pass_and_shared_daily_allowance(
+    tmp_path, monkeypatch, daily_clock,
+):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={
+            "continuity_enabled": True, "continuity_recovery_calls": 1,
+            "continuity_daily_retry_calls": 1,
+        })
+        note = seed_note(service.store)
+        service.store.complete_turn(service.current_session["id"], "My creative project has sketches.", "Okay.")
+        await refresh(service, client, CompactProvider(lambda doc: {"operations": [{
+            "op": "report_support", "note_ref": doc["items"][0]["note_ref"],
+        }]}))
+        task = service.store.pending_maintenance_task()
+        daily_clock.advance(600)
+        provider = CompactProvider(lambda doc: {"operations": [{
+            "op": "repair_support", "note_ref": doc["items"][0]["note_ref"],
+            "sources": [doc["candidate_source_refs"][0]],
+        }]})
+        await automatic(service, provider)
+        stage = service.store.get_maintenance_stage(task["id"])
+        assert len(provider.calls) == 1
+        assert stage["model_calls"] == 2 and stage["budget"]["pass"] == 2
+        assert stage["budget"]["used"] == 1 and stage["budget"]["exhausted"]
+        assert service.store.maintenance_attempts(task["id"])[0]["outcome"] == "repaired"
+        assert service.store.get_continuity_item(note["id"])["content"] == note["content"]
+        assert service.continuity_worker.daily_allowance["used"] == 1
+        daily_clock.advance(600)
+        await automatic(service, provider)
+        assert len(provider.calls) == 1
 
 
 @pytest.mark.parametrize("opportunity", [
