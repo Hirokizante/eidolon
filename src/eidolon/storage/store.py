@@ -14,6 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..config import IdentityConfig
+from ..memory.continuity import ContinuityValidationError
 
 
 def utc_now() -> str:
@@ -44,11 +45,11 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 14:
+        if version > 15:
             self.db.close()
             raise ValueError("This database requires a newer Eidolon version")
         self.migration_backup_path: Path | None = None
-        if version < 14 and self.db.execute(
+        if version < 15 and self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone():
             # SQLite's backup API captures a consistent snapshot, including WAL
@@ -59,7 +60,7 @@ class Store:
             backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_dir.chmod(0o700)
             stamp = datetime.now(dt_timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v14-{stamp}.sqlite3"
+            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v15-{stamp}.sqlite3"
             with sqlite3.connect(self.migration_backup_path) as backup:
                 self.db.backup(backup)
             self.migration_backup_path.chmod(0o600)
@@ -234,6 +235,7 @@ class Store:
                 ("pause_fingerprint", "TEXT"),
                 ("recovery_source", "TEXT NOT NULL DEFAULT 'initial'"),
                 ("automatic_last_at", "TEXT"),
+                ("recovery_state", "TEXT"),
             ):
                 if column not in stage_columns:
                     self.db.execute(
@@ -244,6 +246,7 @@ class Store:
                 ("recovery_source", "TEXT"),
                 ("recovery_pass", "INTEGER"),
                 ("daily_period", "TEXT"),
+                ("recovery_state", "TEXT"),
             ):
                 if column not in attempt_columns:
                     self.db.execute(
@@ -319,7 +322,7 @@ class Store:
                     "UPDATE outbox SET review_state='pending' WHERE status!='completed' "
                     "AND generation_id IN (SELECT id FROM generations WHERE memory_eligible IS NULL)"
                 )
-            self.db.execute("PRAGMA user_version=14")
+            self.db.execute("PRAGMA user_version=15")
         self.db.commit()
         self.path.chmod(0o600)
 
@@ -963,7 +966,7 @@ class Store:
     def _stage_row(self, row: sqlite3.Row | dict) -> dict:
         from ..memory.diagnostics import read_reason
         result = dict(row)
-        for key in ("usage", "usage_totals", "committed_execution", "reason", "attempt_counts"):
+        for key in ("usage", "usage_totals", "committed_execution", "reason", "attempt_counts", "recovery_state"):
             result[key] = json.loads(result[key]) if result.get(key) else None
         result["attempt_counts"] = result["attempt_counts"] or {}
         result["reason"] = read_reason(result["reason"])
@@ -1212,7 +1215,6 @@ class Store:
                 current = self.maintenance_inputs(scope=scope, limit=len(inputs))
             if current != inputs or [entry["id"] for entry in current] != input_ids:
                 if existing:
-                    from ..memory.continuity import ContinuityValidationError
                     raise ContinuityValidationError("Maintenance evidence changed",
                                                     code="evidence_changed")
                 raise ValueError("Maintenance inputs changed or would skip eligible evidence")
@@ -1326,7 +1328,8 @@ class Store:
         now = now or datetime.now(dt_timezone.utc)
         code = (row.get("reason") or {}).get("code")
         if row.get("pause_fingerprint") == fingerprint:
-            return {"next_action": "configure", "next_retry_at": None}
+            return {"next_action": {"defer": "defer", "repair": "repair"}.get(
+                (row.get("reason") or {}).get("disposition"), "configure"), "next_retry_at": None}
         if code == "validation.evidence_changed":
             return {"next_action": "retry_required", "next_retry_at": None}
         if not daily_limit:
@@ -1449,8 +1452,10 @@ class Store:
     def fail_maintenance_stage(self, task_id: str, stage: str, error: str,
                                 next_retry_at: str | None = None, *,
                                 reason_code: str | None = None,
-                                pause_fingerprint: str | None = None) -> None:
-        from ..memory.diagnostics import safe_reason
+                                pause_fingerprint: str | None = None,
+                                diagnostic: dict | None = None,
+                                recovery_state: dict | None = None) -> None:
+        from ..memory.diagnostics import safe_reason, read_reason
         if stage not in {"continuity", "summary", "reflection"}:
             raise ValueError("Invalid maintenance stage")
         retry_at = self._continuity_time(next_retry_at)
@@ -1459,14 +1464,14 @@ class Store:
             exhausted = self.get_maintenance_stage(task_id, stage)["budget"]["exhausted"]
             self.db.execute(
                 "UPDATE maintenance_stages SET status='failed',attempts=attempts+1,error=?,"
-                "next_retry_at=?,updated_at=?,reason=?,pause_fingerprint=?,"
+                "next_retry_at=?,updated_at=?,reason=?,pause_fingerprint=?,recovery_state=?,"
                 "set_aside=CASE WHEN ? IN ('validation.input_limit','validation.output_budget',"
                 "'validation.evidence_changed') OR "
                 "? THEN 1 ELSE set_aside END "
                 "WHERE task_id=? AND stage=? "
                 "AND status NOT IN ('completed','split')",
-                (str(error)[:1000], retry_at, utc_now(), json.dumps(safe_reason(reason_code)),
-                 pause_fingerprint, reason_code, exhausted, task_id, stage),
+                (str(error)[:1000], retry_at, utc_now(), json.dumps(read_reason(diagnostic) if diagnostic else safe_reason(reason_code)),
+                 pause_fingerprint, json.dumps(recovery_state), reason_code, exhausted, task_id, stage),
             )
 
     def maintenance_status(self, scope: str = "real_life") -> dict:
@@ -1521,7 +1526,8 @@ class Store:
                 if (saved["status"] == "pending" and not saved["set_aside"]
                         and not row[0]):
                     continue
-                condition = ("configuration_attention" if saved["paused"] else
+                condition = ("configuration_attention" if saved["paused"] and
+                             (saved.get("reason") or {}).get("disposition") not in {"defer", "repair"} else
                              "set_aside" if saved["set_aside"] else
                              "recovering" if saved["status"] == "pending" else
                              problem_state(read_reason(json.loads(row[0]) if row[0] else None)))
@@ -1656,6 +1662,7 @@ class Store:
         from ..memory.diagnostics import read_reason
         return {**dict(row),
                 "reason": read_reason(json.loads(row["reason"]) if row["reason"] else None),
+                "recovery_state": json.loads(row["recovery_state"]) if row["recovery_state"] else None,
                 "provenance": json.loads(row["provenance"]),
                 "usage": json.loads(row["usage"]) if row["usage"] else None}
 
@@ -1673,8 +1680,9 @@ class Store:
             )]
 
     def _finish_maintenance_attempt(self, attempt_id: str, outcome: str, *,
-                                    reason_code: str | None = None) -> None:
-        from ..memory.diagnostics import safe_reason
+                                    reason_code: str | None = None,
+                                    diagnostic: dict | None = None) -> None:
+        from ..memory.diagnostics import safe_reason, read_reason
         if outcome not in {"committed", "failed", "interrupted", "stale", "configuration_error"}:
             raise ValueError("Invalid auxiliary attempt outcome")
         attempt = self.get_maintenance_attempt(attempt_id)
@@ -1684,9 +1692,12 @@ class Store:
         elapsed = (datetime.fromisoformat(stamp)
                    - datetime.fromisoformat(attempt["started_at"])).total_seconds()
         self.db.execute(
-            "UPDATE maintenance_attempts SET outcome=?,ended_at=?,elapsed_seconds=?,reason=? "
+            "UPDATE maintenance_attempts SET outcome=?,ended_at=?,elapsed_seconds=?,reason=?,"
+            "recovery_state=(SELECT recovery_state FROM maintenance_stages "
+            "WHERE task_id=? AND stage=?) "
             "WHERE id=?",
-            (outcome, stamp, max(0, elapsed), json.dumps(safe_reason(reason_code)), attempt_id),
+            (outcome, stamp, max(0, elapsed), json.dumps(read_reason(diagnostic) if diagnostic else safe_reason(reason_code)),
+             attempt["task_id"], attempt["stage"], attempt_id),
         )
 
         row = self.db.execute(
@@ -1701,9 +1712,11 @@ class Store:
         )
 
     def finish_maintenance_attempt(self, attempt_id: str, outcome: str, *,
-                                   reason_code: str | None = None) -> None:
+                                   reason_code: str | None = None,
+                                   diagnostic: dict | None = None) -> None:
         with self._lock, self.db:
-            self._finish_maintenance_attempt(attempt_id, outcome, reason_code=reason_code)
+            self._finish_maintenance_attempt(attempt_id, outcome, reason_code=reason_code,
+                                             diagnostic=diagnostic)
 
     def record_maintenance_usage(self, task_id: str, stage: str = "continuity", *,
                                   usage: dict | None = None, called: bool = False,
@@ -1770,13 +1783,19 @@ class Store:
     def _continuity_operation_sources(self, sources: Any, inputs: dict[int, dict]) -> list[dict]:
         from ..memory.continuity import source_is_fictional, whole_source_excerpt
         if not isinstance(sources, list) or not sources or len(sources) > 32:
-            raise ValueError("Continuity changes require bounded source evidence")
+            raise ContinuityValidationError(
+                "Continuity changes require bounded source evidence",
+                code="source",
+            )
         checked = []
         for source in sources:
             if not isinstance(source, dict):
-                raise ValueError("Invalid continuity evidence")
+                raise ContinuityValidationError("Invalid continuity evidence", code='source')
             if type(source.get("exchange_id")) is not int:
-                raise ValueError("Continuity exchange IDs must be immutable integer IDs")
+                raise ContinuityValidationError(
+                    "Continuity exchange IDs must be immutable integer IDs",
+                    code="source",
+                )
             exchange = inputs.get(source.get("exchange_id"))
             role, excerpt = source.get("role"), source.get("excerpt")
             if (exchange is None or source.get("document_id") != exchange["document_id"]
@@ -1784,7 +1803,10 @@ class Store:
                     or not excerpt.strip() or not whole_source_excerpt(excerpt, exchange[role])
                     or (exchange["scope"] == "real_life" and source_is_fictional(exchange[role]))
                     or source.get("origin") != f"{role}_statement"):
-                raise ValueError("Continuity source is unsupported or ineligible")
+                raise ContinuityValidationError(
+                    "Continuity source is unsupported or ineligible",
+                    code="source",
+                )
             checked.append({**source, "input_hash": self._continuity_hash(exchange)})
         return checked
 
@@ -1793,7 +1815,10 @@ class Store:
                           attempt_id: str | None = None, max_notes: int = 12) -> dict:
         """Apply a validated patch and its stage watermark in one CAS transaction."""
         if not isinstance(operations, list) or not operations or len(operations) > 32:
-            raise ValueError("A maintenance result requires bounded explicit operations")
+            raise ContinuityValidationError(
+                "A maintenance result requires bounded explicit operations",
+                code="schema",
+            )
         with self._lock, self.db:
             self.db.execute("BEGIN IMMEDIATE")
             task = self._maintenance_task(task_id)
@@ -1801,7 +1826,10 @@ class Store:
             if task["stages"]["continuity"]["status"] == "completed":
                 return self.continuity_state(scope)
             if task["stages"]["continuity"]["status"] == "split":
-                raise ValueError("Split maintenance parents cannot commit a proposal")
+                raise ContinuityValidationError(
+                    "Split maintenance parents cannot commit a proposal",
+                    code="conflict",
+                )
             if attempt_id is not None:
                 attempt = self.get_maintenance_attempt(attempt_id)
                 route = self.auxiliary_route()
@@ -1809,13 +1837,19 @@ class Store:
                         or attempt["stage"] != "continuity" or attempt["outcome"] != "running"
                         or route["revision"] != attempt["provenance"]["routing_revision"]
                         or route["fingerprint"] != attempt["provenance"]["route_fingerprint"]):
-                    raise ValueError("Auxiliary routing changed; retry the pending stage")
+                    raise ContinuityValidationError(
+                        "Auxiliary routing changed; retry the pending stage",
+                        code="revision",
+                    )
             state = self._continuity_scope(scope)
             if (state["revision"] != expected_revision
                     or state["control_revision"] != control_revision
                     or task["expected_revision"] != expected_revision
                     or task["control_revision"] != control_revision):
-                raise ValueError("Continuity state changed; regenerate the proposal")
+                raise ContinuityValidationError(
+                    "Continuity state changed; regenerate the proposal",
+                    code="revision",
+                )
             current = self._continuity_exchange_rows(
                 scope=scope, exchange_ids=task["input_ids"], limit=len(task["input_ids"]))
             if not task_id.startswith(("narrative:", "review:")):
@@ -1824,10 +1858,12 @@ class Store:
                     "AND processed=0 ORDER BY exchange_id", (scope, task_id),
                 ).fetchall()
                 if [row[0] for row in assigned] != task["input_ids"]:
-                    raise ValueError("Maintenance evidence is already processed or belongs to another batch")
+                    raise ContinuityValidationError(
+                        "Maintenance evidence is already processed or belongs to another batch",
+                        code="conflict",
+                    )
             if (self._continuity_hash(current) != task["input_hash"]
                     or current != task["inputs"]):
-                from ..memory.continuity import ContinuityValidationError
                 raise ContinuityValidationError("Maintenance evidence changed or is no longer eligible",
                                                 code="evidence_changed")
             from ..memory.continuity import (
@@ -1849,20 +1885,32 @@ class Store:
             changed, targets = 0, set()
             for index, operation in enumerate(operations):
                 if not isinstance(operation, dict):
-                    raise ValueError("Invalid continuity operation")
+                    raise ContinuityValidationError(
+                        "Invalid continuity operation",
+                        code="schema_op",
+                    )
                 if (type(operation.get("expected_revision")) is not int
                         or operation["expected_revision"] < 0):
-                    raise ValueError("Continuity operations require an explicit integer revision")
+                    raise ContinuityValidationError(
+                        "Continuity operations require an explicit integer revision",
+                        code="revision",
+                    )
                 action = operation.get("op", operation.get("operation"))
                 if action == "no_change":
                     if (len(operations) != 1 or operation.get("expected_revision") != expected_revision
                             or set(operation) - {"op", "operation", "expected_revision", "sources"}
                             or operation.get("sources") or operation.get("item_id")
                             or operation.get("content")):
-                        raise ValueError("Invalid no-change result")
+                        raise ContinuityValidationError(
+                            "Invalid no-change result",
+                            code="no_change",
+                        )
                     continue
                 if action not in {"upsert", "resolve", "archive"}:
-                    raise ValueError("Invalid continuity operation")
+                    raise ContinuityValidationError(
+                        "Invalid continuity operation",
+                        code="schema_op",
+                    )
                 allowed = {"op", "operation", "item_id", "expected_revision", "sources",
                            "category", "content", "origin", "scope", "observed_at", "event_at",
                            "expires_at", "follow_up_at", "last_mention_at", "promise_owner",
@@ -1870,12 +1918,15 @@ class Store:
                 allowed.update({"topic", "importance", "replaces_item_id", "archive_reason",
                                 "decision_reason"})
                 if set(operation) - allowed:
-                    raise ValueError("Malformed continuity operation")
+                    raise ContinuityValidationError("Malformed continuity operation", code='schema')
                 item_id = operation.get("item_id") or str(uuid.uuid5(
                     uuid.NAMESPACE_URL, f"eidolon-room:continuity-item:{task_id}:{index}",
                 ))
                 if not isinstance(item_id, str) or not item_id or item_id in targets:
-                    raise ValueError("Continuity item IDs must be stable and unique in a patch")
+                    raise ContinuityValidationError(
+                        "Continuity item IDs must be stable and unique in a patch",
+                        code="duplicate_operation",
+                    )
                 targets.add(item_id)
                 row = self.db.execute(
                     "SELECT * FROM continuity_items WHERE id=?", (item_id,),
@@ -1883,29 +1934,49 @@ class Store:
                 previous = json.loads(row["data"]) if row else None
                 revision = row["revision"] if row else 0
                 if operation.get("expected_revision") != revision:
-                    raise ValueError("Continuity item revision changed")
+                    raise ContinuityValidationError(
+                        "Continuity item revision changed",
+                        code="revision",
+                    )
                 if row and (row["scope"] != scope or previous.get("locked")
                             or previous.get("user_created") or previous.get("suppressed")):
-                    raise ValueError(
-                        "Automatic maintenance cannot change user-created, locked or other-scope notes"
+                    raise ContinuityValidationError(
+                        "Automatic maintenance cannot change user-created, locked or other- "
+                        "scope notes",
+                        code="protected",
                     )
                 if row and self._continuity_item(row)["invalidated"]:
-                    raise ValueError("Prior continuity evidence changed")
+                    raise ContinuityValidationError(
+                        "Prior continuity evidence changed",
+                        code="saved_support",
+                    )
                 if not row and action != "upsert":
-                    raise ValueError("A terminal operation requires an existing item")
+                    raise ContinuityValidationError(
+                        "A terminal operation requires an existing item",
+                        code="terminal_target",
+                    )
                 validate_note_metadata({**operation, "op": action}, previous)
                 if task_id.startswith("narrative:") and (
                         action != "upsert" or not row
                         or previous.get("content_format") == "narrative"
                         and not needs_note_metadata(previous)):
-                    raise ValueError("Narrative rewrites must update existing extractive notes")
+                    raise ContinuityValidationError(
+                        "Narrative rewrites must update existing extractive notes",
+                        code="legacy_task",
+                    )
                 narrative = operation.get("content_format") == "narrative"
                 if operation.get("content_format") not in {None, "narrative"}:
-                    raise ValueError("Invalid continuity content format")
+                    raise ContinuityValidationError(
+                        "Invalid continuity content format",
+                        code="narrative",
+                    )
                 evidence = dict(inputs)
                 if narrative and row:
                     if self._continuity_item(row)["invalidated"]:
-                        raise ValueError("Prior continuity evidence changed")
+                        raise ContinuityValidationError(
+                            "Prior continuity evidence changed",
+                            code="saved_support",
+                        )
                     prior_ids = list(dict.fromkeys(
                         source["exchange_id"] for source in previous.get("sources", [])))
                     for start in range(0, len(prior_ids), 32):
@@ -1916,17 +1987,26 @@ class Store:
                     if any(s.get("exchange_id") not in inputs
                            and (s.get("exchange_id"), s.get("document_id"), s.get("role"))
                            not in prior_keys for s in operation.get("sources", [])):
-                        raise ValueError("Narrative sources must belong to the target note")
+                        raise ContinuityValidationError(
+                            "Narrative sources must belong to the target note",
+                            code="source",
+                        )
                 format_rewrite = is_legacy_rewrite(operation, previous)
                 policy_archive = (action in {"resolve", "archive"}
                                   and operation.get("archive_reason") in POLICY_ARCHIVE_REASONS)
                 if task_id.startswith("review:") and not (
                         action == "archive" and operation.get("archive_reason") == "capacity"
                         or format_rewrite):
-                    raise ValueError("Current life reviews can only classify notes or archive excess")
+                    raise ContinuityValidationError(
+                        "Current life reviews can only classify notes or archive excess",
+                        code="capacity_task",
+                    )
                 if (not any(s.get("exchange_id") in inputs for s in operation.get("sources", []))
                         and not format_rewrite and not policy_archive):
-                    raise ValueError("Continuity changes require evidence from this task")
+                    raise ContinuityValidationError(
+                        "Continuity changes require evidence from this task",
+                        code="batch_source",
+                    )
                 sources = ([] if policy_archive and not operation.get("sources") else
                            self._continuity_operation_sources(operation.get("sources"), evidence))
                 # Reuse the evidence policy for direct persistence callers as
@@ -1940,22 +2020,34 @@ class Store:
                 supported = [source["excerpt"] for source in sources]
                 if (not narrative and not policy_archive
                         and operation.get("content") not in [*supported, "\n".join(supported)]):
-                    raise ValueError("Continuity content must preserve cited original wording")
+                    raise ContinuityValidationError(
+                        "Continuity content must preserve cited original wording",
+                        code="content",
+                    )
                 item = dict(previous or {"id": item_id, "scope": scope, "state": "open",
                                          "locked": False, "sources": []})
                 if action == "upsert":
                     category, content, origin = (operation.get(key) for key in
                                                   ("category", "content", "origin"))
                     if category not in {"situation", "thread", "relationship", "emotion"}:
-                        raise ValueError("Invalid continuity category")
+                        raise ContinuityValidationError(
+                            "Invalid continuity category",
+                            code="metadata_missing",
+                        )
                     if (not isinstance(content, str) or len(content) > 4000
                             or not content.strip()
                             or not narrative and (content not in [*supported, "\n".join(supported)]
                                 or origin not in {"user_statement", "assistant_statement"}
                                 or any(source["origin"] != origin for source in sources))):
-                        raise ValueError("Continuity content must preserve cited original wording")
+                        raise ContinuityValidationError(
+                            "Continuity content must preserve cited original wording",
+                            code="content",
+                        )
                     if operation.get("scope", scope) != scope:
-                        raise ValueError("Continuity claims cannot cross scopes")
+                        raise ContinuityValidationError(
+                            "Continuity claims cannot cross scopes",
+                            code="scope",
+                        )
                     item.update(category=category, content=content, origin=origin, state="open")
                     item.update(topic=operation["topic"].strip(), importance=operation["importance"])
                     item.pop("metadata_pending", None)
@@ -1984,7 +2076,10 @@ class Store:
                                          ("promise_kind", {None, "conversation", "scheduled"})):
                         if key in operation:
                             if operation[key] not in allowed:
-                                raise ValueError("Invalid continuity promise metadata")
+                                raise ContinuityValidationError(
+                                    "Invalid continuity promise metadata",
+                                    code="promise_metadata",
+                                )
                             item[key] = operation[key]
                     from ..memory.continuity import source_timestamp
                     source_observed = self._continuity_time(max(
@@ -1992,7 +2087,10 @@ class Store:
                          for source in sources), key=datetime.fromisoformat,
                     ))
                     if "observed_at" in operation and item["observed_at"] != source_observed:
-                        raise ValueError("Continuity observation date must match its original evidence")
+                        raise ContinuityValidationError(
+                            "Continuity observation date must match its original evidence",
+                            code="timestamp",
+                        )
                     item["observed_at"] = source_observed
                     if category == "emotion" and not item.get("expires_at"):
                         observed = datetime.fromisoformat(item["observed_at"])
@@ -2032,7 +2130,8 @@ class Store:
             )
             self.db.execute(
                 "UPDATE maintenance_stages SET status='completed',set_aside=0,attempts=attempts+1,"
-                "error=NULL,reason=NULL,"
+                "error=NULL,reason=NULL,recovery_state=json_set(coalesce(recovery_state,'{}'),"
+                "'$.outcome','resolved'),"
                 "next_retry_at=NULL,committed_revision=?,updated_at=? WHERE task_id=? AND stage='continuity'",
                 (new_revision, utc_now(), task_id),
             )
@@ -2053,6 +2152,7 @@ class Store:
                     break
                 self.db.execute(
                     "UPDATE maintenance_stages SET status='completed',error=NULL,reason=NULL,"
+                    "recovery_state=json_set(coalesce(recovery_state,'{}'),'$.outcome','resolved'),"
                     "set_aside=0,next_retry_at=NULL,updated_at=? "
                     "WHERE task_id=? AND stage='continuity' AND status='split'", (utc_now(), parent),
                 )

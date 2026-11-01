@@ -63,7 +63,7 @@ def test_v8_upgrade_has_consistent_backup_and_preserves_exchange_identities(tmp_
         store.db.execute("PRAGMA user_version=6")
     upgraded = Store(path)  # Original connection still has its WAL open.
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 15
         assert upgraded.continuity_inputs() == [original]
         assert upgraded.pending_outbox()[0] == outbox
         assert upgraded.migration_backup_path.stat().st_mode & 0o777 == 0o600
@@ -79,6 +79,39 @@ def test_v8_upgrade_has_consistent_backup_and_preserves_exchange_identities(tmp_
     finally:
         upgraded.close()
         store.close()
+
+
+@pytest.mark.parametrize("legacy_code", ["validation.unsupported", "validation.saved_support"])
+def test_v14_upgrade_keeps_legacy_reason_unknown_without_inventing_context(tmp_path, legacy_code):
+    path = tmp_path / "room.db"
+    with closing(Store(path)) as store:
+        source = exchange(store)
+        task = task_for(store, [source])
+        store.prepare_maintenance_recovery(task["id"], call_limit=3, fingerprint="synthetic")
+        store.fail_maintenance_stage(task["id"], "continuity", "Legacy failure",
+                                     reason_code="validation.unsupported")
+        with store.db:
+            store.db.execute("UPDATE maintenance_stages SET model_calls=1,reason=? "
+                             "WHERE task_id=? AND stage='continuity'", (json.dumps({
+                                 "version": 1, "code": legacy_code,
+                                 "explanation": "PRIVATE historical prose",
+                                 "target_ref": "n1", "operation_index": 1,
+                             }), task["id"]))
+            for table in ("maintenance_stages", "maintenance_attempts"):
+                store.db.execute(f"ALTER TABLE {table} DROP COLUMN recovery_state")
+            store.db.execute("PRAGMA user_version=14")
+    with closing(Store(path)) as upgraded:
+        stage = upgraded.get_maintenance_stage(task["id"])
+        assert stage["reason"] == {
+            "version": 1, "code": "unknown",
+            "explanation": "The refresh could not finish. Its cause is unavailable.",
+        }
+        assert stage["recovery_state"] is None
+        assert stage["budget"]["used"] == 1 and stage["budget"]["remaining"] == 2
+        assert upgraded.get_maintenance_task(task["id"])["inputs"] == [source]
+        with sqlite3.connect(upgraded.migration_backup_path) as backup:
+            assert backup.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 15
 
 
 def test_inputs_are_oldest_eligible_completed_chat_with_explicit_scope(store):

@@ -257,7 +257,30 @@ The pass limit and consumed calls persist across service restarts. Changing the
 limit affects new batches and explicit retries; it does not enlarge a current pass.
 
 Malformed or invalid proposals receive application-owned correction feedback.
-After an unsuccessful correction, an ordinary batch with multiple exchanges is
+New diagnostics distinguish topic/support mismatch, chronology uncertainty,
+damaged saved support, missing metadata, conflicting operations, and malformed
+output. Where known, Run details show the operation number (starting at 1), field,
+and supplied note/source references for the **failed attempt**. References such as
+`n1` and `s1` are local to that attempt; they are not permanent note or source IDs.
+Corrective requests include `previous_rejection` and a safe `previous_diagnostic`
+with the failed attempt ID. When a fresh snapshot remaps references, the corrective
+request omits the old target/source references rather than treating them as new ones.
+
+Recovery dispositions separate proposal correction, a fresh snapshot after a state
+race, smaller complete-evidence groups, evidence repair, deferral, settings pauses,
+and provider transport retries. A semantic rejection receives one targeted
+correction. If the same rule fails again against unchanged relevant note/evidence
+state, the batch is deferred with its unused allowance intact. Its private state
+fingerprint and bounded recovery outcome survive restart. An unrelated successful
+run, settings toggle, new UTC day, or model change does not remove that gap or
+release the unchanged evidence condition. Relevant evidence/target changes can
+make it eligible again; explicit Retry still requests a separate bounded pass.
+Damaged saved support immediately requests repair instead of ordinary corrections.
+This routing provides the task-handling extension for evidence repair; it does not
+automatically repair saved evidence. Partial group completion continues through
+the existing split/child outcome contract, without applying completed groups again.
+
+After an unsuccessful fixable correction, an ordinary batch with multiple exchanges is
 divided in half at complete-exchange boundaries. Each child gets a fresh snapshot
 of current notes and runs through the same proposal validation and atomic commit.
 A captured batch that no longer fits the input or response plan can split before
@@ -537,6 +560,16 @@ Attempts retain `recovery_source` (`initial`, `automatic`, or `user`),
 rather than guessing their source. Lifetime request counts, outcomes, usage,
 evidence, and note history are preserved. Earliest eligibility is not a promised
 dispatch time: foreground work, new evidence, and other retained families have priority.
+
+Schema v15 adds private `recovery_state` to stages and attempts: relevant-state
+fingerprint, affected target identities, attempt-local reference identities, rule,
+and bounded outcome. Service-facing stages expose only `recovery_outcome`; private
+hashes and reference identity tables are excluded. Version 2 safe reasons add
+allowlisted recovery disposition and bounded operation/field/reference context,
+with the failed attempt ID where available. Known version 1 reasons remain readable
+without invented context; legacy unsupported reasons become explicitly unknown.
+No old failure is assigned a newly inferred cause. Upgrading preserves original
+provider/execution provenance, pass and daily counters, evidence, and attempt history.
 
 Raw prompts, proposals, responses, arbitrary exception text, credentials, URLs,
 and full provenance are excluded from failure details. Reasons come from a

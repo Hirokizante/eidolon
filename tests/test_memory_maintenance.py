@@ -790,6 +790,30 @@ async def test_validation_diagnostics_and_retry_never_echo_untrusted_exception_t
     assert "previous_rejection" not in document
 
 
+@pytest.mark.parametrize("version", [None, 1, 2])
+@pytest.mark.parametrize("matching_error", [False, True])
+def test_saved_validation_feedback_is_limited_to_legacy_reasons(store, version, matching_error):
+    from eidolon.memory.maintenance import validation_failure_notice
+
+    reason = ContinuityValidationError.REASONS["schema_op"]
+    stage = {"error": validation_failure_notice(reason) if matching_error else "PRIVATE error"}
+    if version is not None:
+        stage["reason"] = {"version": version, "code": "validation.schema_op"}
+        if version == 2:
+            stage["reason"]["disposition"] = "resnapshot"
+    task = {"id": "test-task", "scope": "real_life", "inputs": [],
+            "stages": {"continuity": stage}}
+    worker = ContinuityWorker(store, Provider())
+    document = json.loads(worker._messages(task, store.continuity_state())[-1]["content"])
+
+    if matching_error and version in {None, 1}:
+        assert document["previous_rejection"] == reason
+    else:
+        assert "previous_rejection" not in document
+    assert "previous_diagnostic" not in document
+    assert "PRIVATE" not in json.dumps(document)
+
+
 async def test_topic_rejection_feedback_prevents_unrelated_note_overwrite(store):
     add(store)
     assert await ContinuityWorker(store, Provider(transform=learn)).run_once(force=True)
@@ -803,7 +827,8 @@ async def test_topic_rejection_feedback_prevents_unrelated_note_overwrite(store)
                                             topic=original["topic"])
         else:
             assert document["previous_rejection"] == (
-                "An existing item needs evidence about the same topic")
+                "The cited batch evidence does not concern the target note’s topic. "
+                "Use evidence about that topic or create a separate note.")
         return result
 
     worker = ContinuityWorker(store, Provider(transform=propose))

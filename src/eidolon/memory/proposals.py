@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .continuity import (
     Category, Importance, Scope, ContinuityValidationError, is_legacy_rewrite,
     optional_metadata_candidates,
-    validate_operations,
+    validate_operations, validation_context,
 )
 from .maintenance_budget import ResponseLimits
 
@@ -270,7 +270,6 @@ class SnapshotRequest:
     """Own the exact displayed reference tables and their frozen validation context."""
 
     contract = ORDINARY_CONTRACT
-    validation_code: str | None = None
 
     def __init__(self, document: dict, *, inputs: list[dict], state: dict,
                  scope: Scope = "real_life", timezone: str = "UTC", max_notes: int = 12):
@@ -336,6 +335,52 @@ class SnapshotRequest:
         for key in ("legacy_rewrite_ids", "rewrite_existing", "review_existing"):
             self.document.pop(key, None)
 
+    @property
+    def references(self) -> dict:
+        """Private attempt-local reference identities, without source prose."""
+        return {"notes": {ref: item["id"] for ref, item in self._notes.items()},
+                "sources": copy.deepcopy(self._sources)}
+
+    def compile(self, proposal: dict) -> list[dict]:
+        try:
+            return self._compile(proposal)
+        except ContinuityValidationError as exc:
+            from .diagnostics import safe_context
+            index = exc.operation_index
+            operations = proposal.get("operations", [])
+            if type(index) is int and isinstance(operations, list) and 1 <= index <= len(operations):
+                operation = operations[index - 1]
+                if isinstance(operation, dict):
+                    target = operation.get("note_ref")
+                    target = target if isinstance(target, str) and target in self._notes else None
+                    sources = operation.get("sources")
+                    sources = sources if isinstance(sources, list) else []
+                    if target:
+                        exc.recovery_targets.append(self._notes[target]["id"])
+                    exc.recovery_targets = list(dict.fromkeys(exc.recovery_targets))
+                    exc.context = safe_context({
+                        "operation_index": index, "field": exc.field,
+                        "target_ref": target,
+                        "source_refs": [ref for ref in sources
+                                        if isinstance(ref, str) and ref in self._sources],
+                    })
+            raise
+
+    def _schema_failure(self, error: ValidationError, code: str) -> ContinuityValidationError:
+        """Use schema locations only; never echo model values or unknown field names."""
+        from .diagnostics import DIAGNOSTIC_FIELDS
+        errors = error.errors(include_input=False, include_context=False, include_url=False)
+        first = errors[0]
+        location = first["loc"]
+        field = next((part for part in location[2:]
+                      if isinstance(part, str) and part in DIAGNOSTIC_FIELDS), None)
+        if first["type"] == "missing" and field in {"category", "topic", "importance"}:
+            code = "metadata_missing"
+        failure = ContinuityValidationError("Malformed task proposal", code=code, field=field)
+        if len(location) > 1 and location[0] == "operations" and type(location[1]) is int:
+            failure.operation_index = location[1] + 1
+        return failure
+
     def _lookup(self, table: dict, ref: str) -> dict:
         if ref not in table:
             if table is self._notes and any(item["note_ref"] == ref for item in
@@ -361,16 +406,11 @@ class SnapshotRequest:
                                                 code="output_budget")
 
     def _validate(self, operations: list[dict]) -> list[dict]:
-        try:
-            return validate_operations(
-                {"operations": operations}, inputs=self._inputs, state=self._state,
-                supporting_inputs=self._state.get("source_exchanges", []), scope=self._scope,
-                timezone=self._timezone, max_notes=self._max_notes, require_narrative=True,
-            )
-        except ContinuityValidationError:
-            if self.validation_code is None:
-                raise
-            raise ContinuityValidationError("Invalid task proposal", code=self.validation_code) from None
+        return validate_operations(
+            {"operations": operations}, inputs=self._inputs, state=self._state,
+            supporting_inputs=self._state.get("source_exchanges", []), scope=self._scope,
+            timezone=self._timezone, max_notes=self._max_notes, require_narrative=True,
+        )
 
 
 class OrdinaryRequest(SnapshotRequest):
@@ -381,83 +421,82 @@ class OrdinaryRequest(SnapshotRequest):
         self.document["batch_source_refs"] = list(dict.fromkeys(
             ref for row in self.document["exchanges"] for ref in row["source_refs"].values()))
 
-    def compile(self, proposal: dict) -> list[dict]:
+    def _compile(self, proposal: dict) -> list[dict]:
         try:
             parsed = OrdinaryProposal.model_validate(proposal)
         except ValidationError as exc:
             invalid_op = any(error["type"] in {"union_tag_invalid", "union_tag_not_found"}
                              for error in exc.errors(include_input=False, include_context=False,
                                                      include_url=False))
-            raise ContinuityValidationError("Malformed ordinary proposal",
-                                            code="schema_op" if invalid_op else "schema") from None
+            raise self._schema_failure(exc, "schema_op" if invalid_op else "schema") from None
 
         operations = []
         self._check_response(proposal, parsed.operations)
-        for proposed in parsed.operations:
-            if isinstance(proposed, NoChange):
-                operations.append({"op": "no_change", "expected_revision": self._state["revision"]})
-                continue
-            item = self._lookup(self._notes, proposed.note_ref) if proposed.note_ref else None
-            operation = proposed.model_dump(exclude_unset=True, exclude_none=True)
-            operation.pop("note_ref", None)
-            replaces = operation.pop("replaces_ref", None)
-            if replaces:
-                operation["replaces_item_id"] = self._lookup(self._notes, replaces)["id"]
-            operation["expected_revision"] = item["revision"] if item else 0
-            if item:
-                operation["item_id"] = item["id"]
-            operation["sources"] = [self._lookup(self._sources, ref) for ref in proposed.sources]
-            if isinstance(proposed, NoteUpdate):
-                promise = operation.pop("promise_source", None)
-                if promise:
-                    source = self._lookup(self._sources, promise)
-                    if promise not in proposed.sources:
-                        raise ContinuityValidationError("Promise source must be cited", code="source")
-                    kind = self._metadata.get(promise, {}).get("promise_kind")
-                    if not kind:
-                        raise ContinuityValidationError("No supported promise candidate",
-                                                        code="promise_commitment")
-                    operation.update(promise_owner=source["role"], promise_kind=kind)
-            policy = isinstance(proposed, NoteArchive) and proposed.archive_reason == "replaced"
-            if policy:
-                if proposed.sources or proposed.content is not None:
-                    raise ContinuityValidationError("Invalid replacement archive", code="capacity")
-            else:
-                if not any(source["exchange_id"] in {row["exchange_id"] for row in self._inputs}
-                           for source in operation["sources"]):
-                    raise ContinuityValidationError("Ordinary updates need fresh evidence",
-                                                    code="batch_source")
-                operation.update(content_format="narrative", origin="derived", scope=self._scope)
-            operations.append(operation)
+        for index, proposed in enumerate(parsed.operations, 1):
+            with validation_context(index):
+                if isinstance(proposed, NoChange):
+                    operations.append({"op": "no_change", "expected_revision": self._state["revision"]})
+                    continue
+                item = self._lookup(self._notes, proposed.note_ref) if proposed.note_ref else None
+                operation = proposed.model_dump(exclude_unset=True, exclude_none=True)
+                operation.pop("note_ref", None)
+                replaces = operation.pop("replaces_ref", None)
+                if replaces:
+                    operation["replaces_item_id"] = self._lookup(self._notes, replaces)["id"]
+                operation["expected_revision"] = item["revision"] if item else 0
+                if item:
+                    operation["item_id"] = item["id"]
+                operation["sources"] = [self._lookup(self._sources, ref) for ref in proposed.sources]
+                if isinstance(proposed, NoteUpdate):
+                    promise = operation.pop("promise_source", None)
+                    if promise:
+                        source = self._lookup(self._sources, promise)
+                        if promise not in proposed.sources:
+                            raise ContinuityValidationError("Promise source must be cited", code="source")
+                        kind = self._metadata.get(promise, {}).get("promise_kind")
+                        if not kind:
+                            raise ContinuityValidationError("No supported promise candidate",
+                                                            code="promise_commitment")
+                        operation.update(promise_owner=source["role"], promise_kind=kind)
+                policy = isinstance(proposed, NoteArchive) and proposed.archive_reason == "replaced"
+                if policy:
+                    if proposed.sources or proposed.content is not None:
+                        raise ContinuityValidationError("Invalid replacement archive", code="capacity")
+                else:
+                    if not any(source["exchange_id"] in {row["exchange_id"] for row in self._inputs}
+                               for source in operation["sources"]):
+                        raise ContinuityValidationError("Ordinary updates need fresh evidence",
+                                                        code="batch_source")
+                    operation.update(content_format="narrative", origin="derived", scope=self._scope)
+                operations.append(operation)
         return self._validate(operations)
 
 
 class CapacityRequest(SnapshotRequest):
     contract = CAPACITY_CONTRACT
-    validation_code = "capacity_task"
 
-    def compile(self, proposal: dict) -> list[dict]:
+    def _compile(self, proposal: dict) -> list[dict]:
         try:
             parsed = CapacityProposal.model_validate(proposal)
-        except ValidationError:
-            raise ContinuityValidationError("Malformed capacity proposal", code="capacity_task") from None
+        except ValidationError as exc:
+            raise self._schema_failure(exc, "capacity_task") from None
         operations = []
         self._check_response(proposal, parsed.operations)
-        for proposed in parsed.operations:
-            if isinstance(proposed, NoChange):
-                operations.append({"op": "no_change", "expected_revision": self._state["revision"]})
-                continue
-            item = self._lookup(self._notes, proposed.note_ref)
-            operations.append({"op": "archive", "item_id": item["id"],
-                               "expected_revision": item["revision"], "sources": [],
-                               "archive_reason": "capacity",
-                               "decision_reason": proposed.decision_reason})
+        for index, proposed in enumerate(parsed.operations, 1):
+            with validation_context(index):
+                if isinstance(proposed, NoChange):
+                    operations.append({"op": "no_change", "expected_revision": self._state["revision"]})
+                    continue
+                item = self._lookup(self._notes, proposed.note_ref)
+                operations.append({"op": "archive", "item_id": item["id"],
+                                   "expected_revision": item["revision"], "sources": [],
+                                   "archive_reason": "capacity",
+                                   "decision_reason": proposed.decision_reason})
         return self._validate(operations)
 
 
 class LegacyRequest(SnapshotRequest):
     contract = LEGACY_CONTRACT
-    validation_code = "legacy_task"
 
     def __init__(self, document: dict, *, inputs: list[dict], state: dict,
                  scope: Scope = "real_life", timezone: str = "UTC", max_notes: int = 12):
@@ -469,40 +508,41 @@ class LegacyRequest(SnapshotRequest):
             self._targets = set(document["target_refs"])
         self.document["target_refs"] = [ref for ref in self._notes if ref in self._targets]
 
-    def compile(self, proposal: dict) -> list[dict]:
+    def _compile(self, proposal: dict) -> list[dict]:
         try:
             parsed = LegacyProposal.model_validate(proposal)
-        except ValidationError:
-            raise ContinuityValidationError("Malformed legacy proposal", code="legacy_task") from None
+        except ValidationError as exc:
+            raise self._schema_failure(exc, "legacy_task") from None
         operations = []
         self._check_response(proposal, parsed.operations)
-        for proposed in parsed.operations:
-            if isinstance(proposed, NoChange):
-                operations.append({"op": "no_change", "expected_revision": self._state["revision"]})
-                continue
-            item = self._lookup(self._notes, proposed.note_ref)
-            if proposed.note_ref not in self._targets:
-                raise ContinuityValidationError("Legacy target was not supplied", code="reference")
-            if item.get("content_format") == "narrative":
-                if proposed.content is not None and proposed.content != item["content"]:
-                    raise ContinuityValidationError("Classification must preserve prose",
-                                                    code="legacy_task")
-                content = item["content"]
-            else:
-                content = proposed.content
-            operation = {"op": "upsert", "item_id": item["id"],
-                         "expected_revision": item["revision"], "topic": proposed.topic,
-                         "importance": proposed.importance, "content": content,
-                         "category": item["category"], "scope": item["scope"],
-                         "content_format": "narrative", "origin": "derived",
-                         "sources": [self._lookup(self._sources, source["source_ref"])
-                                     for source in item["sources"]]}
-            original = next(note for note in self._state["items"] if note["id"] == item["id"])
-            if (not is_legacy_rewrite(operation, original)
-                    or not {source["exchange_id"] for source in operation["sources"]}
-                    <= {row["exchange_id"] for row in self._inputs}):
-                raise ContinuityValidationError("Ineligible legacy conversion", code="legacy_task")
-            operations.append(operation)
+        for index, proposed in enumerate(parsed.operations, 1):
+            with validation_context(index):
+                if isinstance(proposed, NoChange):
+                    operations.append({"op": "no_change", "expected_revision": self._state["revision"]})
+                    continue
+                item = self._lookup(self._notes, proposed.note_ref)
+                if proposed.note_ref not in self._targets:
+                    raise ContinuityValidationError("Legacy target was not supplied", code="reference")
+                if item.get("content_format") == "narrative":
+                    if proposed.content is not None and proposed.content != item["content"]:
+                        raise ContinuityValidationError("Classification must preserve prose",
+                                                        code="legacy_task")
+                    content = item["content"]
+                else:
+                    content = proposed.content
+                operation = {"op": "upsert", "item_id": item["id"],
+                             "expected_revision": item["revision"], "topic": proposed.topic,
+                             "importance": proposed.importance, "content": content,
+                             "category": item["category"], "scope": item["scope"],
+                             "content_format": "narrative", "origin": "derived",
+                             "sources": [self._lookup(self._sources, source["source_ref"])
+                                         for source in item["sources"]]}
+                original = next(note for note in self._state["items"] if note["id"] == item["id"])
+                if (not is_legacy_rewrite(operation, original)
+                        or not {source["exchange_id"] for source in operation["sources"]}
+                        <= {row["exchange_id"] for row in self._inputs}):
+                    raise ContinuityValidationError("Ineligible legacy conversion", code="legacy_task")
+                operations.append(operation)
         normalized = self._validate(operations)
         # Classification/conversion never refreshes or invents temporal metadata,
         # including the normal default expiry for an emotion update.

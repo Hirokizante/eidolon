@@ -162,6 +162,7 @@ class ContinuityWorker:
         self._attempt_id: str | None = None
         self.connected = False
         self._dispatched = False
+        self._request_references: dict | None = None
 
     def _output(self, task_id: str) -> MaintenanceOutput | None:
         factory = getattr(self.provider, "maintenance_output", None)
@@ -294,19 +295,33 @@ class ContinuityWorker:
                            if key not in {"user", "assistant", "id"}}
                           for row in task["inputs"]],
         }
+        from .diagnostics import read_reason
+        diagnostic = read_reason(task.get("stages", {}).get("continuity", {}).get("reason"))
+        if diagnostic and diagnostic.get("disposition") == "correct":
+            document["previous_diagnostic"] = diagnostic
+            document["previous_rejection"] = diagnostic["explanation"]
         error = task.get("stages", {}).get("continuity", {}).get("error")
         # Only application-owned diagnostic text may enter a retry request.
         for reason in (*ContinuityValidationError.REASONS.values(),
                        *ContinuityValidationError.DETAILS):
-            if error == validation_failure_notice(reason):
+            if ((not diagnostic or diagnostic["version"] == 1)
+                    and error == validation_failure_notice(reason)):
                 document["previous_rejection"] = reason
                 break
 
         def messages() -> list[dict]:
             _, instructions, _, request_type = task_contract(task["id"])
-            payload = request_type(document, inputs=task["inputs"], state=state,
+            request = request_type(document, inputs=task["inputs"], state=state,
                                    scope=self.scope, timezone=self.timezone,
-                                   max_notes=self.max_notes).document
+                                   max_notes=self.max_notes)
+            payload = request.document
+            previous = task.get("stages", {}).get("continuity", {}).get("recovery_state") or {}
+            if ("previous_diagnostic" in payload
+                    and previous.get("references") != request.references):
+                # Prior n1/s1 may name different inputs in this new snapshot.
+                # Keep the failed attempt/rule but never reinterpret its references.
+                payload["previous_diagnostic"] = {key: value for key, value in
+                    payload["previous_diagnostic"].items() if key not in {"target_ref", "source_refs"}}
             return [{"role": "system", "content": instructions},
                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 
@@ -448,6 +463,7 @@ class ContinuityWorker:
         request = request_type(json.loads(messages[-1]["content"]), inputs=task["inputs"],
                                state=state, scope=self.scope, timezone=self.timezone,
                                max_notes=self.max_notes)
+        self._request_references = request.references
         record = getattr(self.store, "record_request_metrics", None)
         output = output or self._output(task["id"])
         options = {"output": output} if output is not None else {}
@@ -480,14 +496,20 @@ class ContinuityWorker:
                     elif event.get("type") == "token":
                         token = event.get("text")
                         if not isinstance(token, str):
-                            raise ContinuityValidationError("The maintenance output is not text")
+                            raise ContinuityValidationError(
+                                "The maintenance output is not text",
+                                code="output_type",
+                            )
                         size += len(token)
                         if size > self.max_output_chars:
                             raise ContinuityValidationError(
                                 "The maintenance output exceeds its allowance", code="output_limit")
                         chunks.append(token)
                     elif event.get("type") == "tool_call":
-                        raise ContinuityValidationError("Maintenance cannot call tools")
+                        raise ContinuityValidationError(
+                            "Maintenance cannot call tools",
+                            code="tools",
+                        )
                     elif event.get("type") == "usage":
                         counts = numeric_usage(event.get("usage"))
                         if counts and self.store is not None:
@@ -545,7 +567,29 @@ class ContinuityWorker:
                 daily_limit=self.daily_retry_calls)
         self._dispatched = True
 
-    def _recovery_fingerprint(self, reason_code: str | None = None) -> str:
+    def _invariant_fingerprint(self, task_id: str, targets: list[str]) -> str:
+        task = self.store.get_maintenance_task(task_id)
+        state = self.store.continuity_state(scope=self.scope, limit=None, maintenance=True)
+        # Revisions and follow-up bookkeeping may change during foreground chat
+        # without changing the evidence or rule that rejected this proposal.
+        fields = {"id", "scope", "state", "category", "topic", "importance", "content",
+                  "content_format", "origin", "sources", "invalidated", "suppressed", "locked",
+                  "manual_lock", "user_created", "event_at", "expires_at", "follow_up_at",
+                  "promise_owner", "promise_kind", "archive_reason"}
+        notes = [{key: value for key, value in item.items() if key in fields}
+                 for item in state["items"] if item["id"] in targets]
+        notes.sort(key=lambda item: item["id"])
+        ids = list(dict.fromkeys([*task["input_ids"], *(source["exchange_id"]
+            for note in notes for source in note.get("sources", []))]))
+        originals = [row for start in range(0, len(ids), 32)
+                     for row in self.store.continuity_evidence(ids[start:start + 32], scope=self.scope)]
+        return digest({"notes": notes, "originals": originals, "scope": self.scope})
+
+    def _recovery_fingerprint(self, reason_code: str | None = None, *,
+                              stage: dict | None = None) -> str:
+        recovery = (stage or {}).get("recovery_state") or {}
+        if recovery.get("outcome") in {"unchanged", "repair", "deferred"}:
+            return self._invariant_fingerprint(stage["task_id"], recovery.get("targets", []))
         # Effective inference settings exclude inventory, UI, enable/Off and batching.
         # A route revision alone is not a relevant configuration change.
         profile = self.execution.profile() if self.execution else getattr(
@@ -570,16 +614,40 @@ class ContinuityWorker:
 
     def recovery_schedule(self, stage: dict) -> dict:
         return self.store.automatic_maintenance_schedule(
-            stage, fingerprint=self._recovery_fingerprint((stage.get("reason") or {}).get("code")),
+            stage, fingerprint=self._recovery_fingerprint(
+                (stage.get("reason") or {}).get("code"), stage=stage),
             daily_limit=self.daily_retry_calls, now=datetime.now(dt_timezone.utc))
 
     def _failed(self, task: dict, *, reason: str, reason_code: str,
-                immediate: bool = False) -> None:
+                immediate: bool = False, diagnostic: dict | None = None,
+                targets: list[str] | None = None) -> dict:
         stage = task.get("stages", {}).get("continuity", {})
         attempts = stage.get("attempts", 0)
         delay = 0 if immediate else min(3600, 30 * 2 ** min(attempts, 7))
-        from .diagnostics import CONFIGURATION_REASONS
-        paused = reason_code in CONFIGURATION_REASONS
+        from .diagnostics import CONFIGURATION_REASONS, safe_reason
+        diagnostic = diagnostic or safe_reason(reason_code, context={"attempt_id": self._attempt_id})
+        targets = targets or []
+        fingerprint = self._invariant_fingerprint(task["id"], targets)
+        previous = [attempt.get("recovery_state") or {}
+                    for attempt in self.store.maintenance_attempts(task["id"])]
+        previous.append(self.store.get_maintenance_stage(task["id"]).get("recovery_state") or {})
+        invariant = reason_code in {
+            "validation.topic_support", "validation.chronology", "validation.terminal",
+            "validation.protected", "validation.scope", "validation.fiction",
+            "validation.saved_support", "validation.evidence_changed",
+            "validation.promise_commitment", "validation.promise_qualified",
+            "validation.promise_scheduled", "validation.promise_author", "validation.date",
+        }
+        unchanged = invariant and any(saved.get("fingerprint") == fingerprint
+                                      and saved.get("code") == reason_code for saved in previous)
+        disposition = "defer" if unchanged else diagnostic["disposition"]
+        diagnostic["disposition"] = disposition
+        blocked = disposition in {"defer", "repair"}
+        paused = reason_code in CONFIGURATION_REASONS or blocked
+        recovery = {"fingerprint": fingerprint, "targets": targets, "code": reason_code,
+                    "references": self._request_references,
+                    "outcome": "unchanged" if unchanged else "repair" if disposition == "repair"
+                               else "deferred" if blocked else "pending"}
         self.store.prepare_maintenance_recovery(
             task["id"], call_limit=self.recovery_calls,
             fingerprint=self._recovery_fingerprint(reason_code))
@@ -589,9 +657,12 @@ class ContinuityWorker:
                  (datetime.now(dt_timezone.utc) + timedelta(seconds=delay)).isoformat())
         self.store.fail_maintenance_stage(task["id"], "continuity", reason,
                                           next_retry_at=retry, reason_code=reason_code,
-                                          pause_fingerprint=self._recovery_fingerprint(reason_code)
-                                          if paused else None)
+                                          pause_fingerprint=(fingerprint if blocked else
+                                                             self._recovery_fingerprint(reason_code))
+                                          if paused else None, diagnostic=diagnostic,
+                                          recovery_state=recovery)
         self._last_result = reason
+        return diagnostic
 
     async def run_once(self, *, force: bool = False, retry_task_id: str | None = None) -> bool:
         """Commit at most one batch; retain gaps separately from newer progress.
@@ -605,6 +676,7 @@ class ContinuityWorker:
         task = None
         outcome = "failed"
         reason_code = None
+        diagnostic = None
         try:
             # Capture before tokenizer initialization can yield. Budgeting and
             # inference share these names; saved evidence keeps its own attribution.
@@ -645,7 +717,8 @@ class ContinuityWorker:
                             retained["id"], call_limit=self.recovery_calls,
                             daily_limit=self.daily_retry_calls, now=now,
                             fingerprint=self._recovery_fingerprint(
-                                (retained["stages"]["continuity"].get("reason") or {}).get("code")),
+                                (retained["stages"]["continuity"].get("reason") or {}).get("code"),
+                                stage=retained["stages"]["continuity"]),
                         ):
                             task = self.store.get_maintenance_task(retained["id"])
                             break
@@ -653,7 +726,8 @@ class ContinuityWorker:
                 if not self.store.prepare_maintenance_recovery(
                     task["id"], call_limit=self.recovery_calls,
                     fingerprint=self._recovery_fingerprint(
-                        (task["stages"]["continuity"].get("reason") or {}).get("code")),
+                        (task["stages"]["continuity"].get("reason") or {}).get("code"),
+                        stage=task["stages"]["continuity"]),
                     retry=force and not force_retry_prepared,
                 ):
                     self._last_result = "recovery paused or exhausted"
@@ -732,7 +806,8 @@ class ContinuityWorker:
             if not self.store.prepare_maintenance_recovery(
                 task["id"], call_limit=self.recovery_calls,
                 fingerprint=self._recovery_fingerprint(
-                    (task["stages"]["continuity"].get("reason") or {}).get("code")),
+                    (task["stages"]["continuity"].get("reason") or {}).get("code"),
+                        stage=task["stages"]["continuity"]),
             ):
                 self._last_result = "recovery paused or exhausted"
                 return False
@@ -761,19 +836,26 @@ class ContinuityWorker:
             outcome = "interrupted"
             reason_code = "interrupted"
             if task:
-                self._failed(task, reason="Auxiliary request interrupted; retry pending",
+                diagnostic = self._failed(task, reason="Auxiliary request interrupted; retry pending",
                              reason_code=reason_code, immediate=True)
             raise
         except ContinuityValidationError as exc:
+            from .diagnostics import safe_reason
             reason_code = "validation." + exc.code
+            diagnostic = safe_reason(reason_code, context={**exc.context,
+                                                          "attempt_id": self._attempt_id})
+            if diagnostic["disposition"] == "resnapshot":
+                outcome = "stale"
             if task:
-                self._failed(task, reason=validation_failure_notice(exc.public_reason),
-                             reason_code=reason_code)
+                diagnostic = self._failed(task, reason=validation_failure_notice(exc.public_reason),
+                             reason_code=reason_code, diagnostic=diagnostic,
+                             immediate=outcome == "stale",
+                             targets=exc.recovery_targets)
             return False
         except TimeoutError as exc:
             reason_code = "thinking_timeout" if isinstance(exc, _ThinkingTimeout) else "timeout"
             if task:
-                self._failed(task, reason=THINKING_TIMEOUT_NOTICE if isinstance(exc, _ThinkingTimeout)
+                diagnostic = self._failed(task, reason=THINKING_TIMEOUT_NOTICE if isinstance(exc, _ThinkingTimeout)
                              else "Maintenance provider timed out; retry pending",
                              reason_code=reason_code)
             return False
@@ -803,21 +885,22 @@ class ContinuityWorker:
                     outcome = "stale"
                     reason_code = "stale"
                     reason = "Auxiliary routing changed; retry pending"
-                self._failed(task, reason=reason, reason_code=reason_code,
+                diagnostic = self._failed(task, reason=reason, reason_code=reason_code,
                              immediate=outcome == "stale")
             return False
         finally:
             try:
                 if self._attempt_id is not None:
                     self.store.finish_maintenance_attempt(self._attempt_id, outcome,
-                                                          reason_code=reason_code)
+                                                          reason_code=reason_code, diagnostic=diagnostic)
                 if task and reason_code and reason_code.startswith("validation."):
                     # One precise correction precedes subdivision. Input/response
                     # planning failures can split without paying for a futile call.
                     # Reviews and legacy conversions keep their whole dependency set.
                     saved = self.store.get_maintenance_task(task["id"])
                     stage = saved["stages"]["continuity"]
-                    splittable = reason_code not in {
+                    splittable = (diagnostic or {}).get("disposition") not in {
+                        "defer", "repair", "resnapshot", "pause"} and reason_code not in {
                         "validation.evidence_changed", "validation.input_overhead",
                         "validation.input_state",
                     }
@@ -836,6 +919,7 @@ class ContinuityWorker:
                             self.store.retain_maintenance_task(task["id"])
             finally:
                 self._attempt_id = None
+                self._request_references = None
                 self._dispatched = False
                 self._attempt_identity = None
                 self._active_task = None

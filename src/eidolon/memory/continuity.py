@@ -7,6 +7,8 @@ a deterministic proof of semantic support. Legacy extractive records remain read
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -93,6 +95,32 @@ class ContinuityValidationError(ValueError):
                        "the input settings. Increase the auxiliary input allowance/context window "
                        "in Preferences. Evidence is kept.",
     }
+    REASONS.update({
+        "timestamp": "Source timestamps must be valid and include a timezone.",
+        "source_origin": "Source attribution must match the original speaker.",
+        "claim_origin": "Claim origin must match its cited evidence and content format.",
+        "terminal_target": "Resolve/archive must target an existing supplied note.",
+        "promise_metadata": "Promise metadata must identify both author and kind.",
+        "promise_author": "Promise metadata requires the original author's cited statement.",
+        "no_change": "no_change must be the sole, empty operation.",
+        "duplicate_operation": "A note cannot be changed twice in one group of operations.",
+        "protected": "Automatic changes cannot affect user-created, locked or excluded notes.",
+        "revision": "The target revision changed; take a new snapshot before proposing an update.",
+        "speaker": "Extractive notes must preserve a single speaker's evidence.",
+        "scope": "An operation cannot redirect evidence or a note to another scope.",
+        "fiction": "Fictional evidence cannot become real-life state.",
+        "metadata_missing": "An upsert requires topic, importance, category, origin and scope.",
+        "expiry": "Expiry must follow observation and stay within the transient policy.",
+        "output_type": "The maintenance provider must return text containing JSON operations.",
+        "tools": "Maintenance cannot call tools; return only JSON operations.",
+        "saved_support": "Saved note support is missing, damaged or no longer matches its originals. "
+                         "Evidence repair is required before this update can proceed.",
+        "conflict": "The operation conflicts with another change or an already processed group.",
+        "group_partial": "Some operation groups completed; unresolved groups retain their evidence.",
+        "group_deferred": "The operation group remains unresolved pending relevant state changes.",
+        "topic_support": "The cited batch evidence does not concern the target note’s topic. "
+                         "Use evidence about that topic or create a separate note.",
+    })
     DETAILS = frozenset({
         "Invalid source timestamp",
         "A timestamp must include its timezone",
@@ -122,12 +150,33 @@ class ContinuityValidationError(ValueError):
         "Maintenance cannot call tools",
     })
 
-    def __init__(self, message: str, *, code: str = "unsupported") -> None:
+    def __init__(self, message: str, *, code: str = "unsupported",
+                 field: str | None = None) -> None:
         super().__init__(message)
         # Never persist arbitrary exception text, source text, or model output.
+        self.operation_index: int | None = None
+        self.context: dict = {}
+        self.recovery_targets: list[str] = []
+        self.field = field or {
+            "topic_support": "sources", "saved_support": "sources", "source": "sources",
+            "chronology": "sources", "terminal": "sources", "batch_source": "sources",
+            "topic": "topic", "revision": "expected_revision", "narrative": "content",
+            "content": "content", "archive_reason": "archive_reason", "expiry": "expires_at",
+        }.get(code)
         self.code = code if code in self.REASONS else "unsupported"
         self.public_reason = self.REASONS.get(code, message if message in self.DETAILS else
                                              "The proposed update did not pass validation.")
+
+
+@contextmanager
+def validation_context(operation_index: int) -> Iterator[None]:
+    """Attach the bounded operation position while preserving the actual failed rule."""
+    try:
+        yield
+    except ContinuityValidationError as exc:
+        if exc.operation_index is None:
+            exc.operation_index = operation_index
+        raise
 
 
 class ContinuitySource(BaseModel):
@@ -229,7 +278,10 @@ def validate_note_metadata(operation: dict, item: dict | None) -> None:
             raise ContinuityValidationError("A note requires topic and importance", code="topic")
     if item and not needs_note_metadata(item) and operation.get("topic") is not None:
         if topic_key(operation["topic"]) != topic_key(item["topic"]):
-            raise ContinuityValidationError("A note's topic cannot change automatically", code="topic")
+            raise ContinuityValidationError(
+                "A note's topic cannot change automatically",
+                code="topic",
+            )
     if operation["op"] in {"resolve", "archive"}:
         reason = operation.get("archive_reason")
         if reason is not None and reason not in (
@@ -272,7 +324,10 @@ def validate_note_capacity(operations: list[dict], items: list[dict], *,
     for index, op in enumerate(operations):
         if op["op"] != "upsert":
             if op.get("replaces_item_id"):
-                raise ContinuityValidationError("Only an admission can replace a note", code="capacity")
+                raise ContinuityValidationError(
+                    "Only an admission can replace a note",
+                    code="capacity",
+                )
             continue
         key = op.get("item_id") or f"new:{index}"
         candidate = {**current.get(key, {}), **op, "id": key, "state": "open", "scope": scope}
@@ -302,13 +357,22 @@ def validate_note_capacity(operations: list[dict], items: list[dict], *,
     capacity_archives = 0
     for item_id, op in archives.items():
         if op.get("archive_reason") == "replaced" and item_id not in replaced:
-            raise ContinuityValidationError("A replacement archive needs its new note", code="capacity")
+            raise ContinuityValidationError(
+                "A replacement archive needs its new note",
+                code="capacity",
+            )
         if op.get("archive_reason") == "capacity":
             capacity_archives += 1
             if item_id not in current:
-                raise ContinuityValidationError("Capacity cleanup requires an active note", code="capacity")
+                raise ContinuityValidationError(
+                    "Capacity cleanup requires an active note",
+                    code="capacity",
+                )
     if capacity_archives > max(0, len(current) - max_notes):
-        raise ContinuityValidationError("Capacity cleanup only removes an existing excess", code="capacity")
+        raise ContinuityValidationError(
+            "Capacity cleanup only removes an existing excess",
+            code="capacity",
+        )
     if admissions and len(final) > max_notes:
         raise ContinuityValidationError("The proposed admissions exceed max_notes", code="capacity")
     topics: dict[str, str] = {}
@@ -317,7 +381,10 @@ def validate_note_capacity(operations: list[dict], items: list[dict], *,
     for key, item in final.items():
         topic = topic_key(with_note_metadata(item)["topic"])
         if topic in topics and (key in changed or topics[topic] in changed):
-            raise ContinuityValidationError("An active note already covers this topic", code="topic")
+            raise ContinuityValidationError(
+                "An active note already covers this topic",
+                code="topic",
+            )
         topics[topic] = key
 
 
@@ -326,9 +393,9 @@ def aware_time(value: datetime | str) -> datetime:
     try:
         instant = datetime.fromisoformat(value) if isinstance(value, str) else value
     except (TypeError, ValueError):
-        raise ContinuityValidationError("Invalid source timestamp") from None
+        raise ContinuityValidationError("Invalid source timestamp", code="timestamp") from None
     if not isinstance(instant, datetime) or instant.tzinfo is None:
-        raise ContinuityValidationError("A timestamp must include its timezone")
+        raise ContinuityValidationError("A timestamp must include its timezone", code="timestamp")
     return instant
 
 
@@ -350,7 +417,7 @@ def resolve_event_time(value: str, source_timestamp: str | datetime,
                                     local.tzinfo).isoformat()
         return aware_time(value).isoformat()
     except (TypeError, ValueError):
-        raise ContinuityValidationError("Unsupported event date") from None
+        raise ContinuityValidationError("Unsupported event date", code="date") from None
 
 
 _STOP_WORDS = {
@@ -540,7 +607,7 @@ def transition_supported(content: str, op: str, item_content: str,
 
 def _validate_sources(operation: ContinuityOperation, rows: dict[int, dict]) -> list[dict]:
     if not operation.sources:
-        raise ContinuityValidationError("A changed item requires original evidence")
+        raise ContinuityValidationError("A changed item requires original evidence", code="source")
     found = []
     for source in operation.sources:
         row = rows.get(source.exchange_id)
@@ -553,7 +620,10 @@ def _validate_sources(operation: ContinuityOperation, rows: dict[int, dict]) -> 
                                             code="source")
         expected_origin = "user_statement" if source.role == "user" else "assistant_statement"
         if source.origin != expected_origin:
-            raise ContinuityValidationError("Source origin disagrees with the original speaker")
+            raise ContinuityValidationError(
+                "Source origin disagrees with the original speaker",
+                code="source_origin",
+            )
         found.append(row)
     # Exact extraction is intentional. Arbitrary prose that happens to cite a
     # valid source is not automatically trustworthy.
@@ -639,7 +709,7 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
     narrative = operation.get("content_format") == "narrative"
     if (not excerpts or not roles <= {"user", "assistant"}
             or any(not isinstance(excerpt, str) or not excerpt.strip() for excerpt in excerpts)):
-        raise ContinuityValidationError("A changed item requires original evidence")
+        raise ContinuityValidationError("A changed item requires original evidence", code="source")
     if narrative:
         if (not isinstance(content, str) or not content.strip()
                 or len(content) > NARRATIVE_MAX_CHARS or operation.get("origin") != "derived"
@@ -648,11 +718,17 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
             raise ContinuityValidationError("Invalid narrative summary", code="narrative")
     elif (len(roles) != 1 or not all(content == excerpt for excerpt in excerpts)
             and content != "\n".join(excerpts)):
-        raise ContinuityValidationError("Changed content must preserve exact same-speaker evidence")
+        raise ContinuityValidationError(
+            "Changed content must preserve exact same-speaker evidence",
+            code="content",
+        )
     origin = "derived" if narrative else (
         "user_statement" if roles == {"user"} else "assistant_statement")
     if operation.get("origin") is not None and operation["origin"] != origin:
-        raise ContinuityValidationError("Claim origin disagrees with its evidence")
+        raise ContinuityValidationError(
+            "Claim origin disagrees with its evidence",
+            code="claim_origin",
+        )
     rewrite = is_legacy_rewrite(operation, item)
     fresh = [source["excerpt"] for source in sources
              if rewrite or new_exchange_ids is None or source["exchange_id"] in new_exchange_ids]
@@ -671,7 +747,10 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
                         anchors.append(clause)
     if operation["op"] in {"resolve", "archive"}:
         if item is None:
-            raise ContinuityValidationError("A terminal operation requires an existing item")
+            raise ContinuityValidationError(
+                "A terminal operation requires an existing item",
+                code="terminal_target",
+            )
         # Generated prose must never manufacture a terminal transition. One
         # complete original message must independently support closing the topic.
         if not any(transition_supported(excerpt, operation["op"], anchor,
@@ -681,13 +760,20 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
                                             code="terminal")
     elif (operation["op"] == "upsert" and item
           and not any(same_topic(excerpt, anchor) for excerpt in fresh for anchor in anchors)):
-        raise ContinuityValidationError("An existing item needs evidence about the same topic")
+        raise ContinuityValidationError("An existing item needs evidence about the same topic",
+                                        code="topic_support", field="sources")
     owner, kind = operation.get("promise_owner"), operation.get("promise_kind")
     if bool(owner) != bool(kind):
-        raise ContinuityValidationError("A promise must identify both author and kind")
+        raise ContinuityValidationError(
+            "A promise must identify both author and kind",
+            code="promise_metadata",
+        )
     if owner:
         if owner not in roles:
-            raise ContinuityValidationError("A promise requires the original author's statement")
+            raise ContinuityValidationError(
+                "A promise requires the original author's statement",
+                code="promise_author",
+            )
         # Check the author's evidence, never the generated summary's wording.
         commitments = [source["excerpt"] for source in sources if source["role"] == owner
                        and re.match(r"\s*(?:I\s+(?:promise|promised|will|shall)|I['’]ll)\b",
@@ -722,10 +808,26 @@ def validate_source_chronology(operation: dict, item: dict | None, *,
             if (previous.get("sources") and not previous.get("invalidated")
                     and not previous.get("suppressed")
                     and topic_key(operation.get("topic", "")) == topic_key(previous.get("topic", ""))):
-                validate_source_chronology(operation, previous, rows=rows,
-                                           new_exchange_ids=new_exchange_ids)
+                try:
+                    validate_source_chronology(operation, previous, rows=rows,
+                                               new_exchange_ids=new_exchange_ids)
+                except ContinuityValidationError as exc:
+                    exc.recovery_targets.append(previous["id"])
+                    raise
         return
-    if (not item.get("sources") or is_legacy_rewrite(operation, item)
+    if not item.get("sources"):
+        return
+    for source in item["sources"]:
+        row = rows.get(source.get("exchange_id"))
+        role = source.get("role")
+        if (row is None or role not in {"user", "assistant"}
+                or source.get("document_id") != row.get("document_id")
+                or source.get("origin") != role + "_statement"
+                or not isinstance(source.get("excerpt"), str)
+                or not whole_source_excerpt(source["excerpt"], _source_text(row, role))):
+            raise ContinuityValidationError("Saved support disagrees with originals",
+                                            code="saved_support", field="sources")
+    if (is_legacy_rewrite(operation, item)
             or operation.get("archive_reason") in POLICY_ARCHIVE_REASONS):
         return
     # Older background may enrich provenance while leaving the established
@@ -750,7 +852,7 @@ def validate_source_chronology(operation: dict, item: dict | None, *,
     for source in item.get("sources", []):
         row = rows.get(source["exchange_id"])
         if row is None:
-            raise ContinuityValidationError("Current support is unavailable", code="chronology")
+            raise ContinuityValidationError("Current support is unavailable", code="saved_support")
         original = _source_text(row, source["role"])
         prior.append((source, row, original))
         for sentence in re.split(r"(?<=[.!?])\s+|\n+", original):
@@ -828,7 +930,10 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                 or only.expected_revision != state["revision"]
                 or any(value for key, value in only.model_dump().items()
                        if key not in {"op", "expected_revision"})):
-            raise ContinuityValidationError("no_change must be the sole, empty operation")
+            raise ContinuityValidationError(
+                "no_change must be the sole, empty operation",
+                code="no_change",
+            )
         return [{"op": "no_change", "expected_revision": only.expected_revision, "sources": []}]
 
     new_rows = _source_rows(inputs)
@@ -836,98 +941,141 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
     items = {item["id"]: item for item in state.get("items", [])}
     touched: set[str] = set()
     normalized = []
-    for operation in operations:
-        item = items.get(operation.item_id) if operation.item_id else None
-        if operation.item_id:
-            if operation.item_id in touched:
-                raise ContinuityValidationError("An item cannot be changed twice in one batch")
-            touched.add(operation.item_id)
-            if item is None:
-                raise ContinuityValidationError("An operation names an unknown item")
-        if item and item.get("user_created"):
-            raise ContinuityValidationError("A user-created note cannot be changed automatically")
-        if item and (item.get("locked", item.get("manual_lock")) or item.get("invalidated")
-                     or item.get("suppressed")):
-            raise ContinuityValidationError("A locked or excluded item cannot be changed automatically")
-        expected = item["revision"] if item else 0
-        if operation.expected_revision != expected:
-            raise ContinuityValidationError("Item revision changed before proposal validation")
-        policy_archive = (operation.op in {"resolve", "archive"}
-                          and operation.archive_reason in POLICY_ARCHIVE_REASONS)
-        if (require_narrative and operation.content_format != "narrative"
-                and not policy_archive):
-            raise ContinuityValidationError("Narrative summaries are required", code="narrative")
-        validate_note_metadata(operation.model_dump(), item)
-        # Older support is usable only for this same item's existing evidence.
-        # Pure legacy conversions can reuse their complete original support;
-        # all other changes must also cite this task's evidence.
-        prior_ids = {source["exchange_id"] for source in item.get("sources", [])} if item else set()
-        prior_keys = {(source["exchange_id"], source["document_id"], source["role"])
-                      for source in item.get("sources", [])} if item else set()
-        if any(source.exchange_id not in new_rows
-               and (source.exchange_id, source.document_id, source.role) not in prior_keys
-               for source in operation.sources):
-            raise ContinuityValidationError("A changed item requires original evidence")
-        rows = {key: row for key, row in supporting_rows.items() if key in prior_ids}
-        rows.update(new_rows)
-        source_rows = ([] if policy_archive and not operation.sources
-                       else _validate_sources(operation, rows))
-        if (not any(source.exchange_id in new_rows for source in operation.sources)
-                and not is_legacy_rewrite(operation.model_dump(exclude_unset=True), item)
-                and not policy_archive):
-            raise ContinuityValidationError("An update needs this batch's evidence",
-                                            code="batch_source")
-        roles = {source.role for source in operation.sources}
-        if len(roles) != 1 and operation.content_format != "narrative" and not policy_archive:
-            raise ContinuityValidationError("Separate notes are required for different speakers")
-        origin = "derived" if operation.content_format == "narrative" else (
-            "user_statement" if roles == {"user"} else "assistant_statement")
-        if operation.origin is not None and operation.origin != origin:
-            raise ContinuityValidationError("Claim origin disagrees with its evidence")
-        if operation.scope is not None and operation.scope != scope:
-            raise ContinuityValidationError("An operation cannot redirect a task to another scope")
-        if scope == "real_life":
-            for source in operation.sources:
-                original = _source_text(rows[source.exchange_id], source.role)
-                if source_is_fictional(original):
-                    raise ContinuityValidationError("Fictional evidence cannot become real-life state")
-        timestamps = [aware_time(source_timestamp(row, source.role))
-                      for row, source in zip(source_rows, operation.sources, strict=True)]
-        observed = max(timestamps).isoformat() if timestamps else item.get("observed_at")
-        result = operation.model_dump(exclude_none=True)
-        result["sources"] = [{**source.model_dump(),
-                              "excerpt": _source_text(row, source.role)}
-                             for row, source in zip(source_rows, operation.sources, strict=True)]
-        # Explicit null is a supported removal of optional metadata; omitted
-        # fields leave existing metadata unchanged in the patch.
-        for field in operation.model_fields_set:
-            if getattr(operation, field) is None:
-                result[field] = None
-        result.update(origin=origin, scope=scope, observed_at=observed, last_mention_at=observed)
-        validate_transition_evidence(result, item, new_exchange_ids=set(new_rows))
-        validate_source_chronology(result, item, rows={**supporting_rows, **new_rows},
-                                   new_exchange_ids=set(new_rows), items=state.get("items", []))
-        if (operation.op == "upsert" and (operation.category is None
-                or operation.origin is None or operation.scope is None)):
-            raise ContinuityValidationError("A new or updated note requires category, origin, and scope")
-        for field in ("event_at", "follow_up_at"):
-            value = getattr(operation, field)
-            if value:
-                result[field] = _supported_date(
-                    value, [ContinuitySource.model_validate(source) for source in result["sources"]],
-                    rows, timezone)
-        if operation.expires_at and not policy_archive:
-            expiry = aware_time(operation.expires_at)
-            if expiry <= max(timestamps):
-                raise ContinuityValidationError("An item's expiry must be after its observation")
-            # Expiry is an application policy, not a new event/date assertion.
-            if expiry > max(timestamps) + timedelta(days=30):
-                raise ContinuityValidationError("Automatic expiry exceeds the transient policy")
-            result["expires_at"] = expiry.isoformat()
-        if operation.category == "emotion" and not policy_archive:
-            # A temporary feeling can never turn into an undated permanent trait.
-            result.setdefault("expires_at", (max(timestamps) + timedelta(hours=48)).isoformat())
-        normalized.append(result)
+    for index, operation in enumerate(operations, 1):
+        with validation_context(index):
+            item = items.get(operation.item_id) if operation.item_id else None
+            if operation.item_id:
+                if operation.item_id in touched:
+                    raise ContinuityValidationError(
+                        "An item cannot be changed twice in one batch",
+                        code="duplicate_operation",
+                    )
+                touched.add(operation.item_id)
+                if item is None:
+                    raise ContinuityValidationError(
+                        "An operation names an unknown item",
+                        code="reference",
+                    )
+            if item and item.get("user_created"):
+                raise ContinuityValidationError(
+                    "A user-created note cannot be changed automatically",
+                    code="protected",
+                )
+            if item and (item.get("locked", item.get("manual_lock")) or item.get("invalidated")
+                         or item.get("suppressed")):
+                raise ContinuityValidationError(
+                    "A locked or excluded item cannot be changed automatically",
+                    code="protected",
+                )
+            expected = item["revision"] if item else 0
+            if operation.expected_revision != expected:
+                raise ContinuityValidationError(
+                    "Item revision changed before proposal validation",
+                    code="revision",
+                )
+            policy_archive = (operation.op in {"resolve", "archive"}
+                              and operation.archive_reason in POLICY_ARCHIVE_REASONS)
+            if (require_narrative and operation.content_format != "narrative"
+                    and not policy_archive):
+                raise ContinuityValidationError(
+                    "Narrative summaries are required",
+                    code="narrative",
+                )
+            validate_note_metadata(operation.model_dump(), item)
+            # Older support is usable only for this same item's existing evidence.
+            # Pure legacy conversions can reuse their complete original support;
+            # all other changes must also cite this task's evidence.
+            prior_ids = {source["exchange_id"] for source in item.get("sources", [])} if item else set()
+            prior_keys = {(source["exchange_id"], source["document_id"], source["role"])
+                          for source in item.get("sources", [])} if item else set()
+            if any(source.exchange_id not in new_rows
+                   and (source.exchange_id, source.document_id, source.role) not in prior_keys
+                   for source in operation.sources):
+                raise ContinuityValidationError(
+                    "A changed item requires original evidence",
+                    code="source",
+                )
+            rows = {key: row for key, row in supporting_rows.items() if key in prior_ids}
+            rows.update(new_rows)
+            source_rows = ([] if policy_archive and not operation.sources
+                           else _validate_sources(operation, rows))
+            if (not any(source.exchange_id in new_rows for source in operation.sources)
+                    and not is_legacy_rewrite(operation.model_dump(exclude_unset=True), item)
+                    and not policy_archive):
+                raise ContinuityValidationError("An update needs this batch's evidence",
+                                                code="batch_source")
+            roles = {source.role for source in operation.sources}
+            if len(roles) != 1 and operation.content_format != "narrative" and not policy_archive:
+                raise ContinuityValidationError(
+                    "Separate notes are required for different speakers",
+                    code="speaker",
+                )
+            origin = "derived" if operation.content_format == "narrative" else (
+                "user_statement" if roles == {"user"} else "assistant_statement")
+            if operation.origin is not None and operation.origin != origin:
+                raise ContinuityValidationError(
+                    "Claim origin disagrees with its evidence",
+                    code="claim_origin",
+                )
+            if operation.scope is not None and operation.scope != scope:
+                raise ContinuityValidationError(
+                    "An operation cannot redirect a task to another scope",
+                    code="scope",
+                )
+            if scope == "real_life":
+                for source in operation.sources:
+                    original = _source_text(rows[source.exchange_id], source.role)
+                    if source_is_fictional(original):
+                        raise ContinuityValidationError(
+                            "Fictional evidence cannot become real-life state",
+                            code="fiction",
+                        )
+            timestamps = [aware_time(source_timestamp(row, source.role))
+                          for row, source in zip(source_rows, operation.sources, strict=True)]
+            observed = max(timestamps).isoformat() if timestamps else item.get("observed_at")
+            result = operation.model_dump(exclude_none=True)
+            result["sources"] = [{**source.model_dump(),
+                                  "excerpt": _source_text(row, source.role)}
+                                 for row, source in zip(source_rows, operation.sources, strict=True)]
+            # Explicit null is a supported removal of optional metadata; omitted
+            # fields leave existing metadata unchanged in the patch.
+            for field in operation.model_fields_set:
+                if getattr(operation, field) is None:
+                    result[field] = None
+            result.update(origin=origin, scope=scope, observed_at=observed, last_mention_at=observed)
+            validate_transition_evidence(result, item, new_exchange_ids=set(new_rows))
+            validate_source_chronology(result, item, rows={**supporting_rows, **new_rows},
+                                       new_exchange_ids=set(new_rows), items=state.get("items", []))
+            if (operation.op == "upsert" and (operation.category is None
+                    or operation.origin is None or operation.scope is None)):
+                raise ContinuityValidationError(
+                    "A new or updated note requires category, origin, and scope",
+                    code="metadata_missing",
+                )
+            for field in ("event_at", "follow_up_at"):
+                value = getattr(operation, field)
+                if value:
+                    result[field] = _supported_date(
+                        value, [ContinuitySource.model_validate(source) for source in result["sources"]],
+                        rows, timezone)
+            if operation.expires_at and not policy_archive:
+                expiry = aware_time(operation.expires_at)
+                if expiry <= max(timestamps):
+                    raise ContinuityValidationError(
+                        "An item's expiry must be after its observation",
+                        code="expiry",
+                    )
+                # Expiry is an application policy, not a new event/date assertion.
+                if expiry > max(timestamps) + timedelta(days=30):
+                    raise ContinuityValidationError(
+                        "Automatic expiry exceeds the transient policy",
+                        code="expiry",
+                    )
+                result["expires_at"] = expiry.isoformat()
+            if operation.category == "emotion" and not policy_archive:
+                # A temporary feeling can never turn into an undated permanent trait.
+                result.setdefault("expires_at", (max(timestamps) + timedelta(hours=48)).isoformat())
+            normalized.append(result)
     validate_note_capacity(normalized, state.get("items", []), max_notes=max_notes, scope=scope)
     return normalized
 
