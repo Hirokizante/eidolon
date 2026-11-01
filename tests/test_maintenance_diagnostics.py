@@ -9,6 +9,18 @@ from test_ordinary_proposals import CompactProvider, refresh
 from test_service import room
 
 
+@pytest.mark.parametrize("version", [None, 0, 3, 999, "2", True, 2.0])
+def test_unsupported_reason_version_returns_legacy_unknown_without_recovery(version):
+    from eidolon.memory.diagnostics import REASONS, read_reason, reason_details
+
+    value = {"version": version, "code": "validation.revision", "disposition": "resnapshot",
+             "explanation": "PRIVATE diagnostic text", "operation_index": 1,
+             "target_ref": "n1", "source_refs": ["s1"]}
+    assert read_reason(value) == {"version": 1, "code": "unknown",
+                                  "explanation": REASONS["unknown"]}
+    assert reason_details(value) == REASONS["unknown"]
+
+
 async def test_topic_rejection_identifies_failed_attempt_and_corrects_safely(tmp_path, monkeypatch):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         note = seed_note(service.store)

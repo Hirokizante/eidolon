@@ -304,7 +304,8 @@ class ContinuityWorker:
         # Only application-owned diagnostic text may enter a retry request.
         for reason in (*ContinuityValidationError.REASONS.values(),
                        *ContinuityValidationError.DETAILS):
-            if not diagnostic and error == validation_failure_notice(reason):
+            if ((not diagnostic or diagnostic["version"] == 1)
+                    and error == validation_failure_notice(reason)):
                 document["previous_rejection"] = reason
                 break
 

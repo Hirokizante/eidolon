@@ -108,7 +108,7 @@ def safe_reason(code: str | None, version: int | None = REASON_VERSION, *,
     if code is None:
         return None
     if type(version) is not int or version not in {1, REASON_VERSION}:
-        code, context, disposition = "unknown", None, None
+        return {"version": 1, "code": "unknown", "explanation": REASONS["unknown"]}
     code = code if isinstance(code, str) and code in REASONS else "unknown"
     if version == 1:
         if code not in LEGACY_REASON_CODES or code == "validation.unsupported":
