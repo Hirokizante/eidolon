@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from test_ordinary_proposals import CompactProvider, refresh
-from test_maintenance_recovery import automatic
+from test_maintenance_recovery import automatic, clock  # noqa: F401
 from test_service import room
 from test_current_life_policy import seed_note
 
@@ -99,6 +99,66 @@ async def test_reported_saved_support_is_repaired_from_history_then_update_resum
         assert run["model_calls"] == 3
         assert run["attempt_counts"] == {"failed": 1, "repaired": 1, "committed": 1}
         assert service.store.get_continuity_item(note["id"])["revision"] == note["revision"] + 2
+
+
+@pytest.mark.parametrize("failure", [
+    "interrupted", "timeout", "unavailable", "stale", "unknown", "rate_or_credit_limit",
+])
+async def test_transient_repair_failure_retries_automatically(
+    tmp_path, monkeypatch, clock, failure,  # noqa: F811
+):
+    import asyncio
+
+    from eidolon.providers.openai import ProviderError
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={"continuity_enabled": True})
+        note = seed_note(service.store)
+        service.store.complete_turn(service.current_session["id"],
+                                    "My creative project has sketches.", "Okay.")
+        await refresh(service, client, CompactProvider(lambda doc: {"operations": [{
+            "op": "report_support", "note_ref": doc["items"][0]["note_ref"],
+        }]}))
+        task_id = service.store.pending_maintenance_task()["id"]
+
+        def fail(doc):
+            assert doc["contract"] == "current-life-evidence-repair-v1"
+            if failure == "interrupted":
+                raise asyncio.CancelledError
+            if failure == "timeout":
+                raise TimeoutError
+            if failure == "stale":
+                service.store.reconcile_auxiliary_route("synthetic-obsolete-route")
+                raise RuntimeError("Synthetic route change")
+            if failure == "unknown":
+                raise RuntimeError("Synthetic unknown failure")
+            raise ProviderError("Synthetic provider failure", category=failure)
+
+        provider = CompactProvider(fail)
+        if failure == "interrupted":
+            with pytest.raises(asyncio.CancelledError):
+                await automatic(service, provider)
+        else:
+            await automatic(service, provider)
+        stage = service.store.get_maintenance_stage(task_id)
+        assert stage["reason"]["code"] == failure
+        assert stage["reason"]["disposition"] == (
+            "resnapshot" if failure == "stale" else "transport_retry")
+        assert stage["recovery_state"]["outcome"] == "pending"
+        assert not stage["paused"] and stage["next_retry_at"] is not None
+        assert service.store.get_continuity_item(note["id"]) == note
+
+        if failure == "stale":
+            await service._refresh_auxiliary()
+        clock.advance(86400)
+        repaired = CompactProvider(lambda doc: {"operations": [{
+            "op": "repair_support", "note_ref": doc["items"][0]["note_ref"],
+            "sources": [doc["candidate_source_refs"][0]],
+        }]})
+        await automatic(service, repaired)
+        assert len(repaired.calls) == 1
+        assert service.store.get_continuity_item(note["id"])["revision"] == note["revision"] + 1
+        assert service.store.maintenance_attempts(task_id)[0]["outcome"] == "repaired"
 
 
 @pytest.mark.parametrize("failure", ["unresolved", "malformed", "foreign", "changed", "locked", "deleted"])

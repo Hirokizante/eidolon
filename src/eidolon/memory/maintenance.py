@@ -704,7 +704,7 @@ class ContinuityWorker:
             disposition = "defer"
         diagnostic["disposition"] = disposition
         repairing = bool(task.get("repair_target"))
-        if repairing:
+        if repairing and reason_code.startswith("validation."):
             disposition = "defer"
             diagnostic["disposition"] = disposition
         blocked = disposition == "defer"
