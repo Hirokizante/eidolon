@@ -45,11 +45,11 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 15:
+        if version > 16:
             self.db.close()
             raise ValueError("This database requires a newer Eidolon version")
         self.migration_backup_path: Path | None = None
-        if version < 15 and self.db.execute(
+        if version < 16 and self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone():
             # SQLite's backup API captures a consistent snapshot, including WAL
@@ -60,7 +60,7 @@ class Store:
             backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_dir.chmod(0o700)
             stamp = datetime.now(dt_timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v15-{stamp}.sqlite3"
+            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v16-{stamp}.sqlite3"
             with sqlite3.connect(self.migration_backup_path) as backup:
                 self.db.backup(backup)
             self.migration_backup_path.chmod(0o600)
@@ -322,7 +322,13 @@ class Store:
                     "UPDATE outbox SET review_state='pending' WHERE status!='completed' "
                     "AND generation_id IN (SELECT id FROM generations WHERE memory_eligible IS NULL)"
                 )
-            self.db.execute("PRAGMA user_version=15")
+            if version < 16:
+                from .support import migrate
+                # DDL and backfill share one rollback boundary on v15 upgrades.
+                if not self.db.in_transaction:
+                    self.db.execute("BEGIN IMMEDIATE")
+                migrate(self)
+            self.db.execute("PRAGMA user_version=16")
         self.db.commit()
         self.path.chmod(0o600)
 
@@ -812,14 +818,20 @@ class Store:
                                      "control_revision": 0, "watermark": 0}
 
     def _continuity_item(self, row: sqlite3.Row) -> dict:
-        from ..memory.continuity import with_note_metadata
+        from ..memory.continuity import with_note_metadata, whole_source_excerpt
         item = {**json.loads(row["data"]), "id": row["id"], "item_id": row["id"],
                 "scope": row["scope"], "revision": row["revision"],
                 "updated_at": row["updated_at"], "invalidated": False}
         # User-authored evidence stands on its own. For learned claims, check the
         # source's current eligibility and complete snapshot, not just its ID.
         if item.get("origin") != "user_note":
+            from .support import identified_sources
             sources = item.get("sources", [])
+            if (not isinstance(sources, list) or not sources
+                    or len(identified_sources(sources)) != len(sources)):
+                item["invalidated"] = True
+                item["invalidation_reason"] = "Saved source evidence is missing or malformed"
+                return with_note_metadata(item)
             ids = list(dict.fromkeys(source.get("exchange_id") for source in sources))
             evidence = {}
             for start in range(0, len(ids), 32):
@@ -829,7 +841,11 @@ class Store:
             for source in sources:
                 entry = evidence.get(source.get("exchange_id"))
                 if (entry is None or entry["document_id"] != source.get("document_id")
-                        or self._continuity_hash(entry) != source.get("input_hash")):
+                        or self._continuity_hash(entry) != source.get("input_hash")
+                        or source.get("role") not in {"user", "assistant"}
+                        or source.get("origin") != source.get("role") + "_statement"
+                        or not isinstance(source.get("excerpt"), str)
+                        or not whole_source_excerpt(source["excerpt"], entry[source["role"]])):
                     item["invalidated"] = True
                     item["invalidation_reason"] = "Source changed or is no longer eligible"
                     break
@@ -1126,16 +1142,23 @@ class Store:
                                  expected_revision: int, control_revision: int,
                                  rewrite: bool = False, rewrite_task_id: str | None = None,
                                  review: bool = False, review_task_id: str | None = None,
-                                 review_key: str = "", resume_task_id: str | None = None) -> dict:
+                                 review_key: str = "", resume_task_id: str | None = None,
+                                 repair_target: str | None = None) -> dict:
         if scope not in {"real_life", "fiction", "unknown"}:
             raise ValueError("Invalid continuity scope")
-        if (not inputs and not review) or len(inputs) > 32 or rewrite and review:
+        if ((not inputs and not review and not repair_target) or len(inputs) > 32
+                or sum((rewrite, review, bool(repair_target))) > 1):
             raise ValueError("Maintenance batches require 1 to 32 completed exchanges")
         input_ids = [entry.get("id", entry.get("exchange_id")) for entry in inputs]
         if any(type(entry) is not int for entry in input_ids) or input_ids != sorted(set(input_ids)):
             raise ValueError("Maintenance input IDs must be unique and ordered")
         task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "eidolon-room:continuity:" + scope
                                 + ":" + ",".join(map(str, input_ids))))
+        if repair_target:
+            if inputs:
+                raise ValueError("Standalone repair captures candidates separately from new evidence")
+            task_id = "repair:" + str(uuid.uuid5(
+                uuid.NAMESPACE_URL, f"{scope}:{repair_target}:{expected_revision}:{control_revision}"))
         if rewrite:
             # Separate identity for converting already-processed extractive notes.
             # State revisions permit another bounded conversion of shared sources.
@@ -1158,7 +1181,7 @@ class Store:
                 # A namespace change must not recreate completed or pending work.
                 # Reviews use their own stable key; ordinary/rewrite batches also
                 # have immutable evidence that can recover a predecessor identity.
-                if not review:
+                if not review and not repair_target:
                     candidates = self.db.execute(
                         "SELECT id,expected_revision FROM maintenance_tasks "
                         "WHERE scope=? AND input_ids=? AND input_hash=? ORDER BY created_at DESC",
@@ -1166,7 +1189,7 @@ class Store:
                     ).fetchall()
                     for candidate in candidates:
                         narrative = candidate["id"].startswith("narrative:")
-                        if (not candidate["id"].startswith("review:") and narrative == rewrite
+                        if (not candidate["id"].startswith(("review:", "repair:")) and narrative == rewrite
                                 and (not rewrite or candidate["expected_revision"] == expected_revision)):
                             task_id = candidate["id"]
                             break
@@ -1208,7 +1231,7 @@ class Store:
                 if ((not existing and not set(input_ids) <= eligible_ids)
                         or input_ids and input_ids[-1] > state["watermark"]):
                     raise ValueError("Narrative rewrites require existing eligible note evidence")
-            elif existing:
+            elif existing or repair_target:
                 current = self._continuity_exchange_rows(
                     scope=scope, exchange_ids=input_ids, limit=len(inputs))
             else:
@@ -1233,7 +1256,7 @@ class Store:
                 self.db.execute(
                     "INSERT INTO maintenance_tasks VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (task_id, scope, json.dumps(input_ids), json.dumps(inputs), input_hash,
-                     state["watermark"] if rewrite or review else input_ids[-1],
+                     state["watermark"] if rewrite or review or repair_target else input_ids[-1],
                      expected_revision, control_revision, stamp, stamp),
                 )
                 self.db.executemany(
@@ -1241,7 +1264,7 @@ class Store:
                     [(task_id, stage, "pending" if stage == "continuity" else "deferred", stamp)
                      for stage in ("continuity", "summary", "reflection")],
                 )
-            if not rewrite and not review:
+            if not rewrite and not review and not repair_target:
                 self.db.executemany(
                     "INSERT OR IGNORE INTO continuity_evidence VALUES (?,?,?,0)",
                     [(scope, exchange_id, task_id) for exchange_id in input_ids])
@@ -1683,7 +1706,7 @@ class Store:
                                     reason_code: str | None = None,
                                     diagnostic: dict | None = None) -> None:
         from ..memory.diagnostics import safe_reason, read_reason
-        if outcome not in {"committed", "failed", "interrupted", "stale", "configuration_error"}:
+        if outcome not in {"committed", "repaired", "failed", "interrupted", "stale", "configuration_error"}:
             raise ValueError("Invalid auxiliary attempt outcome")
         attempt = self.get_maintenance_attempt(attempt_id)
         if not attempt or attempt["outcome"] != "running":
@@ -1764,9 +1787,13 @@ class Store:
             )
 
     def _save_continuity_item(self, item: dict, *, task_id: str | None,
-                              change_origin: str) -> None:
+                              change_origin: str,
+                              support_dispositions: dict | None = None) -> None:
         from ..memory.continuity import with_note_metadata
         item = with_note_metadata(item)
+        from .support import record
+        record(self, item, task_id=task_id, change_origin=change_origin,
+               dispositions=support_dispositions)
         stamp = utc_now()
         data = json.dumps(item, ensure_ascii=False)
         self.db.execute(
@@ -1852,7 +1879,7 @@ class Store:
                 )
             current = self._continuity_exchange_rows(
                 scope=scope, exchange_ids=task["input_ids"], limit=len(task["input_ids"]))
-            if not task_id.startswith(("narrative:", "review:")):
+            if not task_id.startswith(("narrative:", "review:", "repair:")):
                 assigned = self.db.execute(
                     "SELECT exchange_id FROM continuity_evidence WHERE scope=? AND task_id=? "
                     "AND processed=0 ORDER BY exchange_id", (scope, task_id),
@@ -1866,6 +1893,16 @@ class Store:
                     or current != task["inputs"]):
                 raise ContinuityValidationError("Maintenance evidence changed or is no longer eligible",
                                                 code="evidence_changed")
+            if any(operation.get("op") == "repair_support" for operation in operations
+                   if isinstance(operation, dict)):
+                from .support import commit_repair
+                if len(operations) != 1:
+                    raise ContinuityValidationError("Repair must stand alone", code="schema")
+                return commit_repair(self, task, operations[0], attempt_id=attempt_id)
+            recovery = task["stages"]["continuity"].get("recovery_state") or {}
+            if recovery.get("repair_target") and recovery.get("outcome") != "resolved":
+                raise ContinuityValidationError("Repair must finish before ordinary maintenance",
+                                                code="saved_support")
             from ..memory.continuity import (
                 POLICY_ARCHIVE_REASONS, is_legacy_rewrite, needs_note_metadata,
                 validate_note_capacity, validate_note_metadata, validate_source_chronology,
@@ -1950,6 +1987,11 @@ class Store:
                         "Prior continuity evidence changed",
                         code="saved_support",
                     )
+                if row:
+                    from .support import pending_repair
+                    if pending_repair(self, item_id, scope):
+                        raise ContinuityValidationError("Saved support remains unresolved",
+                                                        code="saved_support")
                 if not row and action != "upsert":
                     raise ContinuityValidationError(
                         "A terminal operation requires an existing item",

@@ -276,8 +276,12 @@ run, settings toggle, new UTC day, or model change does not remove that gap or
 release the unchanged evidence condition. Relevant evidence/target changes can
 make it eligible again; explicit Retry still requests a separate bounded pass.
 Damaged saved support immediately requests repair instead of ordinary corrections.
-This routing provides the task-handling extension for evidence repair; it does not
-automatically repair saved evidence. Partial group completion continues through
+The next eligible dispatch uses a constrained evidence-repair contract with
+historical originals associated with that note. Repair preserves the note's prose
+and metadata, shares the existing root pass and applicable daily allowance, and
+keeps the original batch pending until ordinary maintenance resumes. Inconclusive
+repair defers further equivalent calls with a visible reason. See
+[evidence and updates](CURRENT_LIFE_SUMMARIES.md#automatic-notes). Partial group completion continues through
 the existing split/child outcome contract, without applying completed groups again.
 
 After an unsuccessful fixable correction, an ordinary batch with multiple exchanges is

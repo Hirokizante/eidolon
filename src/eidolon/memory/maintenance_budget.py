@@ -19,7 +19,9 @@ class ResponseLimits:
 
     @classmethod
     def for_task(cls, task_id: str, tokens: int, chars: int) -> "ResponseLimits":
-        if task_id.startswith("review:"):
+        if task_id.startswith("repair:"):
+            ceiling, overhead, minimum_prose = 1, 256, 64
+        elif task_id.startswith("review:"):
             ceiling, overhead, minimum_prose = 24, 64, 64
         elif task_id.startswith("narrative:"):
             ceiling, overhead, minimum_prose = 4, 96, 192
