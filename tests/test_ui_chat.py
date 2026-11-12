@@ -420,13 +420,20 @@ async def test_thinking_spinner_animates_only_during_active_work(outcome, ascii_
         assert not spinner.display and spinner.auto_refresh is None
         refreshed = asyncio.Event()
         automatic_refresh = spinner.automatic_refresh
+        clock = 10.0
 
         def observe_refresh() -> None:
+            refresh_time = clock
             automatic_refresh()
-            spinner.call_after_refresh(refreshed.set)
+
+            def completed_refresh() -> None:
+                # A queued notification may belong to the previous clock phase.
+                if refresh_time == clock:
+                    refreshed.set()
+
+            spinner.call_after_refresh(completed_refresh)
 
         monkeypatch.setattr(spinner, "automatic_refresh", observe_refresh)
-        clock = 10.0
         monkeypatch.setattr(app.console, "get_time", lambda: clock)
         worker = app.generate("Hello")
         await pilot.pause()
