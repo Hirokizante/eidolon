@@ -418,6 +418,14 @@ async def test_thinking_spinner_animates_only_during_active_work(outcome, ascii_
         await pilot.pause()
         spinner = app.query_one(ThinkingSpinner)
         assert not spinner.display and spinner.auto_refresh is None
+        refreshed = asyncio.Event()
+        automatic_refresh = spinner.automatic_refresh
+
+        def observe_refresh() -> None:
+            automatic_refresh()
+            spinner.call_after_refresh(refreshed.set)
+
+        monkeypatch.setattr(spinner, "automatic_refresh", observe_refresh)
         clock = 10.0
         monkeypatch.setattr(app.console, "get_time", lambda: clock)
         worker = app.generate("Hello")
@@ -429,8 +437,9 @@ async def test_thinking_spinner_animates_only_during_active_work(outcome, ascii_
         assert spinner.region.right <= notice.region.x
         assert spinner.region.y == notice.region.y
         before = spinner.render_line(0).text
+        refreshed.clear()
         clock += spinner.spinner.interval / 1000 + 0.001
-        await pilot.pause(0.15)
+        await asyncio.wait_for(refreshed.wait(), 3)
         assert spinner.render_line(0).text != before
         if ascii_mode:
             assert before.isascii() and spinner.render_line(0).text.isascii()
