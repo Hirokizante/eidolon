@@ -46,7 +46,7 @@ CONFIGURATION_REASONS = {"configuration", "authentication", "validation.input_li
 
 DISPOSITIONS = {"correct", "resnapshot", "resize", "repair", "defer", "pause", "transport_retry"}
 RECOVERY_OUTCOMES = {"unchanged", "repair", "deferred", "pending", "resolved"}
-DIAGNOSTIC_FIELDS = {"op", "sources", "note_ref", "topic", "importance", "content", "category",
+DIAGNOSTIC_FIELDS = {"change", "op", "sources", "note_ref", "topic", "importance", "content", "category",
                      "origin", "scope", "event_at", "follow_up_at", "expires_at", "promise_source",
                      "promise_owner", "promise_kind", "expected_revision", "archive_reason",
                      "decision_reason", "replaces_ref", "content_format"}
@@ -64,7 +64,8 @@ RECOVERY_LABELS = {
 def recovery_disposition(code: str) -> str:
     if code in {"stale", "validation.revision"}:
         return "resnapshot"
-    if code in {"validation.repair_unresolved", "validation.support_preservation"}:
+    if code in {"validation.repair_unresolved", "validation.support_preservation",
+                "validation.semantic_uncertainty"}:
         return "defer"
     if code == "validation.saved_support":
         return "repair"

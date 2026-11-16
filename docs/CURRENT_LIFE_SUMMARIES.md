@@ -264,39 +264,60 @@ Reopening the migrated database neither duplicates associations nor resets calls
 
 ### Replay and source chronology
 
-Retried or out-of-order evidence is checked against the latest saved notes both
-when validating the proposal and inside the commit transaction. Recency comes
-from the original supporting speaker messages and their timezone-aware timestamps,
-not the refresh time, generated wording, note observation date, event date, or
-an unrelated later citation. For a closure, only original messages supporting
-that terminal transition establish its chronology. Preparation evidence cannot
-borrow the timestamp of a later unrelated message to reopen a completed move;
-an old completion claim cannot borrow a later preparation message to close it.
-Omitting the target reference and proposing the same normalized topic as a new
-note does not bypass the check against the saved topic.
+Ordinary maintenance uses the `current-life-ordinary-v2` contract. Each change
+explicitly declares one of five meanings: background enrichment, current development,
+correction, closure, or reopening. State-changing kinds designate the cited batch
+observations supporting that particular claim. Corrections, closures and reopenings
+also declare intent; corrections distinguish resolved from unresolved temporal
+implications. The application derives identities, revisions, source scope, timestamps
+and bookkeeping from the frozen request and checks them again during commit.
 
-Older evidence can fill a missing topic or add background support to an open
-note while preserving its exact prose, existing sources, category, importance,
-and behavioral metadata. A substantive update or reopening needs later
-topic-matched evidence from the current batch. Equal timestamps do not establish
-an order between conflicting claims. For substantive upserts, every newly cited
-topical original must be later than the current support: a later background
-message about the same subject cannot lend its timestamp to an old state claim.
-Such mixed-age proposals remain unresolved even if a faithful rewrite might be
-possible; older saved support can still accompany a genuinely later development.
-Missing or ambiguous support leaves the
-whole proposal uncommitted, including other proposed changes, and Run history
-shows a safe chronology explanation. Retry and service restart preserve the
-evidence and recheck the same rule against the current notes. Format-only legacy
-conversion and explicit capacity/replacement decisions retain their separate
-validation rules; a manually edited unlocked automatic note without supporting
-sources remains eligible for new evidence.
+Topic relevance, attribution, uncertainty and real/fiction distinctions are semantic
+judgments made by the selected model in the complete original context. Paraphrases,
+pronouns and morphology need no shared-word threshold. An unrelated question,
+conditional statement or fictional aside does not automatically qualify an independent
+explicit fact. Qualifiers and reported speech concerning the relevant claim must
+survive in the summary. No keyword classifier or embedding threshold certifies these
+judgments, and synthetic scripted tests do not measure live-model judgment quality.
 
-Chronology uses the existing bounded topic and transition language checks; it
-does not prove that an arbitrary paraphrase is faithful, that differently named
-topics are identical, or that the reported event happened at the message time.
-When older background needs substantive rewording of an established claim, the
-conservative result is unresolved work rather than a guessed merge. Exhausted or
+Only evidence designated for a state-changing claim participates in timestamp
+ordering. Every designated observation must be later than the protected state's
+observation; equal timestamps do not establish order. Other selected sources may
+provide older carried-forward support. A new unrelated citation cannot mechanically
+lend its timestamp to an old completion claim. Deciding whether designated evidence
+actually supports the change remains the model's responsibility. Source observation
+time, optional described-event time, last mention, and dispatch/commit bookkeeping
+are separate. Replaying a batch or restarting does not make its observations newer.
+
+Background enrichment can retain older compatible context for either an open or
+archived note. It preserves the exact current claim, status, selected current support,
+category, importance, dates and promises. Historical context is stored separately
+(up to 16 bounded entries); evidence associations are retained with background
+disposition rather than becoming current support. Each entry links its original
+identities and hashes; changed, ineligible, disputed or retracted support withholds
+the associated prose and exposes an unresolved context count. Eligible context
+travels with complete originals in maintenance requests. Last mention retains the
+latest known source mention even when a newer state decision cites an earlier
+observation. This cannot reopen an archived
+note. Reopening needs explicit intent and later designated evidence. Omitting a
+target and proposing the same normalized topic does not bypass the existing note.
+
+A consequential ambiguous change can explicitly defer with `semantic_uncertainty`;
+a correction with unresolved temporal implications has the same outcome. The current
+note stays intact and Run history shows a safe reason and deferred next action.
+Whole-proposal atomicity remains in force: dependent replacement archives/admissions
+and all other operations commit together or remain unresolved. Independent group
+commits are tracked separately in issue #36.
+
+Existing notes, immutable revisions and pending batches remain readable without a
+semantic data rewrite or database schema change. For old notes without a designated
+state observation, chronology conservatively uses the latest selected original;
+it never infers relevance from old wording. New ordinary attempts request fresh v2
+intent, including for pre-upgrade pending work. Old v1 output is not translated into
+new intent. Previous attempt provenance, evidence, root/pass budgets and daily
+accounting survive. Legacy conversion and capacity tasks retain their own contracts.
+
+Exhausted or
 oversized original batches are retained separately, allowing newer eligible
 evidence to progress. Retained families take turns under a separate shared daily
 allowance (default six automatic calls, one opportunity per ten minutes, renewing
@@ -315,28 +336,13 @@ they can use `sources: []` because they retain the note's previous evidence and
 do not claim the situation ended. Tests use synthetic model responses and do not establish that a
 particular selected model produces faithful prose or improves answer quality.
 
-Topic matching recognizes bounded wording equivalents, including cutoff/closing
-date/due date for a deadline, hiring conversation for an interview, house move for
-relocation, and doctor visit for a medical appointment. It also uses the target
-note's saved originals when a later message names a subject omitted from its
-summary. Old citations alone never authorize an unrelated new development.
-
-Ordinary completion language such as "wrapped up", "got through", or a reported
-successful interview can close the matching note. For example, "That meeting at
-Ember Library? All wrapped up; they offered me the catalog assistant role" can
-close the earlier Ember Library interview. The named introduction and its answer
-must be in the same original message. A vague "it's done", interview preparation,
-questions about completion, future intentions, uncertainty, negation, conditionals,
-and mixed real/fiction messages do not establish that outcome. Reported speech,
-quotes, and ambiguous third-party ownership are conservatively rejected for
-closure, including when attribution appears in an earlier paragraph.
-
-These local rules use the same auxiliary proposal call and are rechecked inside
-the saving transaction. They cover specific wording and reference patterns rather
-than general language understanding; unfamiliar paraphrases can remain unresolved.
-A rejected proposal leaves all notes and evidence progress unchanged and keeps the
-batch pending, rather than recording a successful no-change. Synthetic service and
-storage tests cover these outcomes; no live-model reliability rate is established.
+The model can close a topic through an unambiguous contextual reference such as
+"It's all wrapped up" without repeating the saved topic's words. It must distinguish
+actual completion from preparation, future intentions, quoted speech and uncertainty.
+If that distinction is unresolved, defer instead of inventing an outcome. Original
+identity, full-message integrity, eligibility, revisions, locks, authored-note
+protection and capacity are enforced both at compile and direct commit. A rejected
+proposal keeps the batch pending and preserves all notes and evidence progress.
 
 ## Failure explanations
 

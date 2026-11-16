@@ -12,13 +12,18 @@ from eidolon.providers.routing import digest
 
 
 class CompactProvider:
-    def __init__(self, respond):
+    def __init__(self, respond, *, adapt=True):
         self.respond = respond
+        self.adapt = adapt
         self.calls = []
 
     async def stream(self, messages, **kwargs):
         self.calls.append(messages)
-        result = self.respond(json.loads(messages[-1]["content"]))
+        document = json.loads(messages[-1]["content"])
+        result = self.respond(document)
+        from test_memory_maintenance import explicit_changes
+        if self.adapt:
+            result = explicit_changes(result, document)
         yield {"type": "token", "text": json.dumps(result)}
         yield {"type": "finish", "reason": "stop"}
 
@@ -45,6 +50,7 @@ def test_compiler_freezes_revision_and_originals(captured_request):
     operations = request.compile({"operations": [{
         "op": "upsert", "topic": "Interview preparation", "importance": "moderate",
         "category": "thread", "content": "The user's interview is approaching.", "sources": ["s1"],
+        "change": {"kind": "development", "evidence": ["s1"]},
     }]})
     assert operations[0]["sources"][0]["document_id"] == "synthetic:7"
     assert operations[0]["sources"][0]["excerpt"] == "My interview is tomorrow."

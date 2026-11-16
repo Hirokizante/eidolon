@@ -53,7 +53,7 @@ async def test_old_preparation_cannot_replace_newer_supported_state(
         assert task is not None
         attempt = service.store.maintenance_attempts(task["id"])[-1]
         assert attempt["outcome"] == "failed"
-        assert attempt["reason"]["code"] == "validation.chronology"
+        assert attempt["reason"]["code"] == ("validation.change_contract" if closed else "validation.chronology")
 
 
 async def test_old_preparation_cannot_reopen_a_closed_topic_as_a_new_note(tmp_path, monkeypatch):
@@ -134,10 +134,11 @@ async def test_unrelated_saved_citation_does_not_make_current_support_newer(tmp_
         await refresh(service, client, CompactProvider(lambda doc: {"operations": [{
             "op": "upsert", "topic": "House move", "importance": "moderate", "category": "thread",
             "content": "The user's house move is ongoing.",
+            "change": {"kind": "development", "evidence": [doc["exchanges"][0]["source_refs"]["user"]]},
             "sources": [row["source_refs"]["user"] for row in doc["exchanges"]],
         }]}))
         before = service.store.continuity_state()["items"][0]
-        assert before["observed_at"] == "2090-01-01T00:00:00+00:00"
+        assert before["observed_at"] == "2020-01-01T00:00:00+00:00"
         service.store.complete_turn(
             service.current_session["id"], "My house move now requires temporary storage.",
             "Understood.", metadata={"user_message_at": "2021-01-01T00:00:00+00:00"},
@@ -266,6 +267,7 @@ async def test_older_background_can_extend_support_without_replacing_the_current
         await refresh(service, client, CompactProvider(lambda doc: {"operations": [{
             "op": "upsert", "note_ref": doc["items"][0]["note_ref"], "topic": note["topic"],
             "importance": note["importance"], "category": note["category"], "content": note["content"],
+            "change": {"kind": "background", "context": "The boxes came from a grandparent."},
             "sources": [doc["items"][0]["sources"][0]["source_ref"],
                         doc["exchanges"][0]["source_refs"]["user"]],
         }]}))
@@ -273,5 +275,5 @@ async def test_older_background_can_extend_support_without_replacing_the_current
         assert saved["content"] == note["content"] and saved["state"] == "open"
         assert saved["observed_at"] == note["observed_at"]
         assert saved["sources"][0] == note["sources"][0]
-        assert saved["sources"][1]["excerpt"] == "My house move includes boxes from my grandmother."
+        assert [entry["content"] for entry in saved["historical_context"]] == ["The boxes came from a grandparent."]
         assert service.store.pending_maintenance_task() is None

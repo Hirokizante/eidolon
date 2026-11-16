@@ -112,6 +112,8 @@ def upsert(note: dict, source: dict) -> dict:
     return {"op": "upsert", "expected_revision": 0, "topic": note["topic"],
             "importance": note.get("importance", "moderate"), "category": "thread",
             "content": note["content"], "content_format": "narrative", "origin": "derived",
+            "change": {"kind": "development", "evidence": [{"exchange_id": source["exchange_id"],
+                "document_id": source["document_id"], "role": "user", "origin": "user_statement"}]},
             "scope": "real_life", "sources": [{"exchange_id": source["exchange_id"],
                 "document_id": source["document_id"], "role": "user", "origin": "user_statement"}]}
 
@@ -212,6 +214,13 @@ def compact_fixture_response(response: dict, document: dict) -> dict:
                          if key in {"op", "note_ref", "topic", "importance", "content"}}
         elif operation["op"] == "no_change":
             operation.pop("sources")
+        elif operation["op"] in {"upsert", "archive", "resolve"} and operation.get("archive_reason") != "replaced":
+            # Historical scripted workload judgments only; live output is untouched.
+            evidence = [ref for ref in operation["sources"] if ref.startswith("s")]
+            operation["change"] = {"kind": "development", "evidence": evidence}
+            if operation["op"] in {"archive", "resolve"}:
+                operation["op"] = "archive"
+                operation["change"].update(kind="closure", intent="Scripted topic closure.")
         operations.append(operation)
     return {"operations": operations}
 

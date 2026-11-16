@@ -849,6 +849,9 @@ class Store:
                     item["invalidated"] = True
                     item["invalidation_reason"] = "Source changed or is no longer eligible"
                     break
+        if item.get("historical_context"):
+            from .support import valid_historical_context
+            item["historical_context"], item["unresolved_historical_context"] = valid_historical_context(self, item)
         return with_note_metadata(item)
 
     def list_continuity_items(self, scope: str = "real_life", *,
@@ -1808,7 +1811,7 @@ class Store:
         )
 
     def _continuity_operation_sources(self, sources: Any, inputs: dict[int, dict]) -> list[dict]:
-        from ..memory.continuity import source_is_fictional, whole_source_excerpt
+        from ..memory.continuity import whole_source_excerpt
         if not isinstance(sources, list) or not sources or len(sources) > 32:
             raise ContinuityValidationError(
                 "Continuity changes require bounded source evidence",
@@ -1828,7 +1831,6 @@ class Store:
             if (exchange is None or source.get("document_id") != exchange["document_id"]
                     or role not in {"user", "assistant"} or not isinstance(excerpt, str)
                     or not excerpt.strip() or not whole_source_excerpt(excerpt, exchange[role])
-                    or (exchange["scope"] == "real_life" and source_is_fictional(exchange[role]))
                     or source.get("origin") != f"{role}_statement"):
                 raise ContinuityValidationError(
                     "Continuity source is unsupported or ineligible",
@@ -1952,7 +1954,7 @@ class Store:
                            "category", "content", "origin", "scope", "observed_at", "event_at",
                            "expires_at", "follow_up_at", "last_mention_at", "promise_owner",
                            "promise_kind", "content_format"}
-                allowed.update({"topic", "importance", "replaces_item_id", "archive_reason",
+                allowed.update({"change", "topic", "importance", "replaces_item_id", "archive_reason",
                                 "decision_reason"})
                 if set(operation) - allowed:
                     raise ContinuityValidationError("Malformed continuity operation", code='schema')
@@ -2019,13 +2021,14 @@ class Store:
                             "Prior continuity evidence changed",
                             code="saved_support",
                         )
-                    prior_ids = list(dict.fromkeys(
-                        source["exchange_id"] for source in previous.get("sources", [])))
+                    from ..memory.continuity import note_evidence_sources
+                    prior_support = note_evidence_sources(self._continuity_item(row))
+                    prior_ids = list(dict.fromkeys(source["exchange_id"] for source in prior_support))
                     for start in range(0, len(prior_ids), 32):
                         evidence.update({entry["id"]: entry for entry in self.continuity_evidence(
                             prior_ids[start:start + 32], scope=scope)})
                     prior_keys = {(s["exchange_id"], s["document_id"], s["role"])
-                                  for s in previous.get("sources", [])}
+                                  for s in prior_support}
                     if any(s.get("exchange_id") not in inputs
                            and (s.get("exchange_id"), s.get("document_id"), s.get("role"))
                            not in prior_keys for s in operation.get("sources", [])):
@@ -2068,6 +2071,27 @@ class Store:
                     )
                 item = dict(previous or {"id": item_id, "scope": scope, "state": "open",
                                          "locked": False, "sources": []})
+                change = operation.get("change") or {}
+                if change.get("kind") == "background":
+                    context = {"content": change["context"], "sources": [
+                        {key: value for key, value in source.items() if key != "excerpt"}
+                        for source in sources]}
+                    item["historical_context"] = [*item.get("historical_context", []), context]
+                    from ..memory.continuity import source_timestamp
+                    mentions = [source_timestamp(evidence[source["exchange_id"]], source["role"])
+                                for source in sources]
+                    if item.get("last_mention_at"):
+                        mentions.append(item["last_mention_at"])
+                    item["last_mention_at"] = max(mentions, key=datetime.fromisoformat)
+                    item["revision"] = revision + 1
+                    from .support import identity, record
+                    self._save_continuity_item(item, task_id=task_id, change_origin="automatic")
+                    added = [source for source in sources if source not in item["sources"]]
+                    record(self, {**item, "sources": [*item["sources"], *added]}, task_id=task_id,
+                           change_origin="automatic",
+                           dispositions={identity(source): "background" for source in added})
+                    changed += 1
+                    continue
                 if action == "upsert":
                     category, content, origin = (operation.get(key) for key in
                                                   ("category", "content", "origin"))
@@ -2126,7 +2150,7 @@ class Store:
                     from ..memory.continuity import source_timestamp
                     source_observed = self._continuity_time(max(
                         (source_timestamp(evidence[source["exchange_id"]], source["role"])
-                         for source in sources), key=datetime.fromisoformat,
+                         for source in change.get("evidence", sources)), key=datetime.fromisoformat,
                     ))
                     if "observed_at" in operation and item["observed_at"] != source_observed:
                         raise ContinuityValidationError(
@@ -2157,6 +2181,25 @@ class Store:
                                    claim_sources + [source for source in sources
                                                     if source not in claim_sources])
                 item["claim_source_count"] = len(sources) if action == "upsert" else claim_source_count
+                if change.get("evidence"):
+                    from ..memory.continuity import source_key
+                    selected = {source_key(source): source for source in sources}
+                    state_sources = [selected[source_key(source)] for source in change["evidence"]]
+                    item["state_evidence"] = [{key: value for key, value in source.items()
+                                               if key != "excerpt"} for source in state_sources]
+                    item["change_kind"] = change["kind"]
+                    if action != "upsert":
+                        from ..memory.continuity import source_timestamp
+                        item["observed_at"] = max(
+                            (source_timestamp(evidence[source["exchange_id"]], source["role"])
+                             for source in state_sources), key=datetime.fromisoformat)
+                from ..memory.continuity import source_timestamp
+                mentions = [source_timestamp(evidence[source["exchange_id"]], source["role"])
+                            for source in sources]
+                if previous and previous.get("last_mention_at"):
+                    mentions.append(previous["last_mention_at"])
+                if mentions:
+                    item["last_mention_at"] = max(mentions, key=datetime.fromisoformat)
                 item["revision"] = revision + 1
                 self._save_continuity_item(item, task_id=task_id, change_origin="automatic")
                 changed += 1

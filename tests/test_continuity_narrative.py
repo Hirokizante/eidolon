@@ -44,7 +44,10 @@ def narrative(row, text="The user's interview is approaching; practice is still 
     return {"op": "upsert", "expected_revision": 0, "category": "thread",
             "topic": "Interview preparation", "importance": "moderate",
             "content": text, "content_format": "narrative", "origin": "derived",
-            "scope": "real_life", "sources": [cite(row)], **changes}
+            "scope": "real_life", "sources": [cite(row)],
+            "change": ({"kind": "closure", "evidence": [cite(row)], "intent": "Confirmed closure."}
+                       if changes.get("op") in {"archive", "resolve"} else
+                       {"kind": "development", "evidence": [cite(row)]}), **changes}
 
 
 def proposal(operation):
@@ -240,7 +243,7 @@ async def test_pending_new_chats_finish_before_separate_legacy_conversion(
     prose = "The user's interview is approaching; practice is still undecided."
 
     def rewrite(document):
-        if document.get("contract") == "current-life-ordinary-v1":
+        if document.get("contract") == "current-life-ordinary-v2":
             assert "legacy_rewrite_ids" not in document
             assert [row["exchange_id"] for row in document["exchanges"]] == [fresh["exchange_id"]]
             return {"operations": [{"op": "no_change", "expected_revision": document["snapshot_revision"]}]}
@@ -473,6 +476,8 @@ def test_narrative_cannot_launder_promises_dates_or_completion(metadata, source)
     item = {"id": "interview", "revision": 1, "content": "The user's interview is pending."}
     op = narrative(row, "The user promised to finish the interview; it is now finished.",
                    item_id="interview", expected_revision=1, **metadata)
+    if metadata.get("op") == "resolve":
+        op.pop("change")  # No supported semantic closure decision was supplied.
     with pytest.raises(ContinuityValidationError):
         validate_operations(proposal(op), inputs=[row], state={"revision": 1, "items": [item]},
                             require_narrative=True)

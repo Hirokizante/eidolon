@@ -93,7 +93,8 @@ def test_an_update_keeps_its_topic_and_requires_a_development_in_that_topic(stor
     wrong = narrative(unrelated, "The user has an upcoming dentist appointment.",
                       topic=note["topic"], importance="moderate", item_id=note["id"],
                       expected_revision=current["revision"])
-    with pytest.raises(ContinuityValidationError, match="same topic"):
+    wrong.pop("change")
+    with pytest.raises(ContinuityValidationError, match="intent"):
         proposal_task(store, [wrong])
     wrong["topic"] = "Dentist appointment"
     with pytest.raises(ContinuityValidationError, match="topic cannot change"):

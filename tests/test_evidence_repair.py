@@ -273,7 +273,7 @@ async def test_unresolved_damage_does_not_redirect_unrelated_new_batches(tmp_pat
         old_task = service.store.pending_maintenance_task()
 
         def unrelated(doc):
-            assert doc["contract"] == "current-life-ordinary-v1"
+            assert doc["contract"] == "current-life-ordinary-v2"
             return {"operations": [{
                 "op": "upsert", "topic": "Garden supplies", "importance": "moderate",
                 "category": "thread", "content": "The user's garden needs new supplies.",

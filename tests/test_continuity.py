@@ -227,6 +227,7 @@ def test_resolve_needs_explicit_topic_matched_evidence_and_inactive_item_is_excl
             "scope": "real_life", "state": "open"}
     row = exchange(user="My interview is finished.")
     op = operation(row, op="resolve", item_id="stable", expected_revision=1)
+    op["change"] = {"kind": "closure", "evidence": op["sources"], "intent": "Confirmed closure."}
     assert validate(op, rows=[row], state={"revision": 1, "items": [item]})[0]["op"] == "resolve"
     for text in ("My interview is tomorrow.", "My project is finished."):
         row = exchange(user=text)
@@ -273,12 +274,13 @@ def test_negated_date_or_request_to_refrain_cannot_create_an_event_or_followup()
 def test_upserts_cannot_replace_an_existing_item_with_an_unrelated_supported_quote():
     item = {"id": "stable", "revision": 1, "content": "My interview is tomorrow."}
     row = exchange(user="I prefer coffee in the morning.")
-    with pytest.raises(ContinuityValidationError, match="same topic"):
+    with pytest.raises(ContinuityValidationError, match="intent"):
         validate(operation(row, item_id="stable", expected_revision=1), rows=[row],
                  state={"revision": 1, "items": [item]})
     item["content"] = "Please give concise replies."
     row = exchange(user="Please give detailed replies.")
-    assert validate(operation(row, category="relationship", item_id="stable", expected_revision=1),
+    assert validate(operation(row, category="relationship", item_id="stable", expected_revision=1,
+                              change={"kind": "development", "evidence": operation(row)["sources"]}),
                     rows=[row], state={"revision": 1, "items": [item]})
 
 

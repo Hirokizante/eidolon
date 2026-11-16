@@ -224,6 +224,7 @@ async def test_distinct_source_backlogs_keep_evidence_identical_across_routes(tm
                             "importance": "moderate",
                             "content": "Synthetic summary: " + row["user_content"],
                             "sources": [row["source_refs"]["user"]],
+                            "change": {"kind": "development", "evidence": [row["source_refs"]["user"]]},
                         } for row in document["exchanges"] if not source_is_fictional(row["user_content"])]
                         yield {"type": "token", "text": json.dumps({"operations": operations or [{
                             "op": "no_change",
