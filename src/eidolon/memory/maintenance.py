@@ -28,6 +28,7 @@ from .continuity import (
     active_items, aware_time, needs_note_metadata,
 )
 from .proposals import parse_proposal, task_contract
+from .continuity import note_evidence_sources
 from .maintenance_budget import ResponseLimits
 
 
@@ -263,7 +264,7 @@ class ContinuityWorker:
                         break
             items.sort(key=lambda item: item["id"] not in rewrite_targets)
         fields = ("id", "revision", "category", "topic", "importance", "metadata_pending",
-                  "content", "content_format", "origin",
+                  "content", "content_format", "origin", "historical_context", "change_kind",
                   "scope", "state", "status", "observed_at",
                   "locked", "manual_lock", "user_created", "invalidated", "event_at", "expires_at",
                   "follow_up_at",
@@ -368,7 +369,7 @@ class ContinuityWorker:
             entry["sources"] = []
             supporting = document["supporting_exchanges"]
             supplied_ids = task_ids | {row["exchange_id"] for row in supporting}
-            required_ids = {source["exchange_id"] for source in item.get("sources", [])}
+            required_ids = {source["exchange_id"] for source in note_evidence_sources(item)}
             if not task["id"].startswith("review:") and not required_ids <= evidence.keys():
                 continue
             extra = [evidence[key] for key in sorted(required_ids - supplied_ids)
@@ -464,7 +465,7 @@ class ContinuityWorker:
     def _source_exchanges(self, state: dict) -> list[dict]:
         ids = list(dict.fromkeys(source["exchange_id"] for item in state.get("items", [])
                                  if not item.get("invalidated")
-                                 for source in item.get("sources", [])))
+                                 for source in note_evidence_sources(item)))
         return [row for start in range(0, len(ids), 32)
                 for row in self.store.continuity_evidence(ids[start:start + 32], scope=self.scope)]
 
@@ -624,7 +625,8 @@ class ContinuityWorker:
         fields = {"id", "scope", "state", "category", "topic", "importance", "content",
                   "content_format", "origin", "sources", "invalidated", "suppressed", "locked",
                   "manual_lock", "user_created", "event_at", "expires_at", "follow_up_at",
-                  "promise_owner", "promise_kind", "archive_reason"}
+                  "promise_owner", "promise_kind", "archive_reason", "observed_at",
+                  "change_kind", "state_evidence", "historical_context"}
         notes = [{key: value for key, value in item.items() if key in fields}
                  for item in state["items"] if item["id"] in targets]
         notes.sort(key=lambda item: item["id"])
@@ -688,6 +690,7 @@ class ContinuityWorker:
         previous.append(self.store.get_maintenance_stage(task["id"]).get("recovery_state") or {})
         invariant = reason_code in {
             "validation.topic_support", "validation.chronology", "validation.terminal",
+            "validation.change_contract",
             "validation.protected", "validation.scope", "validation.fiction",
             "validation.saved_support", "validation.evidence_changed",
             "validation.promise_commitment", "validation.promise_qualified",

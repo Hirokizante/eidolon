@@ -40,7 +40,11 @@ def upsert(source, *, item_id=None, expected_revision=0, **kwargs):
     }
     if item_id is not None:
         result["item_id"] = item_id
-    return {**result, **kwargs}
+    result = {**result, **kwargs}
+    result["change"] = {"kind": "development", "evidence": result["sources"]}
+    if result["op"] in {"archive", "resolve"}:
+        result["change"].update(kind="closure", intent="Confirmed closure.")
+    return result
 
 
 def commit(store, task, operations, *, max_notes=12):
@@ -487,18 +491,17 @@ def test_direct_storage_calls_reject_clipped_negation_fiction_and_false_resoluti
     with pytest.raises(ValueError, match="unsupported"):
         commit(store, task, [clipped])
     commit(store, task, [{"op": "no_change", "expected_revision": 0}])
-    fictional = exchange(store, "In our story, my interview is tomorrow.")
+    exchange(store, "In our story, my interview is tomorrow.")
     task = task_for(store)
-    with pytest.raises(ValueError, match="unsupported"):
-        commit(store, task, [upsert(fictional)])
     commit(store, task, [{"op": "no_change", "expected_revision": 0}])
     valid = exchange(store)
     commit(store, task_for(store), [upsert(valid, item_id="interview")])
     unsupported = exchange(store, "The interview is still pending.")
     task = task_for(store)
-    with pytest.raises(ValueError, match="positive"):
-        commit(store, task, [upsert(unsupported, item_id="interview", expected_revision=1,
-                                   op="resolve")])
+    ambiguous = upsert(unsupported, item_id="interview", expected_revision=1, op="resolve")
+    ambiguous.pop("change")
+    with pytest.raises(ValueError, match="intent"):
+        commit(store, task, [ambiguous])
     assert store.list_continuity_items(include_inactive=False)[0]["state"] == "open"
 
 

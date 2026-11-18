@@ -31,6 +31,7 @@ async def test_topic_rejection_identifies_failed_attempt_and_corrects_safely(tmp
                 "op": "upsert", "note_ref": doc["items"][0]["note_ref"],
                 "topic": note["topic"], "importance": "low", "category": "thread",
                 "content": "The user's garden needs soil.", "sources": ["s1"],
+                "change": {"kind": "background", "context": "Wrong target."},
             }]}
 
         await refresh(service, client, CompactProvider(mismatch))
@@ -38,11 +39,11 @@ async def test_topic_rejection_identifies_failed_attempt_and_corrects_safely(tmp
         detail = await client.request("memory_continuity_run", task_id=stage["task_id"])
         failed = detail["attempts"][0]
         reason = failed["reason"]
-        assert reason["code"] == "validation.topic_support"
+        assert reason["code"] == "validation.change_contract"
         assert reason["disposition"] == "correct"
         assert reason["operation_index"] == 1
         assert reason["target_ref"] == "n1" and reason["source_refs"] == ["s1"]
-        assert reason["field"] == "sources"
+        assert reason["field"] == "change"
         assert reason["attempt_id"] == failed["id"]
 
         def corrected(doc):
@@ -75,6 +76,7 @@ async def test_unchanged_semantic_failure_defers_across_restart_and_newer_succes
             "op": "upsert", "note_ref": doc["items"][0]["note_ref"],
             "topic": note["topic"], "importance": "low", "category": "thread",
             "content": "The user's garden needs soil.", "sources": ["s1"],
+            "change": {"kind": "background", "context": "Wrong target."},
         }]})
         await refresh(service, client, provider)
         clock.advance()
@@ -206,6 +208,7 @@ async def test_new_snapshot_never_reinterprets_previous_attempt_references(tmp_p
         await refresh(service, client, CompactProvider(lambda doc: {"operations": [{
             "op": "upsert", "note_ref": "n1", "topic": first["topic"], "importance": "low",
             "category": "thread", "content": "The user's garden needs soil.", "sources": ["s1"],
+            "change": {"kind": "background", "context": "Wrong target."},
         }]}))
         stage = (await client.request("status"))["maintenance"]["stages"][0]
         assert stage["reason"]["target_ref"] == "n1"
@@ -296,3 +299,30 @@ async def test_legacy_conversion_holds_damaged_saved_support_for_repair(tmp_path
         assert stage["reason"]["code"] == "validation.saved_support"
         assert stage["next_action"] == "repair"
         assert service.store.get_continuity_item(note["id"]).get("content_format") != "narrative"
+
+
+async def test_semantic_deferral_tracks_target_and_releases_after_relevant_edit(
+    tmp_path, monkeypatch, clock,  # noqa: F811
+):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={"continuity_enabled": True})
+        note = seed_note(service.store)
+        service.store.complete_turn(service.current_session["id"], "That could change things.", "Okay.")
+        provider = CompactProvider(lambda doc: {"operations": [{
+            "op": "defer", "reason": "semantic_uncertainty", "note_ref": doc["items"][0]["note_ref"],
+        }]})
+        await refresh(service, client, provider)
+        task_id = service.store.pending_maintenance_task()["id"]
+        detail = await client.request("memory_continuity_run", task_id=task_id)
+        assert detail["reason"]["target_ref"] == "n1"
+        assert detail["next_action"] == "defer" and len(provider.calls) == 1
+        clock.advance(86400)
+        await automatic(service, provider)
+        assert len(provider.calls) == 1
+        await client.request("memory_edit_note", item_id=note["id"],
+                             expected_revision=note["revision"], importance="high")
+        provider.respond = lambda doc: {"operations": [{"op": "no_change"}]}
+        clock.advance()
+        await automatic(service, provider)
+        assert len(provider.calls) == 2
+        assert service.store.get_maintenance_stage(task_id)["status"] == "completed"

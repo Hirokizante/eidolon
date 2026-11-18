@@ -580,7 +580,7 @@ async def test_synthetic_test_can_be_preempted_during_cold_tokenizer_initializat
 @pytest.mark.parametrize("reply,compatible", [
     ('{"operations":[{"op":"upsert","topic":"Creative project","importance":"moderate",'
      '"category":"thread","content":"The user has an unfinished creative project.",'
-     '"sources":["s1"]}]}', True),
+     '"sources":["s1"],"change":{"kind":"development","evidence":["s1"]}}]}', True),
     ('{"operations":[{"op":"no_change"}]}', True),
     ('OK', False),
     ('{"operations":[{"op":"upsert","topic":"Invented","sources":["s999"]}]}', False),
@@ -611,12 +611,12 @@ async def test_synthetic_test_validates_real_contract_without_writing(
         assert result["connected"] is True
         assert result["contract_compatible"] is compatible and result["ok"] is compatible
         assert result["output_mode"] == "prompt"
-        assert result["contract"] == "current-life-ordinary-v1"
+        assert result["contract"] == "current-life-ordinary-v2"
         assert len(seen) == 1 and seen[0]["model"] == "synthetic-draft-model"
         assert seen[0]["max_tokens"] == 512
         assert "Private synthetic marker" not in json.dumps(seen)
         document = json.loads(seen[0]["messages"][-1]["content"])
-        assert document["contract"] == "current-life-ordinary-v1"
+        assert document["contract"] == "current-life-ordinary-v2"
         assert document["exchanges"][0]["source_refs"]["user"] == "s1"
         assert s.configuration.read_bytes() == before
         assert s.store.continuity_state() == state
@@ -644,7 +644,8 @@ async def test_maintenance_constraints_and_effective_provenance_survive_restart(
         payloads.append(json.loads(request.content))
         proposal = {"operations": [{"op": "upsert", "topic": "Creative project",
                     "importance": "moderate", "category": "thread",
-                    "content": "The user has an unfinished creative project.", "sources": ["s1"]}]}
+                    "content": "The user has an unfinished creative project.", "sources": ["s1"],
+                    "change": {"kind": "development", "evidence": ["s1"]}}]}
         if mode == "json_schema":
             proposal["operations"][0].update(note_ref=None, replaces_ref=None, decision_reason=None,
                                             event_at=None, follow_up_at=None, promise_source=None)
@@ -661,7 +662,7 @@ async def test_maintenance_constraints_and_effective_provenance_survive_restart(
                 await asyncio.wait_for(s._continuity_task, 5)
         latest = (await client.request("status"))["maintenance"]["latest_attempt"]
         assert latest["outcome"] == "committed" and latest["output_mode"] == mode
-        assert latest["contract"] == "current-life-ordinary-v1"
+        assert latest["contract"] == "current-life-ordinary-v2"
         assert latest["capability_source"] == "configured_verification"
         assert len(s.store.continuity_state()["items"]) == 1
         assert len(payloads) == 1

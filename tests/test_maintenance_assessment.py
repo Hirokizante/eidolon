@@ -58,7 +58,8 @@ async def test_recovery_assessment(tmp_path, monkeypatch, clock, record_property
                     "topic": "Garden project" if garden else "Interview preparation",
                     "content": ("The user's garden project is unfinished." if garden else
                                 "The user's interview is tomorrow."),
-                    "sources": [row["source_refs"]["user"]]}
+                    "sources": [row["source_refs"]["user"]],
+                    "change": {"kind": "development", "evidence": [row["source_refs"]["user"]]}}
                 if scenario == "chronology":
                     operation.update(note_ref=document["items"][0]["note_ref"], topic="House move",
                                      content="The user is preparing for a house move.")

@@ -242,7 +242,7 @@ later supported state. Refreshing again or restarting cannot make old evidence
 newer. Preserve the current note and its sources, review the originals, or wait
 for a later supported development; missing topics and unchanged-claim background
 support can still be admitted. See [replay and source chronology](CURRENT_LIFE_SUMMARIES.md#replay-and-source-chronology)
-for the conservative merge rules and their language limits. The rejected batch
+for designated change evidence and background enrichment rules. The rejected batch
 remains unresolved through the usual bounded recovery path.
 
 ### Bounded recovery and configuration pauses
@@ -402,7 +402,7 @@ compare candidates with synthetic evidence before relying on them.
 
 ## Developer reference: routing and provenance
 
-Ordinary evidence maintenance uses the versioned `current-life-ordinary-v1`
+Ordinary evidence maintenance uses the versioned `current-life-ordinary-v2`
 proposal contract in [proposals.py](../src/eidolon/memory/proposals.py).
 The model chooses substantive changes in one request: topic, importance,
 category, prose, supporting sources, and closure/replacement decisions.
@@ -410,12 +410,20 @@ It returns `{"operations":[...]}` with 1–24 explicit operations, further bound
 by the request's `response_limits`. A new note is:
 
 ```json
-{"operations":[{"op":"upsert","topic":"Interview preparation","importance":"moderate","category":"thread","content":"The user's interview is approaching; practice remains undecided.","sources":["s1"]}]}
+{"operations":[{"op":"upsert","topic":"Interview preparation","importance":"moderate","category":"thread","content":"The user's interview is approaching; practice remains undecided.","sources":["s1"],"change":{"kind":"development","evidence":["s1"]}}]}
 ```
 
 Updates add `note_ref`, keeping the existing topic. Closures use `op: archive`,
 `note_ref`, `archive_reason`, `decision_reason`, supported prose in `content`,
-and new evidence in `sources`. A replacement pairs an archive with reason
+and `change: {"kind":"closure","evidence":["s1"],"intent":"Confirmed topic closure."}`.
+Upserts explicitly choose development, background enrichment, correction or reopening;
+only designated state evidence participates in ordering, while older support can stay
+in `sources`. Background preserves the current claim and status. Ambiguous consequential
+changes use `defer` with `semantic_uncertainty` and preserve current state; unresolved
+correction timing also defers. Source relevance and claim-level qualifiers remain the
+model's responsibility in full original context. Existing pending batches request new
+v2 decisions with their original evidence/accounting; saved v1 attempts remain readable.
+A replacement pairs an archive with reason
 `replaced` and empty sources (no prose) with a new upsert's `replaces_ref` and
 tradeoff reason. Legitimate no-change is exactly
 `{"operations":[{"op":"no_change"}]}`. It means no useful supported change was

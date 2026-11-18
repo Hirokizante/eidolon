@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .changes import Change
+
 
 Scope = Literal["real_life", "fiction", "unknown"]
 Category = Literal["situation", "thread", "relationship", "emotion"]
@@ -56,6 +58,8 @@ class ContinuityValidationError(ValueError):
         "batch_source": "Updates must cite an exchange from this batch. Prior sources alone "
                         "may only convert an open legacy note to narrative while preserving "
                         "all its sources, category, scope and optional metadata.",
+        "change_contract": "The change needs explicit intent and designated original evidence.",
+        "semantic_uncertainty": "The consequential change remains uncertain; current state is preserved.",
         "chronology": "The evidence does not establish a later supported state for this topic. "
                       "Preserve the current note and its supporting sources; use older evidence "
                       "only for a missing topic or compatible background. If the conflict cannot "
@@ -162,6 +166,7 @@ class ContinuityValidationError(ValueError):
         self.recovery_targets: list[str] = []
         self.field = field or {
             "topic_support": "sources", "saved_support": "sources", "source": "sources",
+            "change_contract": "change", "semantic_uncertainty": "change",
             "chronology": "sources", "terminal": "sources", "batch_source": "sources",
             "topic": "topic", "revision": "expected_revision", "narrative": "content",
             "content": "content", "archive_reason": "archive_reason", "expiry": "expires_at",
@@ -194,6 +199,7 @@ class ContinuitySource(BaseModel):
     origin: Literal["user_statement", "assistant_statement"]
 
 
+
 class ContinuityOperation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -201,6 +207,7 @@ class ContinuityOperation(BaseModel):
     expected_revision: int = Field(ge=0)
     item_id: str | None = Field(default=None, min_length=1, max_length=200)
     sources: list[ContinuitySource] = Field(default_factory=list, max_length=8)
+    change: Change[ContinuitySource] | None = None
     category: Category | None = None
     topic: str | None = Field(default=None, min_length=1, max_length=TOPIC_MAX_CHARS)
     importance: Importance | None = None
@@ -331,6 +338,8 @@ def validate_note_capacity(operations: list[dict], items: list[dict], *,
                     "Only an admission can replace a note",
                     code="capacity",
                 )
+            continue
+        if (op.get("change") or {}).get("kind") == "background":
             continue
         key = op.get("item_id") or f"new:{index}"
         candidate = {**current.get(key, {}), **op, "id": key, "state": "open", "scope": scope}
@@ -491,123 +500,6 @@ def _qualified_claim(content: str) -> bool:
     ))
 
 
-def _subject_clauses(content: str) -> list[str]:
-    """Conservative boundaries where a different subject can take over."""
-    return re.split(r"[,;]|\b(?:and|but|while|whereas|after|before|because|although|despite)\b",
-                    content, flags=re.IGNORECASE)
-
-
-def _transition_qualified(content: str, op: str, archive_reason: str | None) -> bool:
-    """Retirement reasons can require negation that would disprove completion."""
-    if archive_reason in {"broken_promise", "no_longer_current"}:
-        qualifiers = r"if|unless|would|could|might|maybe|perhaps|wish"
-        if archive_reason == "no_longer_current":
-            qualifiers += r"|will|shall"
-        return "?" in content or bool(re.search(r"\b(?:" + qualifiers + r")\b", content,
-                                                re.IGNORECASE))
-    if op == "archive" and archive_reason not in {"completed", "conversation_ended"}:
-        content = re.sub(r"\bnot relevant\b", "irrelevant", content, flags=re.IGNORECASE)
-    return _qualified_claim(content)
-
-
-def transition_supported(content: str, op: str, item_content: str,
-                          archive_reason: str | None = None) -> bool:
-    """A terminal patch needs a positive, current/past, topic-matched statement."""
-    # Attribution can govern a later sentence or paragraph. Check the complete
-    # original before considering sentences, so a quoted first-person statement
-    # cannot be mistaken for the speaker's own outcome. Ambiguous reported speech
-    # remains unresolved rather than acquiring an invented owner.
-    if re.search(
-        r'\b(?:said|says|told|wrote|writes|according to|quoting|quoted|'
-        r'sent (?:this|the) message)\b|["“”]|'
-        r"\b(?:his|her|their)\b|"
-        r"\b(?!(?:it|that|there|what|who|here)['’]s\b)[^\W\d_]+['’]s\b",
-        content, re.IGNORECASE,
-    ):
-        return False
-    # Check each complete sentence without dropping the full original from
-    # provenance. A question about tomorrow need not invalidate a completed
-    # development reported in a different sentence of the same message.
-    sentences = re.split(r"(?<=[.!?])\s+|\n+", content)
-    if len(sentences) > 1:
-        for index, sentence in enumerate(sentences):
-            # A topical question can introduce an elliptical answer in the same
-            # original: "That meeting at Ember Library? All wrapped up." Never
-            # borrow an antecedent from generated prose or a different message.
-            if (index and re.fullmatch(r"\s*(?:That|The|My|Our)\b[^.!?\n]+\?",
-                                       sentences[index - 1], re.IGNORECASE)
-                    and not _qualified_claim(sentences[index - 1].rstrip("?"))
-                    and re.match(r"\s*(?:all wrapped up|it\b|that\b)", sentence,
-                                 re.IGNORECASE)):
-                sentence = sentences[index - 1].rstrip("?") + ": " + sentence
-            if sentence.strip() and transition_supported(sentence, op, item_content, archive_reason):
-                return True
-        return False
-    # Clause boundaries often separate subjects. Do not let a mention of an
-    # interview authorize completion of a garden project in the next clause.
-    # Qualifiers still govern the whole sentence, including elliptical clauses.
-    clauses = _subject_clauses(content)
-    if len(clauses) > 1:
-        return not _transition_qualified(content, op, archive_reason) and any(
-            transition_supported(clause, op, item_content, archive_reason) for clause in clauses
-        )
-    if not same_topic(content, item_content):
-        return False
-    if archive_reason == "broken_promise":
-        return bool(not _transition_qualified(content, op, archive_reason) and re.search(
-            r"\b(?:broke|broken|failed to|forgot to|missed|cancelled|canceled|"
-            r"cannot|unable to)\b|\b(?:didn['’]t|won['’]t|can['’]t)\b|\bwill not\b",
-            content, re.IGNORECASE,
-        ))
-    if archive_reason == "no_longer_current":
-        return bool(not _transition_qualified(content, op, archive_reason) and re.search(
-            r"\bno longer\b|\bnot relevant\b|\bnot\b.+\banymore\b|\b(?:ended|stopped|recovered|"
-            r"expired|ceased|cancelled|canceled)\b|\b(?:is|was|are|were)\s+over[.!]?$",
-            content, re.IGNORECASE,
-        ))
-    if archive_reason in {"completed", "conversation_ended"}:
-        op = "resolve"
-    if (op == "resolve" and re.search(r"\binterview\b", content, re.IGNORECASE) and re.search(
-        r"\b(?:preparation|preparing|practice|practicing|practising|rehearsal|rehearsing|mock|notes)\b",
-        content, re.IGNORECASE,
-    )):
-        return False
-    if (op not in {"resolve", "archive"} or not same_topic(content, item_content)
-            or _transition_qualified(content, op, archive_reason) or re.search(
-                r"\b(?:will|shall|going to|tomorrow|next (?:week|month|year))\b",
-                content, re.IGNORECASE,
-            )):
-        return False
-    if op == "archive":
-        return bool(re.search(
-            r"\b(?:archive|not relevant|stop following|leave it|(?:is|was|has been) archived)\b",
-            content, re.IGNORECASE,
-        ))
-    adjective = r"(?:resolved|done|finished|completed|cancelled|canceled|delivered|fulfilled|ended)"
-    current_or_past = (
-        rf"\b(?:is|was|are|were|am|got|has been|have been)\s+(?:now\s+|already\s+|finally\s+)?{adjective}\b"
-        rf"|\b(?:I|we|they|he|she)\s+(?:(?:have|has)\s+)?(?:already\s+|finally\s+)?{adjective}\b"
-        rf"|\b{adjective}(?=[.!]|$)"
-        r"|\b(?:is|was|are|were)\s+over(?=[.!]|$|\s+(?:now|today|yesterday)\b)"
-    )
-    if re.search(current_or_past, content, re.IGNORECASE):
-        return True
-    wrapped = re.search(r"\bwrapped up\b", content, re.IGNORECASE)
-    through = re.search(r"\bgot through\b", content, re.IGNORECASE)
-    if (wrapped and same_topic(content[:wrapped.start()], item_content)
-            or through and same_topic(content[through.end():], item_content)):
-        return True
-    # Successful interview outcomes imply that the interview took place. A
-    # successful rehearsal/preparation does not. Keep this implication tied to
-    # the saved subject rather than treating every positive report as closure.
-    return bool(re.search(r"\binterview\b", item_content, re.IGNORECASE) and re.search(
-        r"\binterview\s+went\s+(?:well|great|smoothly)\b"
-        r"|\bI\s+(?:have\s+)?aced\s+(?:my\s+)?[^.!?;]*\binterview\b"
-        r"|\boffered\s+me\s+(?:the|a)\s+[^.!?;]*\b(?:role|job|position)\b",
-        content, re.IGNORECASE,
-    ))
-
-
 def _validate_sources(operation: ContinuityOperation, rows: dict[int, dict]) -> list[dict]:
     if not operation.sources:
         raise ContinuityValidationError("A changed item requires original evidence", code="source")
@@ -699,6 +591,9 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
     sources = operation.get("sources", [])
     if (operation["op"] in {"archive", "resolve"}
             and operation.get("archive_reason") in POLICY_ARCHIVE_REASONS):
+        if operation.get("change") is not None:
+            raise ContinuityValidationError("Allocation archives cannot declare state changes",
+                                            code="change_contract")
         # This is an explicit allocation decision, not a claim that the old
         # situation ended. The whole patch must separately pass capacity and
         # lower-importance replacement checks at validation AND persistence.
@@ -732,39 +627,7 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
             "Claim origin disagrees with its evidence",
             code="claim_origin",
         )
-    rewrite = is_legacy_rewrite(operation, item)
-    fresh = [source["excerpt"] for source in sources
-             if rewrite or new_exchange_ids is None or source["exchange_id"] in new_exchange_ids]
-    # Summaries can omit the name by which a later message refers to a subject.
-    # Only the target note's saved originals may supply additional anchors;
-    # citing old evidence still cannot turn an unrelated new message into support.
-    anchors = [item["content"]] if item else []
-    if item:
-        for source in item.get("sources", []):
-            for statement in re.split(r"(?<=[.!?])\s+|\n+", source.get("excerpt") or ""):
-                # A complete original may discuss several unrelated subjects.
-                # Only its statements about this note may extend the anchors.
-                for clause in _subject_clauses(statement):
-                    if (same_topic(clause, item["content"])
-                            or same_topic(clause, item.get("topic", ""))):
-                        anchors.append(clause)
-    if operation["op"] in {"resolve", "archive"}:
-        if item is None:
-            raise ContinuityValidationError(
-                "A terminal operation requires an existing item",
-                code="terminal_target",
-            )
-        # Generated prose must never manufacture a terminal transition. One
-        # complete original message must independently support closing the topic.
-        if not any(transition_supported(excerpt, operation["op"], anchor,
-                                       operation.get("archive_reason"))
-                   for excerpt in fresh for anchor in anchors):
-            raise ContinuityValidationError("A terminal operation needs positive, topic-matched evidence",
-                                            code="terminal")
-    elif (operation["op"] == "upsert" and item
-          and not any(same_topic(excerpt, anchor) for excerpt in fresh for anchor in anchors)):
-        raise ContinuityValidationError("An existing item needs evidence about the same topic",
-                                        code="topic_support", field="sources")
+    validate_change(operation, item, new_exchange_ids=new_exchange_ids)
     owner, kind = operation.get("promise_owner"), operation.get("promise_kind")
     if bool(owner) != bool(kind):
         raise ContinuityValidationError(
@@ -796,33 +659,89 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
                                             code="promise_scheduled")
 
 
+def source_key(source: dict) -> tuple:
+    return tuple(source.get(key) for key in ("exchange_id", "document_id", "role", "origin"))
+
+
+def note_evidence_sources(item: dict) -> list[dict]:
+    """Current citations plus eligible, explicitly linked historical support."""
+    sources = list(item.get("sources", []))
+    for context in item.get("historical_context", []):
+        if isinstance(context, dict):
+            sources.extend(context.get("sources", []))
+    return list({source_key(source): source for source in sources}.values())
+
+
+def validate_change(operation: dict, item: dict | None, *,
+                    new_exchange_ids: set[int] | None) -> None:
+    """Enforce declared intent and evidence identity; relevance is a model judgment."""
+    if is_legacy_rewrite(operation, item):
+        return
+    change = operation.get("change")
+    # Preserve extractive admissions, but never guess intent for a replacement.
+    if (change is None and item is None and operation["op"] == "upsert"
+            and operation.get("content_format") != "narrative"):
+        return
+    from pydantic import TypeAdapter
+    try:
+        parsed = TypeAdapter(Change[ContinuitySource]).validate_python(change)
+    except ValidationError:
+        raise ContinuityValidationError("Explicit change intent is required", code="change_contract",
+                                        field="change") from None
+    change = parsed.model_dump(exclude_none=True)
+    kind = change["kind"]
+    if kind == "background":
+        if item is None or operation["op"] != "upsert" or operation.get("replaces_item_id"):
+            raise ContinuityValidationError("Background needs an existing note", code="change_contract")
+        protected = ("content", "category", "topic", "importance", "content_format", "origin", "scope")
+        optional = ("event_at", "expires_at", "follow_up_at", "promise_owner", "promise_kind")
+        if (any(operation.get(key) != item.get(key) for key in protected)
+                or any(key in operation and operation[key] != item.get(key) for key in optional)):
+            raise ContinuityValidationError("Background cannot replace current state", code="change_contract")
+        if len(item.get("historical_context", [])) >= 16:
+            raise ContinuityValidationError("Historical context needs a focused review",
+                                            code="support_preservation")
+        return
+    evidence = change["evidence"]
+    selected = {source_key(source): source for source in operation.get("sources", [])}
+    if any(source_key(source) not in selected or (
+            source.get("excerpt") is not None
+            and source["excerpt"] != selected[source_key(source)].get("excerpt")) for source in evidence):
+        raise ContinuityValidationError("Change evidence must match supplied originals", code="source")
+    if new_exchange_ids is not None and any(source["exchange_id"] not in new_exchange_ids
+                                            for source in evidence):
+        raise ContinuityValidationError("State changes require batch observations", code="batch_source")
+    if operation["op"] in {"archive", "resolve"}:
+        valid = item is not None and kind == "closure"
+    elif item and item.get("state") == "archived":
+        valid = kind == "reopening"
+    else:
+        valid = kind in {"development", "correction"}
+    if not valid:
+        raise ContinuityValidationError("Change intent disagrees with transition", code="change_contract")
+    if kind == "correction" and change["temporal"] == "unresolved":
+        raise ContinuityValidationError("Correction has unresolved temporal implications",
+                                        code="semantic_uncertainty", field="change")
+
+
 def validate_source_chronology(operation: dict, item: dict | None, *,
                                rows: dict[int, dict], new_exchange_ids: set[int],
                                items: list[dict] | None = None) -> None:
-    """Compare topic support in originals, never generated prose or refresh dates.
-
-    A later unrelated citation cannot lend its clock to an older claim. For a
-    closed note, the terminal evidence establishes the state, rather than the
-    earlier claim or an unrelated source saved alongside the closure.
-    """
+    """Order only designated state evidence, never prose, keywords or dispatch time."""
     if item is None:
-        # Omitting note_ref must not resurrect a closed topic as a new note.
         for previous in items or []:
-            if (previous.get("sources") and not previous.get("invalidated")
-                    and not previous.get("suppressed")
+            if (not previous.get("invalidated") and not previous.get("suppressed")
                     and topic_key(operation.get("topic", "")) == topic_key(previous.get("topic", ""))):
-                try:
-                    validate_source_chronology(operation, previous, rows=rows,
-                                               new_exchange_ids=new_exchange_ids)
-                except ContinuityValidationError as exc:
-                    exc.recovery_targets.append(previous["id"])
-                    raise
+                error = ContinuityValidationError("Existing topics require an explicit target",
+                                                  code="chronology")
+                error.recovery_targets.append(previous["id"])
+                raise error
         return
-    if not item.get("sources"):
+    if (is_legacy_rewrite(operation, item)
+            or operation.get("archive_reason") in POLICY_ARCHIVE_REASONS):
         return
-    for source in item["sources"]:
-        row = rows.get(source.get("exchange_id"))
-        role = source.get("role")
+    for source in item.get("sources", []):
+        row, role = rows.get(source.get("exchange_id")), source.get("role")
         if (row is None or role not in {"user", "assistant"}
                 or source.get("document_id") != row.get("document_id")
                 or source.get("origin") != role + "_statement"
@@ -830,77 +749,24 @@ def validate_source_chronology(operation: dict, item: dict | None, *,
                 or not whole_source_excerpt(source["excerpt"], _source_text(row, role))):
             raise ContinuityValidationError("Saved support disagrees with originals",
                                             code="saved_support", field="sources")
-    if (is_legacy_rewrite(operation, item)
-            or operation.get("archive_reason") in POLICY_ARCHIVE_REASONS):
+    if not item.get("sources"):
         return
-    # Older background may enrich provenance while leaving the established
-    # claim and every behavioral field intact. An upsert always opens its target,
-    # so this exception cannot apply to a closed note. Substantive rewording of
-    # older evidence remains ambiguous and must not replace the newer claim.
-    identity = ("exchange_id", "document_id", "role", "origin")
-    prior_keys = {tuple(source.get(key) for key in identity) for source in item["sources"]}
-    proposed_keys = {tuple(source.get(key) for key in identity)
-                     for source in operation.get("sources", [])}
-    preserved = ("content", "category", "topic", "importance", "content_format", "origin", "scope",
-                 "event_at", "expires_at", "follow_up_at", "promise_owner", "promise_kind")
-    if (operation["op"] == "upsert" and item.get("state") == "open"
-            and prior_keys <= proposed_keys
-            and all(operation.get(key) == item.get(key) for key in preserved)
-            and not operation.get("replaces_item_id")):
+    change = operation.get("change") or {}
+    if change.get("kind") == "background":
         return
-    anchors = [item.get("topic", "")]
-    if item.get("content"):
-        anchors.append(item["content"])
-    prior = []
-    for source in item.get("sources", []):
-        row = rows.get(source["exchange_id"])
-        if row is None:
-            raise ContinuityValidationError("Current support is unavailable", code="saved_support")
-        original = _source_text(row, source["role"])
-        prior.append((source, row, original))
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+", original):
-            for clause in _subject_clauses(sentence):
-                if (same_topic(clause, item.get("topic", ""))
-                        or same_topic(clause, item.get("content", ""))):
-                    anchors.append(clause)
-
-    def relevant(original: str) -> bool:
-        return any(same_topic(original, anchor) for anchor in anchors)
-
-    def supports_transition(original: str, reason: str | None) -> bool:
-        return any(transition_supported(original, "archive", anchor, reason) for anchor in anchors)
-
-    supported = [(source, row, original) for source, row, original in prior if relevant(original)]
-    if item.get("state") == "archived" and item.get("archive_reason") not in POLICY_ARCHIVE_REASONS:
-        supported = [(source, row, original) for source, row, original in supported
-                     if supports_transition(original, item.get("archive_reason"))]
-    incoming = [(source, rows[source["exchange_id"]]) for source in operation.get("sources", [])
-                if source["exchange_id"] in new_exchange_ids
-                and relevant(_source_text(rows[source["exchange_id"]], source["role"]))]
-    if operation["op"] in {"resolve", "archive"}:
-        incoming = [(source, row) for source, row in incoming
-                    if any(transition_supported(_source_text(row, source["role"]), operation["op"],
-                                                anchor, operation.get("archive_reason"))
-                           for anchor in anchors)]
-    elif item.get("state") == "archived":
-        incoming = [(source, row) for source, row in incoming
-                    if not supports_transition(_source_text(row, source["role"]),
-                                               item.get("archive_reason"))]
-    if not supported or not incoming:
-        raise ContinuityValidationError("Topic chronology is ambiguous", code="chronology")
-    latest = max(aware_time(source_timestamp(row, source["role"]))
-                 for source, row, _ in supported)
-    # A substantive mixed-age proposal is ambiguous: a newer message about
-    # background on this same topic cannot lend its clock to an older state
-    # claim. Every newly cited topical original must clear the current support.
-    # Prior saved support remains available as background for a genuine later
-    # development; unchanged-claim enrichment was handled above.
-    proposed = min(aware_time(source_timestamp(row, source["role"])) for source, row in incoming)
-    # Equal instants do not establish an order between different original claims.
-    # A format-only rewrite was handled above; do not reopen a closed note with
-    # its own closing evidence either.
+    incoming = change.get("evidence", [])
+    # Legacy notes have no semantic designation: preserve the latest selected
+    # observation conservatively, without inventing a historical judgment.
+    prior = item.get("sources", [])
+    if not prior or not incoming:
+        raise ContinuityValidationError("State chronology is unavailable", code="chronology")
+    latest = (aware_time(item["observed_at"]) if item.get("change_kind") else
+              max(aware_time(source_timestamp(rows[source["exchange_id"]], source["role"]))
+                  for source in prior))
+    proposed = min(aware_time(source_timestamp(rows[source["exchange_id"]], source["role"]))
+                   for source in incoming)
     if proposed <= latest:
-        raise ContinuityValidationError("Older or unordered topic evidence", code="chronology")
+        raise ContinuityValidationError("Older or unordered state evidence", code="chronology")
 
 
 def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
@@ -988,9 +854,9 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
             # Older support is usable only for this same item's existing evidence.
             # Pure legacy conversions can reuse their complete original support;
             # all other changes must also cite this task's evidence.
-            prior_ids = {source["exchange_id"] for source in item.get("sources", [])} if item else set()
+            prior_ids = {source["exchange_id"] for source in note_evidence_sources(item)} if item else set()
             prior_keys = {(source["exchange_id"], source["document_id"], source["role"])
-                          for source in item.get("sources", [])} if item else set()
+                          for source in note_evidence_sources(item)} if item else set()
             if any(source.exchange_id not in new_rows
                    and (source.exchange_id, source.document_id, source.role) not in prior_keys
                    for source in operation.sources):
@@ -1025,14 +891,6 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                     "An operation cannot redirect a task to another scope",
                     code="scope",
                 )
-            if scope == "real_life":
-                for source in operation.sources:
-                    original = _source_text(rows[source.exchange_id], source.role)
-                    if source_is_fictional(original):
-                        raise ContinuityValidationError(
-                            "Fictional evidence cannot become real-life state",
-                            code="fiction",
-                        )
             timestamps = [aware_time(source_timestamp(row, source.role))
                           for row, source in zip(source_rows, operation.sources, strict=True)]
             observed = max(timestamps).isoformat() if timestamps else item.get("observed_at")
@@ -1040,12 +898,25 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
             result["sources"] = [{**source.model_dump(),
                                   "excerpt": _source_text(row, source.role)}
                                  for row, source in zip(source_rows, operation.sources, strict=True)]
+            if result.get("change", {}).get("evidence"):
+                selected = {source_key(source): source for source in result["sources"]}
+                validate_change(result, item, new_exchange_ids=set(new_rows))
+                result["change"]["evidence"] = [selected[source_key(source)]
+                                                for source in result["change"]["evidence"]]
+                observed = max(aware_time(source_timestamp(rows[source["exchange_id"]], source["role"]))
+                               for source in result["change"]["evidence"]).isoformat()
+            if result.get("change", {}).get("kind") == "background" and item:
+                observed = item.get("observed_at")
             # Explicit null is a supported removal of optional metadata; omitted
             # fields leave existing metadata unchanged in the patch.
             for field in operation.model_fields_set:
                 if getattr(operation, field) is None:
                     result[field] = None
-            result.update(origin=origin, scope=scope, observed_at=observed, last_mention_at=observed)
+            mentions = [*timestamps]
+            if item and item.get("last_mention_at"):
+                mentions.append(aware_time(item["last_mention_at"]))
+            result.update(origin=origin, scope=scope, observed_at=observed,
+                          last_mention_at=max(mentions).isoformat() if mentions else observed)
             validate_transition_evidence(result, item, new_exchange_ids=set(new_rows))
             validate_source_chronology(result, item, rows={**supporting_rows, **new_rows},
                                        new_exchange_ids=set(new_rows), items=state.get("items", []))
@@ -1055,6 +926,9 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                     "A new or updated note requires category, origin, and scope",
                     code="metadata_missing",
                 )
+            if result.get("change", {}).get("kind") == "background":
+                normalized.append(result)
+                continue
             for field in ("event_at", "follow_up_at"):
                 value = getattr(operation, field)
                 if value:

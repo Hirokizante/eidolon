@@ -46,6 +46,16 @@ class ResponseLimits:
         for operation in operations:
             if not isinstance(operation, dict):
                 continue
+            change = operation.get("change")
+            if isinstance(change, dict):
+                for field in ("context", "intent"):
+                    value = change.get(field)
+                    if isinstance(value, str):
+                        cap = self.max_content_chars if field == "context" else self.max_decision_chars
+                        if len(value) > cap:
+                            raise ContinuityValidationError("Change prose exceeds planned work",
+                                                            code="output_plan")
+                        text += len(value)
             for field in ("topic", "content", "decision_reason"):
                 value = operation.get(field)
                 if isinstance(value, str):

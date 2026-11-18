@@ -69,6 +69,7 @@ def seed(store, text="The garden illustration is unfinished.", **fields):
                      "role": "user", "origin": "user_statement", "excerpt": text}],
         **fields,
     }
+    operation["change"] = {"kind": "development", "evidence": operation["sources"]}
     task = store.create_maintenance_task(inputs, expected_revision=state["revision"],
                                          control_revision=state["control_revision"])
     validated = validate_operations({"operations": [operation]}, inputs=inputs, state=state)

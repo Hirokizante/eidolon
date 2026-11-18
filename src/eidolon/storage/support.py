@@ -108,6 +108,8 @@ def record(store: Store, item: dict, *, task_id: str | None, change_origin: str,
             disposition = "current" if key in selected else entry.get("disposition", "background")
             if key not in selected and disposition == "current":
                 disposition = "background"
+        if (dispositions or {}).get(key) == "background":
+            entry["support_role"] = "background"
         prior = next((old for old in previous if identity(old) == key), None)
         if key in selected and prior and prior["disposition"] == "retracted":
             from ..memory.continuity import ContinuityValidationError
@@ -121,6 +123,34 @@ def record(store: Store, item: dict, *, task_id: str | None, change_origin: str,
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (item["id"], item["scope"], item["revision"], *key,
              entry["support_role"], disposition, task_id, change_origin))
+
+
+def valid_historical_context(store: Store, item: dict) -> tuple[list[dict], int]:
+    """Withhold prose whose exact linked originals changed or were withdrawn."""
+    usable = []
+    contexts = item.get("historical_context", [])
+    for context in contexts:
+        if not isinstance(context, dict) or not isinstance(context.get("content"), str):
+            continue  # Unknown legacy text has no established support association.
+        sources = identified_sources(context.get("sources"))
+        if not sources or len(sources) != len(context.get("sources", [])):
+            continue
+        valid = True
+        for source in sources:
+            originals = store.continuity_evidence([source["exchange_id"]], scope=item["scope"])
+            association = store.db.execute(
+                "SELECT disposition FROM continuity_support WHERE item_id=? AND scope=? "
+                "AND exchange_id=? AND document_id=? AND role=? AND input_hash=? "
+                "ORDER BY id DESC LIMIT 1", (item["id"], item["scope"], *identity(source)),
+            ).fetchone()
+            if (not originals or originals[0]["document_id"] != source["document_id"]
+                    or store._continuity_hash(originals[0]) != source["input_hash"]
+                    or association is None or association["disposition"] in {"retracted", "disputed"}):
+                valid = False
+                break
+        if valid:
+            usable.append(context)
+    return usable, len(contexts) - len(usable)
 
 
 def candidates(store: Store, item_id: str, scope: str, *, limit: int = 32) -> list[dict]:

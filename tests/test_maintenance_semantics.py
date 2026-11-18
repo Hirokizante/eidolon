@@ -1,4 +1,4 @@
-"""Semantic developments through the service with real temporary persistence."""
+"""Scripted semantic decisions through refresh; no live-model judgment is measured."""
 import pytest
 
 from test_current_life_policy import seed_note
@@ -71,21 +71,15 @@ async def test_anchored_interview_success_closes_in_one_call(tmp_path, monkeypat
     "My practice for the Ember Library interview wrapped up.",
     "I got through a mock Ember Library interview.",
 ])
-async def test_unsupported_closure_preserves_the_entire_batch(tmp_path, monkeypatch, text):
+async def test_scripted_uncertain_closure_preserves_the_note_and_pending_batch(tmp_path, monkeypatch, text):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         note = seed_note(service.store, topic="Interview preparation",
                          text="My Ember Library interview is tomorrow.")
         service.store.complete_turn(service.current_session["id"], text, "Understood.")
         before = service.store.continuity_state()
-        provider = CompactProvider(lambda doc: {"operations": [
-            {"op": "upsert", "topic": "An additional subject", "importance": "low",
-             "category": "thread", "content": "A second proposed note must not partially commit.",
-             "sources": [doc["exchanges"][0]["source_refs"]["user"]]},
-            {"op": "archive", "note_ref": doc["items"][0]["note_ref"],
-             "archive_reason": "completed", "decision_reason": "A generated success claim.",
-             "content": "The user's interview is finished.",
-             "sources": [doc["exchanges"][0]["source_refs"]["user"]]},
-        ]})
+        provider = CompactProvider(lambda doc: {"operations": [{
+            "op": "defer", "reason": "semantic_uncertainty", "note_ref": doc["items"][0]["note_ref"],
+        }]})
         await refresh(service, client, provider)
         assert service.store.continuity_state() == before
         assert service.store.get_continuity_item(note["id"]) == note
@@ -143,21 +137,18 @@ async def test_equivalent_wording_updates_the_existing_note(
     ("My Ember Library interview is tomorrow, and my garden project needs attention.",
      "My garden project now has a greenhouse."),
 ])
-async def test_unrelated_update_remains_pending(tmp_path, monkeypatch, original, text):
+async def test_scripted_uncertain_topic_update_remains_pending(tmp_path, monkeypatch, original, text):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         note = seed_note(service.store, topic="Interview preparation",
                          text=original)
         service.store.complete_turn(service.current_session["id"], text, "Understood.")
         before = service.store.continuity_state()
         provider = CompactProvider(lambda doc: {"operations": [{
-            "op": "upsert", "note_ref": doc["items"][0]["note_ref"],
-            "topic": note["topic"], "importance": "moderate", "category": "thread",
-            "content": "The user has a new dentist appointment.",
-            "sources": [doc["items"][0]["sources"][0]["source_ref"],
-                        doc["exchanges"][0]["source_refs"]["user"]],
+            "op": "defer", "reason": "semantic_uncertainty", "note_ref": doc["items"][0]["note_ref"],
         }]})
         await refresh(service, client, provider)
         assert service.store.continuity_state() == before
+        assert service.store.get_continuity_item(note["id"]) == note
         assert service.store.pending_maintenance_task() is not None
 
 

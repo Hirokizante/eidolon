@@ -85,6 +85,13 @@ def compact_fixture(proposal, document):
             ref, excerpt = sources.get(key, ("s9999", None))
             refs.append(ref if source.get("excerpt", excerpt) == excerpt else "s9999")
         op["sources"] = refs
+        if "change" in op:
+            change = dict(op["change"])
+            if "evidence" in change:
+                change["evidence"] = [sources.get(tuple(source.get(field) for field in
+                    ("exchange_id", "document_id", "role", "origin")), ("s9999", None))[0]
+                    if isinstance(source, dict) else source for source in change["evidence"]]
+            op["change"] = change
         if op.get("op") == "no_change" and not refs:
             op.pop("sources")
         if "promise_owner" in op and op.get("promise_kind") in {"conversation", "scheduled"}:
@@ -104,10 +111,33 @@ def compact_fixture(proposal, document):
             if op.get("sources") == []:
                 op.pop("sources")
         if document["contract"] == "current-life-legacy-v1" and item:
+            op.pop("change", None)
             if op.get("category") == item.get("category"):
                 op.pop("category")
             if op.get("sources") == [source["source_ref"] for source in item["sources"]]:
                 op.pop("sources")
+        operations.append(op)
+    return explicit_changes({**proposal, "operations": operations}, document)
+
+
+def explicit_changes(proposal, document):
+    """Wire older scripted fixtures as developments/closures; never used by production.
+
+    Cases about background, corrections, reopening or semantic uncertainty must
+    supply their own decision. All cited batch observations support old fixtures.
+    """
+    if document.get("contract") != "current-life-ordinary-v2":
+        return proposal
+    operations = []
+    for original in proposal.get("operations", []):
+        op = dict(original)
+        if "change" not in op and op.get("op") in {"upsert", "archive"}:
+            if op.get("archive_reason") != "replaced":
+                evidence = [ref for ref in op.get("sources", []) if isinstance(ref, str)
+                            and ref.startswith("s")]
+                op["change"] = {"kind": "development", "evidence": evidence or op.get("sources", [])}
+                if op["op"] == "archive":
+                    op["change"].update(kind="closure", intent="Confirmed closure.")
         operations.append(op)
     return {**proposal, "operations": operations}
 
@@ -824,11 +854,11 @@ async def test_topic_rejection_feedback_prevents_unrelated_note_overwrite(store)
         result = learn(document)
         if "previous_rejection" not in document:
             result["operations"][0].update(item_id=original["id"], expected_revision=1,
-                                            topic=original["topic"])
+                                            topic=original["topic"],
+                                            change={"kind": "background", "context": "Wrong target."})
         else:
             assert document["previous_rejection"] == (
-                "The cited batch evidence does not concern the target note’s topic. "
-                "Use evidence about that topic or create a separate note.")
+                "The change needs explicit intent and designated original evidence.")
         return result
 
     worker = ContinuityWorker(store, Provider(transform=propose))
