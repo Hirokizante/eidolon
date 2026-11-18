@@ -189,11 +189,11 @@ async def test_restart_and_explicit_retry_keep_old_evidence_unresolved(tmp_path,
         assert "originals" in details["attempts"][-1]["reason"]["explanation"]
 
 
-async def test_concurrent_note_edit_invalidates_the_whole_prepared_patch(tmp_path, monkeypatch):
+async def test_concurrent_note_edit_invalidates_only_the_stale_group(tmp_path, monkeypatch):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         note = seed_note(service.store, topic="House move", text="My house move is ongoing.")
         service.store.complete_turn(service.current_session["id"],
-                                    "My house move now requires temporary storage.", "Understood.")
+                                    "My move needs temporary storage. I started a garden.", "Understood.")
         edited = None
 
         def respond(doc):
@@ -203,8 +203,8 @@ async def test_concurrent_note_edit_invalidates_the_whole_prepared_patch(tmp_pat
                 expected_revision=note["revision"],
             )
             return {"operations": [
-                {"op": "upsert", "topic": "Temporary storage", "importance": "low",
-                 "category": "thread", "content": "The user needs temporary storage.",
+                {"op": "upsert", "topic": "Garden", "importance": "low",
+                 "category": "thread", "content": "The user started a garden.",
                  "sources": [doc["exchanges"][0]["source_refs"]["user"]]},
                 {"op": "upsert", "note_ref": doc["items"][0]["note_ref"], "topic": "House move",
                  "importance": "moderate", "category": "thread",
@@ -214,8 +214,13 @@ async def test_concurrent_note_edit_invalidates_the_whole_prepared_patch(tmp_pat
 
         await refresh(service, client, CompactProvider(respond))
         state = service.store.continuity_state()
-        assert state["items"] == [edited]
-        assert service.store.pending_maintenance_task() is not None
+        assert service.store.get_continuity_item(note["id"]) == edited
+        assert {item["topic"] for item in state["items"]} == {"House move", "Garden"}
+        pending = service.store.pending_maintenance_task()
+        assert pending is not None
+        run = await client.request("memory_continuity_run", task_id=pending["id"])
+        assert run["status"] == "partial"
+        assert run["groups"][1]["reason"]["code"] == "validation.revision"
         assert len(service.store.continuity_history(note["id"])) == 2
 
 

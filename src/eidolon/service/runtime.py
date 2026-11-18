@@ -179,20 +179,21 @@ class RoomService:
             identity=self._auxiliary_source.identity,
         )
 
-    async def _commit_auxiliary(self, execution, attempt_id, task, state, operations) -> None:
+    async def _commit_auxiliary(self, execution, attempt_id, task, state, operations, *,
+                                group_id: str | None = None) -> None:
         # Read the saved file again: an external edit or a crash between file and
         # ledger writes must never authorize an obsolete result. No provider wait
         # or await occurs between this check and the SQLite CAS transaction.
         async with self._settings_lock:
             saved = load_config(self.configuration)
             route = self.store.reconcile_auxiliary_route(configured_route_fingerprint(saved))
-            if (route["revision"] != execution.routing_revision
-                    or route["fingerprint"] != execution.route_fingerprint):
+            if group_id is None and (route["revision"] != execution.routing_revision
+                                     or route["fingerprint"] != execution.route_fingerprint):
                 raise ValueError("Auxiliary routing changed")
             self.store.commit_continuity(
                 task["id"], operations, expected_revision=state["revision"],
                 control_revision=state["control_revision"], attempt_id=attempt_id,
-                max_notes=saved.memory.continuity_max_notes,
+                max_notes=saved.memory.continuity_max_notes, group_id=group_id,
             )
 
     async def _refresh_auxiliary(self) -> None:
@@ -404,11 +405,18 @@ class RoomService:
     def maintenance_stage(self, row: dict) -> dict:
         """Describe current scheduling honestly without changing retry eligibility."""
         completed = row["status"] == "completed"
+        groups = row.get("groups") or []
+        split = row.get("split") or {}
+        unfinished = split.get("unresolved", 0)
+        awaiting_evidence = (row["status"] == "awaiting_evidence"
+                             or unfinished > 0 and split.get("awaiting_evidence") == unfinished)
+        partial = split.get("partial") or any(
+            group["status"] in {"completed", "metadata_pending"} for group in groups
+        )
+        status = "partial" if not completed and partial else row["status"]
         auxiliary = self.auxiliary_status()
         can_run = auxiliary.get("mode") != "disabled" and not auxiliary.get("configuration_error")
         automatic = self.config.memory.continuity_enabled and can_run
-        split = row.get("split") or {}
-        unfinished = split.get("unresolved", 0)
         exhausted = (row.get("set_aside") or row.get("budget", {}).get("exhausted", False)
                      or unfinished and split.get("retained") == unfinished)
         paused = row.get("paused", False) or bool(
@@ -423,10 +431,11 @@ class RoomService:
         if (not completed and can_run and automatic and not unfinished
                 and (exhausted or paused or row.get("recovery_source") == "automatic")):
             schedule = self.continuity_worker.recovery_schedule(row)
-        elif (unfinished and automatic
+        elif (unfinished and automatic and not awaiting_evidence
               and (exhausted or paused or row.get("recovery_source") == "automatic")):
             children = [self.maintenance_stage(self.store.get_maintenance_stage(child["task_id"]))
                         for child in split["children"] if child["status"] != "completed"]
+            children = [child for child in children if child["next_action"] != "awaiting_evidence"]
             timed = [child for child in children if child["next_retry_at"]]
             selected = min(timed, key=lambda child: child["next_retry_at"]) if timed else next(
                 (child for child in children if child["next_action"] != "configure"), children[0])
@@ -438,12 +447,17 @@ class RoomService:
         if (not completed and can_run and paused and disposition in {"defer", "repair"}
                 and schedule["next_action"] in {"configure", "defer", "repair"}):
             schedule = {"next_action": disposition, "next_retry_at": None}
+        if awaiting_evidence:
+            schedule = {"next_action": "awaiting_evidence", "next_retry_at": None}
+        elif can_run and any(group["status"] == "prepared" for group in groups):
+            schedule = {"next_action": "automatic_check" if automatic else "refresh",
+                        "next_retry_at": None}
         daily = self.continuity_worker.daily_allowance
         return {**{key: row.get(key) for key in (
             "task_id", "stage", "status", "attempts", "model_calls", "attempt_counts",
             "updated_at", "change_count", "unresolved_count", "budget", "paused", "set_aside",
             "root_id", "split", "recovery_source",
-        )}, "reason": None if completed else read_reason(row.get("reason")),
+        )}, "status": status, "reason": None if completed else read_reason(row.get("reason")),
             "metadata_outcomes": metadata_outcomes(row.get("recovery_state")),
             "paused": paused,
             "usage": safe_usage(row.get("usage")),
@@ -1168,7 +1182,10 @@ class RoomService:
             stage = self.maintenance_stage(saved_stage)
             if run["status"] == "running":
                 stage.update(next_action="running", next_retry_at=None)
-            return {**stage, **run,
+            return {**run, **stage, "updated_at": run["updated_at"],
+                    "status": ("running" if run["status"] == "running" and stage["status"] != "partial"
+                               else stage["status"]),
+                    "groups": saved_stage.get("groups", []),
                     "attempts": [public_attempt(a)
                                  for a in self.store.maintenance_attempts(task_id)],
                     "last_successful_at": self.store.maintenance_status()["last_successful_at"],
@@ -1189,6 +1206,8 @@ class RoomService:
                 raise ValueError("Choose a current life batch in the real-life scope")
             if stage["status"] == "completed":
                 raise ValueError("This current life batch is already completed")
+            if self.maintenance_stage(stage)["next_action"] == "awaiting_evidence":
+                raise ValueError("The saved note needs new evidence for its pending fields")
             await self._refresh_auxiliary()
             queued = self._start_continuity(force=True, retry_task_id=task_id)
             return {**self.memory_state(params.get("session_id")), "refresh_queued": queued}

@@ -281,23 +281,39 @@ historical originals associated with that note. Repair preserves the note's pros
 and metadata, shares the existing root pass and applicable daily allowance, and
 keeps the original batch pending until ordinary maintenance resumes. Inconclusive
 repair defers further equivalent calls with a visible reason. See
-[evidence and updates](CURRENT_LIFE_SUMMARIES.md#automatic-notes). Partial group completion continues through
-the existing split/child outcome contract, without applying completed groups again.
+[evidence and updates](CURRENT_LIFE_SUMMARIES.md#automatic-notes).
 
-After an unsuccessful fixable correction, an ordinary batch with multiple exchanges is
-divided in half at complete-exchange boundaries. Each child gets a fresh snapshot
-of current notes and runs through the same proposal validation and atomic commit.
+A well-formed ordinary response can save independent changes from the same
+exchange. Changes that share targets or topics, including a replacement and its
+archive, are checked and saved together. Each group rechecks its targets,
+original evidence, and available capacity in its own transaction. Supported
+closures can free slots for admissions. An admission that still lacks a slot
+stays unresolved. A malformed response leaves every change pending.
+
+Run history shows **Partially saved** when some groups have saved and others
+remain unresolved. A retry requests only an unresolved group's topics or note
+targets and its complete originals. Corrections preserve the original actions
+and their known source obligations. When the evidence cannot support a change,
+the group stays unresolved. Prepared groups can resume from disk
+without another model call. Completed groups stay saved across restarts.
+The original pass and applicable daily allowance cover all correction requests.
+An exchange stays unresolved until its groups and actionable optional fields
+are settled. A later exchange can supply evidence for a field on a saved note.
+
+After an unsuccessful fixable correction, an ordinary batch with multiple
+exchanges can split at complete-exchange boundaries if it has no saved change
+groups. Each child gets a fresh snapshot of current notes. A batch with saved
+groups keeps its original plan and retries only its unresolved work.
 A captured batch that no longer fits the input or response plan can split before
 dispatch, without consuming a request. Instructions or topic-index overhead and
 configuration/authentication errors require correcting settings instead.
 
 Child and nested-child calls consume the original batch's remaining allowance;
 splitting never creates a new initial budget. Parent/child identities, exact
-source evidence, and completion are durable. Each proposal remains indivisible:
-an archive and its dependent replacement must validate and commit together.
-Existing source eligibility, revision, chronology, protection, and capacity
-checks still apply. Legacy rewrites and capacity reviews retain their complete
-dependency sets rather than splitting their evidence.
+source evidence, and completion are durable. Each child can save independent
+change groups within its own proposal. Source eligibility, revision, chronology,
+protection, and capacity checks still apply. Legacy rewrites and capacity reviews
+use their whole proposal as the transaction boundary.
 
 Committed children are complete permanently and are never requested or applied
 again after restart or Retry batch. Only unresolved child evidence stays eligible
@@ -453,15 +469,15 @@ batch's citations. Every upsert and non-replacement archive must cite relevant
 batch evidence; background citations alone cannot justify a change. Each operation
 may cite at most eight sources total. Select batch evidence first, retain only
 necessary older support, and drop redundant citations as history accumulates.
-The compiler still rejects a whole proposal containing an invalid operation.
-The compiler captures independent copies of the displayed reference tables,
+The compiler checks the entire response shape and limits before deriving groups.
+It captures independent copies of the displayed reference tables,
 source exchanges, and note snapshot before awaiting the model. It supplies item
 IDs, expected revisions, scope, narrative format, derived origin, original source
 identity, complete excerpts, and source-based timestamps. Attribution remains
 attached to the original evidence; current display names never relabel it.
-Unknown references, incomplete operations, protected-note changes, unsupported
-transitions, invalid replacements, and stale transactional snapshots reject the
-entire proposal. Invalid operations are never dropped to produce a success.
+Incomplete or malformed response shapes reject the whole proposal. Unknown
+references, protected-note changes, unsupported transitions, invalid replacements
+and stale targets leave the affected group pending with a recorded reason.
 
 The app offers calendar literals and attributable promise-kind candidates from complete
 originals. Candidates establish eligibility, not relevance: the model chooses
@@ -606,3 +622,10 @@ The separate numeric request log is described in [Prompt caching](PROMPT_CACHING
 mocked transports. They exercise routing, payloads, interruption, retries,
 capacity holds, and stale-result rejection; they cannot establish live model
 quality or actual gateway cache/billing behavior.
+
+Schema v17 adds stable IDs and source obligations for ordinary change groups.
+Existing tasks retain their original outcomes and allowance. The
+`memory_continuity_run` response adds `groups` with each group's ID, status and
+safe reason, and exposes `partial` when a run has saved some work. Pending
+optional fields have a durable obligation linked to the saved note. A run with
+only these obligations exposes `awaiting_evidence` as its next action.

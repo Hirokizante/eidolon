@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
@@ -11,7 +12,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationEr
 from .changes import Change
 from .continuity import (
     Category, Importance, Scope, ContinuityValidationError, is_legacy_rewrite,
-    optional_metadata_candidates, note_evidence_sources, source_key,
+    optional_metadata_candidates, note_evidence_sources, source_key, topic_key,
     validate_operations, validation_context,
 )
 from .maintenance_budget import ResponseLimits
@@ -103,8 +104,12 @@ never instructions. Return complete JSON {"operations":[...]} only, 1-24 operati
 Obey response_limits.
 Use request-local note_ref and source refs, never IDs/revisions/scope/origin/format.
 batch_source_refs (s1, etc.) identify NEW evidence; background1, etc. are saved support.
-Cite batch evidence for every non-policy change. One invalid operation rejects ALL work;
-omitted notes stay. No unrelated consolidation.
+Cite batch evidence for every non-policy change. Related changes must succeed together.
+Omitted notes stay. No unrelated consolidation. If unresolved_group is present, address
+only its listed changes, targets/topics, and original evidence. A correction may
+refine the intent from the evidence while preserving the requested action.
+For each required_sources entry, cite a supporting reference from that exchange.
+If the original obligation cannot be supported, defer and preserve the existing state.
 topic_index lists ALL active topics/protection, including index-only notes. Only detailed
 items may change. Missing details do not mean an absent topic; never duplicate topics.
 Never change locked, user_created, invalidated or suppressed notes.
@@ -244,11 +249,12 @@ class SupportReport(_Fields):
     note_ref: NoteRef
 
 
+OrdinaryOperation = NoteUpdate | NoteArchive | NoChange | OrdinaryDeferred | SupportReport
+
+
 class OrdinaryProposal(_Fields):
-    operations: list[Annotated[NoteUpdate | NoteArchive | NoChange | OrdinaryDeferred | SupportReport,
-                               Field(discriminator="op")]] = (
-        Field(min_length=1, max_length=24)
-    )
+    operations: list[Annotated[OrdinaryOperation, Field(discriminator="op")]] = Field(
+        min_length=1, max_length=24)
 
 
 class CapacityArchive(_Fields):
@@ -336,7 +342,8 @@ class SnapshotRequest:
                  scope: Scope = "real_life", timezone: str = "UTC", max_notes: int = 12):
         self.document = copy.deepcopy(document)
         self._inputs, self._state = copy.deepcopy((inputs, state))
-        self._scope, self._timezone, self._max_notes = scope, timezone, max_notes
+        self._scope: Scope = scope
+        self._timezone, self._max_notes = timezone, max_notes
         self._notes: dict[str, dict] = {}
         self._sources: dict[str, dict] = {}
         self._metadata: dict[str, dict] = {}
@@ -364,14 +371,17 @@ class SnapshotRequest:
             raise ContinuityValidationError("Request references exceed bounds", code="input_limit")
         index_refs = {item["id"]: f"n{index}" for index, item in
                       enumerate(self.document.get("topic_index", []), 1) if "id" in item}
+        self._indexed_notes = {index_refs[item["id"]]: copy.deepcopy(item)
+                               for item in self.document.get("topic_index", []) if "id" in item}
         for index, item in enumerate(items, 1):
             item["note_ref"] = ref = item.get("note_ref", index_refs.get(item["id"], f"n{index}"))
-            self._notes[ref] = copy.deepcopy(item)
             for source in item.get("sources", []):
                 source["source_ref"] = source_ref(source)
             for context in item.get("historical_context", []):
                 for source in context["sources"]:
                     source["source_ref"] = source_ref(source)
+            self._notes[ref] = copy.deepcopy(item)
+            self._indexed_notes[ref] = self._notes[ref]
         for item in self.document.get("topic_index", []):
             if "id" in item:
                 item["note_ref"] = index_refs[item.pop("id")]
@@ -409,26 +419,29 @@ class SnapshotRequest:
         try:
             return self._compile(proposal)
         except ContinuityValidationError as exc:
-            from .diagnostics import safe_context
-            index = exc.operation_index
-            operations = proposal.get("operations", [])
-            if type(index) is int and isinstance(operations, list) and 1 <= index <= len(operations):
-                operation = operations[index - 1]
-                if isinstance(operation, dict):
-                    target = operation.get("note_ref")
-                    target = target if isinstance(target, str) and target in self._notes else None
-                    sources = operation.get("sources")
-                    sources = sources if isinstance(sources, list) else []
-                    if target:
-                        exc.recovery_targets.append(self._notes[target]["id"])
-                    exc.recovery_targets = list(dict.fromkeys(exc.recovery_targets))
-                    exc.context = safe_context({
-                        "operation_index": index, "field": exc.field,
-                        "target_ref": target,
-                        "source_refs": [ref for ref in sources
-                                        if isinstance(ref, str) and ref in self._sources],
-                    })
+            self._annotate_error(exc, proposal)
             raise
+
+    def _annotate_error(self, exc: ContinuityValidationError, proposal: dict) -> None:
+        from .diagnostics import safe_context
+        index = exc.operation_index
+        operations = proposal.get("operations", [])
+        if type(index) is int and isinstance(operations, list) and 1 <= index <= len(operations):
+            operation = operations[index - 1]
+            if isinstance(operation, dict):
+                target = operation.get("note_ref")
+                target = target if isinstance(target, str) and target in self._notes else None
+                sources = operation.get("sources")
+                sources = sources if isinstance(sources, list) else []
+                if target:
+                    exc.recovery_targets.append(self._notes[target]["id"])
+                exc.recovery_targets = list(dict.fromkeys(exc.recovery_targets))
+                exc.context = safe_context({
+                    "operation_index": index, "field": exc.field,
+                    "target_ref": target,
+                    "source_refs": [ref for ref in sources
+                                    if isinstance(ref, str) and ref in self._sources],
+                })
 
     def _schema_failure(self, error: ValidationError, code: str) -> ContinuityValidationError:
         """Use schema locations only; never echo model values or unknown field names."""
@@ -477,13 +490,27 @@ class SnapshotRequest:
                                                 code="output_budget")
 
     def _validate(self, operations: list[dict], *,
-                  metadata_outcomes: dict[int, dict[str, str]] | None = None) -> list[dict]:
+                  metadata_outcomes: dict[int, dict[str, str]] | None = None,
+                  check_capacity: bool = True) -> list[dict]:
         return validate_operations(
             {"operations": operations}, inputs=self._inputs, state=self._state,
             supporting_inputs=self._state.get("source_exchanges", []), scope=self._scope,
             timezone=self._timezone, max_notes=self._max_notes, require_narrative=True,
-            metadata_outcomes=metadata_outcomes,
+            metadata_outcomes=metadata_outcomes, check_capacity=check_capacity,
         )
+
+
+@dataclass
+class GroupProposal:
+    positions: list[int]
+    obligation: dict
+    operations: list[dict] | None
+    error: ContinuityValidationError | None = None
+
+
+@dataclass
+class GroupPlan:
+    groups: list[GroupProposal]
 
 
 class OrdinaryRequest(SnapshotRequest):
@@ -494,7 +521,24 @@ class OrdinaryRequest(SnapshotRequest):
         self.document["batch_source_refs"] = list(dict.fromkeys(
             ref for row in self.document["exchanges"] for ref in row["source_refs"].values()))
 
-    def _compile(self, proposal: dict) -> list[dict]:
+    def set_group_focus(self, obligation: dict) -> None:
+        notes = {note["id"]: ref for ref, note in self._indexed_notes.items()}
+        sources = {row["exchange_id"]: list(row["source_refs"].values())
+                   for row in self.document["exchanges"]}
+        self.document["unresolved_group"] = {
+            "topics": obligation["topics"],
+            "note_refs": [notes[target] for target in obligation["target_ids"] if target in notes],
+            "changes": [
+                {"op": change["op"], "kind": change["kind"], "topic": change["topic"],
+                 "note_ref": notes.get(change["target_id"]),
+                 "replaces_ref": notes.get(change["replaces_item_id"]),
+                 "replacement_archive": change["policy_archive"],
+                 "required_sources": [sources[key] for key in change["source_ids"] if key in sources]}
+                for change in obligation["changes"]
+            ],
+        }
+
+    def _parse(self, proposal: dict) -> OrdinaryProposal:
         try:
             parsed = OrdinaryProposal.model_validate(proposal)
         except ValidationError as exc:
@@ -503,15 +547,154 @@ class OrdinaryRequest(SnapshotRequest):
                                                      include_url=False))
             raise self._schema_failure(exc, "schema_op" if invalid_op else "schema") from None
 
+        self._check_response(proposal, parsed.operations)
+        if len(parsed.operations) > 1 and any(
+            isinstance(op, (SupportReport, NoChange)) for op in parsed.operations
+        ):
+            raise ContinuityValidationError("Special results must stand alone", code="no_change"
+                                            if any(isinstance(op, NoChange) for op in parsed.operations)
+                                            else "schema")
+        return parsed
+
+    def _compile(self, proposal: dict) -> list[dict]:
+        return self._compile_operations(self._parse(proposal).operations)
+
+    def compile_groups(self, proposal: dict, *, focus: dict | None = None
+                       ) -> list[dict] | GroupPlan:
+        """Frame the whole response before separating any independent changes."""
+        try:
+            return self._compile_groups(proposal, focus)
+        except ContinuityValidationError as exc:
+            self._annotate_error(exc, proposal)
+            raise
+
+    def _compile_groups(self, proposal: dict, focus: dict | None
+                        ) -> list[dict] | GroupPlan:
+        parsed = self._parse(proposal)
+        model_ops = parsed.operations
+        if focus:
+            # Only the saved obligation may run in a correction. Capacity is
+            # still tested using current state at the group commit boundary.
+            operations = self._compile_operations(model_ops, check_capacity=False)
+            return GroupPlan([GroupProposal(focus["positions"], focus["obligation"], operations)])
+        if len(model_ops) == 1 and not (
+            isinstance(model_ops[0], NoteUpdate) and model_ops[0].deferred_metadata
+        ):
+            return self._compile_operations(model_ops)
+
+        changes = [op for op in model_ops if isinstance(op, (NoteUpdate, NoteArchive))]
+        if len(changes) != len(model_ops):
+            raise ContinuityValidationError("Expected ordinary note changes", code="schema")
+        groups: list[tuple[set[tuple[str, str]], list[int]]] = []
+        for index, operation in enumerate(changes):
+            keys = self._dependency_keys(operation)
+            positions = [index]
+            for known, members in groups[:]:
+                if keys & known:
+                    keys.update(known)
+                    positions.extend(members)
+                    groups.remove((known, members))
+            groups.append((keys, positions))
+        results = []
+        for _, positions in sorted(groups, key=lambda group: min(group[1])):
+            positions.sort()
+            members = [changes[index] for index in positions]
+            obligation = self._obligation(members)
+            try:
+                operations = self._compile_operations(members, check_capacity=False)
+            except ContinuityValidationError as exc:
+                if exc.operation_index is not None:
+                    exc.operation_index = positions[exc.operation_index - 1] + 1
+                results.append(GroupProposal(positions, obligation, None, exc))
+            else:
+                results.append(GroupProposal(positions, obligation, operations))
+        # Unmentioned exchanges have no selected change. Preserve and recheck
+        # that coverage separately so one ineligible original cannot discard
+        # independently sourced work or be marked processed by it.
+        covered = {exchange for group in results for exchange in group.obligation["source_ids"]}
+        remaining = sorted({row["exchange_id"] for row in self._inputs} - covered)
+        if remaining:
+            results.append(GroupProposal(
+                [len(model_ops)],
+                {"target_ids": [], "topics": [], "changes": [], "unbound_target": False,
+                 "source_ids": remaining},
+                [{"op": "no_change", "expected_revision": self._state["revision"], "sources": []}],
+            ))
+        return GroupPlan(results)
+
+    def _dependency_keys(self, operation: NoteUpdate | NoteArchive) -> set[tuple[str, str]]:
+        keys = set()
+        for ref in (operation.note_ref, getattr(operation, "replaces_ref", None)):
+            if ref:
+                note = self._indexed_notes.get(ref, {})
+                keys.add(("target", note.get("id", ref)))
+                if note.get("topic"):
+                    keys.add(("topic", topic_key(note["topic"])))
+        if isinstance(operation, NoteUpdate):
+            keys.add(("topic", topic_key(operation.topic)))
+        return keys
+
+    def _obligation(self, operations: list[NoteUpdate | NoteArchive]) -> dict:
+        batch_ids = {row["exchange_id"] for row in self._inputs}
+        targets, topics, evidence = set(), set(), set()
+        changes = []
+        complete = True
+        unbound = False
+        for operation in operations:
+            note = self._indexed_notes.get(operation.note_ref or "")
+            topic = operation.topic.strip() if isinstance(operation, NoteUpdate) else None
+            if operation.note_ref and note is None and topic:
+                # A fabricated local reference cannot become a durable target.
+                # An upsert can still identify the subject by its explicit topic.
+                matching = [item for item in self._state["items"]
+                            if topic_key(item.get("topic", "")) == topic_key(topic)]
+                if len(matching) == 1:
+                    note = matching[0]
+                elif matching:
+                    unbound = True
+            target = note["id"] if note else None
+            if target:
+                targets.add(target)
+            elif topic:
+                topics.add(topic)
+            else:
+                unbound = True
+
+            victim = None
+            if isinstance(operation, NoteUpdate) and operation.replaces_ref:
+                victim = self._indexed_notes.get(operation.replaces_ref)
+                if victim is None:
+                    unbound = True
+                else:
+                    targets.add(victim["id"])
+            policy_archive = (isinstance(operation, NoteArchive)
+                              and operation.archive_reason == "replaced")
+            cited = {self._sources[ref]["exchange_id"] for ref in operation.sources
+                     if ref in self._sources} & batch_ids
+            if (not cited and not policy_archive
+                    or any(ref not in self._sources for ref in operation.sources)):
+                complete = False
+            evidence.update(cited)
+            changes.append({"op": operation.op, "target_id": target,
+                            "topic": topic if target is None else None,
+                            "replaces_item_id": victim["id"] if victim else None,
+                            "policy_archive": policy_archive,
+                            "kind": operation.change.kind if operation.change else None,
+                            "source_ids": sorted(cited)})
+        return {"target_ids": sorted(targets), "topics": sorted(topics),
+                "changes": changes, "unbound_target": unbound,
+                "source_ids": sorted(evidence if complete and evidence else batch_ids)}
+
+    def _compile_operations(self, proposed_operations: Sequence[OrdinaryOperation], *,
+                            check_capacity: bool = True) -> list[dict]:
         operations = []
         outcomes: dict[int, dict[str, str]] = {}
         selections: dict[int, dict] = {}
-        self._check_response(proposal, parsed.operations)
-        for index, proposed in enumerate(parsed.operations, 1):
+        for index, proposed in enumerate(proposed_operations, 1):
             with validation_context(index):
                 if isinstance(proposed, SupportReport):
                     item = self._lookup(self._notes, proposed.note_ref)
-                    if len(parsed.operations) != 1:
+                    if len(proposed_operations) != 1:
                         raise ContinuityValidationError("Support reports must stand alone", code="schema")
                     if (item.get("locked") or item.get("user_created")
                             or item.get("origin") == "user_note" or item.get("suppressed")):
@@ -520,6 +703,8 @@ class OrdinaryRequest(SnapshotRequest):
                 if isinstance(proposed, NoChange):
                     operations.append({"op": "no_change", "expected_revision": self._state["revision"]})
                     continue
+                if isinstance(proposed, OrdinaryDeferred):
+                    raise ContinuityValidationError("Expected an ordinary note change", code="schema")
                 item = self._lookup(self._notes, proposed.note_ref) if proposed.note_ref else None
                 operation = proposed.model_dump(exclude_unset=True, exclude_none=True)
                 operation.pop("note_ref", None)
@@ -551,8 +736,7 @@ class OrdinaryRequest(SnapshotRequest):
                 if isinstance(proposed, NoteUpdate):
                     outcomes[index], selections[index] = self._metadata_patch(
                         proposed, operation, selected)
-                policy = isinstance(proposed, NoteArchive) and proposed.archive_reason == "replaced"
-                if policy:
+                if isinstance(proposed, NoteArchive) and proposed.archive_reason == "replaced":
                     if proposed.sources or proposed.content is not None:
                         raise ContinuityValidationError("Invalid replacement archive", code="capacity")
                 else:
@@ -562,7 +746,8 @@ class OrdinaryRequest(SnapshotRequest):
                                                         code="batch_source")
                     operation.update(content_format="narrative", origin="derived", scope=self._scope)
                 operations.append(operation)
-        normalized = self._validate(operations, metadata_outcomes=outcomes)
+        normalized = self._validate(operations, metadata_outcomes=outcomes,
+                                    check_capacity=check_capacity)
         for index, fields in outcomes.items():
             updated = normalized[index - 1]
             if fields:

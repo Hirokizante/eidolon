@@ -30,7 +30,7 @@ CATEGORIES = (("Reply context", "replies"), ("Current life", "continuity"))
 RUN_STATES = {
     "pending": "Waiting", "running": "Refreshing", "completed": "Finished",
     "failed": "Needs retry", "interrupted": "Paused", "stale": "Waiting",
-    "split": "Smaller groups",
+    "split": "Smaller groups", "partial": "Partially saved",
 }
 
 
@@ -129,7 +129,9 @@ def run_state(row: dict) -> str:
 
 
 def run_summary(row: dict) -> str:
-    summary = "Set aside" if row.get("set_aside") else run_state(row)
+    summary = run_state(row)
+    if row.get("set_aside"):
+        summary = "Partially saved (set aside)" if row.get("status") == "partial" else "Set aside"
     count = row.get("change_count")
     if row.get("status") == "completed" and type(count) is int and not row.get("split"):
         summary += (" · No changes" if count == 0 else
@@ -184,18 +186,27 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         parts.append(reason_details(reason))
     split = row.get("split")
     if split:
+        partial = f", including {split['partial']} partially saved" if split.get("partial") else ""
         parts.append(f"Smaller groups: {split['completed']} complete; "
-                     f"{split['unresolved']} unresolved. "
+                     f"{split['unresolved']} unresolved{partial}. "
                      "All groups share the original batch's recovery budget. "
                      "Completed groups will not be applied again. "
                      "Each group has its own entry in Run history.")
     elif row.get("root_id") and row["root_id"] != row.get("task_id"):
         parts.append("This group shares the original batch's recovery budget.")
+    for index, group in enumerate(row.get("groups", []), 1):
+        label = {"completed": "Complete", "failed": "Needs retry", "prepared": "Waiting to save",
+                 "metadata_pending": "Saved, awaiting evidence"}.get(group["status"], "Unavailable")
+        cause = read_reason(group.get("reason"))
+        line = f"Change group {index} ({label})"
+        parts.append(line + ("\n" + cause["explanation"] if cause else ""))
     budget = row.get("budget") or {}
     if budget:
         parts.append(f"Recovery pass {budget['pass']}: {budget['used']}/{budget['limit']} requests "
                      f"used; {budget['remaining']} remaining.")
-        if budget.get("exhausted") and row.get("status") != "completed":
+        if (budget.get("exhausted") and row.get("status") != "completed"
+                and row.get("next_action") != "awaiting_evidence"
+                and not any(group["status"] == "prepared" for group in row.get("groups", []))):
             parts.append("Budget exhausted. Complete evidence is set aside; "
                          "newer eligible evidence continues.")
     if row.get("set_aside") and not budget.get("exhausted"):
@@ -225,6 +236,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
                 row.get("next_retry_at"), timezone_name) + "; foreground work has priority.",
             "automatic_check": "Waiting for the next automatic maintenance check.",
             "refresh": "Use Refresh current life to retry.",
+            "awaiting_evidence": "A later exchange can supply evidence for the saved note.",
         }.get(row.get("next_action"), "Next action unavailable.")
         parts.append("Next: " + action)
         parts.append("Last successful maintenance: " + (
@@ -233,7 +245,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         total = row.get("model_calls", len(row["attempts"]))
         counts = row.get("attempt_counts") or {}
         totals = ", ".join(f"{counts[key]} {label}" for key, label in (
-            ("failed", "failed"), ("committed", "succeeded"), ("repaired", "evidence repaired"),
+            ("failed", "failed"), ("partial", "partially saved"), ("committed", "succeeded"), ("repaired", "evidence repaired"),
             ("interrupted", "interrupted"),
             ("stale", "outdated"), ("configuration_error", "configuration rejected"),
         ) if counts.get(key))
@@ -247,7 +259,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             parts.append("Only the latest 100 attempts are retained; aggregate counts include "
                          "older requests. Older outcomes may be unavailable after an upgrade.")
         for index, attempt in enumerate(row["attempts"], 1):
-            outcome = {"committed": "Succeeded", "repaired": "Evidence repaired", "failed": "Failed", "interrupted": "Interrupted",
+            outcome = {"committed": "Succeeded", "partial": "Partially saved", "repaired": "Evidence repaired", "failed": "Failed", "interrupted": "Interrupted",
                        "configuration_error": "Configuration rejected", "stale": "Outdated",
                        "running": "Running"}.get(attempt.get("outcome"), "Unavailable")
             elapsed = attempt.get("elapsed_seconds")
@@ -265,7 +277,7 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             cause = read_reason(attempt.get("reason"))
             if cause:
                 detail.append(reason_details(cause))
-            elif attempt.get("outcome") not in {"committed", "repaired", "running"}:
+            elif attempt.get("outcome") not in {"committed", "partial", "repaired", "running"}:
                 detail.append("No safe cause was recorded for this attempt.")
             if attempt.get("outcome") == "repaired":
                 detail.append("Saved citations restored; note wording preserved. "
@@ -499,7 +511,8 @@ class MemoryScreen(FormModal):
                 stages = []
                 for stage in maintenance.get("stages", []):
                     if (stage.get("task_id") == latest.get("task_id")
-                            and stage.get("status") != "completed" and maintenance.get("running")
+                            and stage.get("status") not in {"completed", "partial"}
+                            and maintenance.get("running")
                             and latest.get("outcome") == "running"):
                         stage = {**stage, "status": "running",
                                  "updated_at": latest.get("started_at") or stage.get("updated_at")}
@@ -556,7 +569,8 @@ class MemoryScreen(FormModal):
         run = self.detail_value or {}
         retry = self.query_one("#memory-retry", Button)
         retry.display = bool(self.detail_key and self.detail_key.startswith("maintenance:")
-                             and run.get("status") != "completed")
+                             and run.get("status") != "completed"
+                             and run.get("next_action") != "awaiting_evidence")
         self.query_one("#memory-run-actions").display = retry.display
         retry.disabled = (self.loading or self.committing or not self.connected
                           or run.get("status") == "running"

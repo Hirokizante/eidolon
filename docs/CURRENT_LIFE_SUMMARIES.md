@@ -305,12 +305,13 @@ target and proposing the same normalized topic does not bypass the existing note
 A consequential ambiguous change can explicitly defer with `semantic_uncertainty`;
 a correction with unresolved temporal implications has the same outcome. The current
 note stays intact and Run history shows a safe reason and deferred next action.
-Whole-proposal atomicity remains in force: dependent replacement archives/admissions
-and all other operations commit together or remain unresolved. Independent group
-commits are tracked separately in issue #36.
+A replacement archive and its admission save together. Independent changes from
+the same exchange can save while another group waits for correction. Run history
+shows the progress and reasons for unresolved groups. Each group's originals
+stay available for recovery, and a saved group is excluded from later requests
+for that batch.
 
-Existing notes, immutable revisions and pending batches remain readable without a
-semantic data rewrite or database schema change. For old notes without a designated
+Existing notes, immutable revisions and pending batches remain readable. For old notes without a designated
 state observation, chronology conservatively uses the latest selected original;
 it never infers relevance from old wording. New ordinary attempts request fresh v3
 intent, including for pre-upgrade pending work. Older output is not translated into
@@ -349,8 +350,9 @@ The model can close a topic through an unambiguous contextual reference such as
 actual completion from preparation, future intentions, quoted speech and uncertainty.
 If that distinction is unresolved, defer instead of inventing an outcome. Original
 identity, full-message integrity, eligibility, revisions, locks, authored-note
-protection and capacity are enforced both at compile and direct commit. A rejected
-proposal keeps the batch pending and preserves all notes and evidence progress.
+protection and capacity are enforced at the applicable validation and commit
+boundaries. A rejected group preserves its existing notes and keeps the evidence
+it still needs pending.
 
 ## Failure explanations
 
@@ -376,9 +378,10 @@ item IDs and expected revisions from its captured snapshot. See the
 for complete response shapes.
 
 A missing or invalid `op` produces specific correction instructions for the next
-retry, including after a service restart. Unknown fields and invalid evidence still
-reject the whole proposal. Failed attempts preserve the pending batch, existing
-notes and watermark. A pass defaults to six dispatched auxiliary calls. After
+retry, including after a service restart. A malformed response rejects the whole
+proposal. Once the shape is valid, invalid evidence leaves its dependency group
+pending. A saved narrative can also retain an optional field obligation until a
+later exchange supplies support. A pass defaults to six dispatched auxiliary calls. After
 exhaustion, that batch is set aside while newer eligible evidence continues.
 Run history → Retry batch starts a fresh bounded pass with lifetime history intact;
 a newer success leaves the older unresolved warning visible. Recognized

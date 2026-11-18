@@ -35,7 +35,7 @@ THINKING_TIMEOUT_NOTICE = (
 
 
 class ContinuityValidationError(ValueError):
-    """An unsupported proposal; none of the batch should be committed."""
+    """A proposal or dependency group that cannot be committed."""
 
     REASONS = {
         "support_preservation": "The focused update cannot retain its identified prior support "
@@ -123,7 +123,8 @@ class ContinuityValidationError(ValueError):
         "saved_support": "Saved note support is missing, damaged or no longer matches its originals. "
                          "Evidence repair is required before this update can proceed.",
         "conflict": "The operation conflicts with another change or an already processed group.",
-        "group_partial": "Some operation groups completed; unresolved groups retain their evidence.",
+        "group_partial": "Multiple change groups remain unresolved and retain their evidence.",
+        "metadata_pending": "The note was saved and optional fields still need supporting evidence.",
         "group_deferred": "The operation group remains unresolved pending relevant state changes.",
         "topic_support": "The cited batch evidence does not concern the target note’s topic. "
                          "Use evidence about that topic or create a separate note.",
@@ -805,7 +806,8 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                         supporting_inputs: list[dict] | None = None,
                         require_narrative: bool = False,
                         metadata_outcomes: dict[int, dict[str, str]] | None = None,
-                        max_notes: int = DEFAULT_MAX_NOTES) -> list[dict]:
+                        max_notes: int = DEFAULT_MAX_NOTES,
+                        check_capacity: bool = True) -> list[dict]:
     """Validate a whole proposal before the Store performs its atomic CAS commit.
 
     State transitions require an explicit source statement naming the same topic.
@@ -925,7 +927,7 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                 )
             timestamps = [aware_time(source_timestamp(row, source.role))
                           for row, source in zip(source_rows, operation.sources, strict=True)]
-            observed = max(timestamps).isoformat() if timestamps else item.get("observed_at")
+            observed = max(timestamps).isoformat() if timestamps else (item or {}).get("observed_at")
             result = operation.model_dump(exclude_none=True)
             result["sources"] = [{**source.model_dump(),
                                   "excerpt": _source_text(row, source.role)}
@@ -991,7 +993,8 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                 # A temporary feeling can never turn into an undated permanent trait.
                 result.setdefault("expires_at", (aware_time(observed) + timedelta(hours=48)).isoformat())
             normalized.append(result)
-    validate_note_capacity(normalized, state.get("items", []), max_notes=max_notes, scope=scope)
+    if check_capacity:
+        validate_note_capacity(normalized, state.get("items", []), max_notes=max_notes, scope=scope)
     return normalized
 
 

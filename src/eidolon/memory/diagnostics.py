@@ -66,7 +66,8 @@ def recovery_disposition(code: str) -> str:
     if code in {"stale", "validation.revision"}:
         return "resnapshot"
     if code in {"validation.repair_unresolved", "validation.support_preservation",
-                "validation.semantic_uncertainty"}:
+                "validation.semantic_uncertainty", "validation.metadata_pending",
+                "validation.group_deferred"}:
         return "defer"
     if code == "validation.saved_support":
         return "repair"
