@@ -456,3 +456,58 @@ async def test_v13_upgrade_preserves_unresolved_evidence_and_unknown_attempt_sou
             assert restarted.maintenance_status()["daily_allowance"]["used"] == 1
         finally:
             await restarted.close()
+
+
+async def test_multiple_change_group_corrections_share_daily_allowance_after_restart(
+    tmp_path, monkeypatch, daily_clock,
+):
+    from test_maintenance_groups import admission
+    from eidolon.config import load_config
+    from eidolon.service.runtime import RoomService
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={
+            "continuity_enabled": True, "continuity_recovery_calls": 1,
+            "continuity_daily_retry_calls": 1,
+        })
+        service.store.complete_turn(service.current_session["id"],
+                                    "I started a garden, quilt and mural.", "Okay.")
+        provider = CompactProvider(lambda doc: {"operations": [
+            admission("Garden", doc["exchanges"][0]["source_refs"]["user"]),
+            admission("Quilt", "s999"), admission("Mural", "s999"),
+        ]}, adapt=False)
+        await refresh(service, client, provider)
+        task_id = service.store.pending_maintenance_task()["id"]
+        before = await client.request("memory_continuity_run", task_id=task_id)
+        assert before["budget"]["pass"] == before["budget"]["used"] == 1
+        assert before["daily_allowance"]["used"] == 0
+
+        correction = CompactProvider(lambda doc: {"operations": [
+            admission(doc["unresolved_group"]["topics"][0],
+                      doc["exchanges"][0]["source_refs"]["user"]),
+        ]}, adapt=False)
+        daily_clock.advance(600)
+        await automatic(service, correction)
+        after = await client.request("memory_continuity_run", task_id=task_id)
+        assert after["budget"]["pass"] == 2 and after["budget"]["used"] == 1
+        assert after["daily_allowance"]["used"] == 1
+        assert after["status"] == "partial"
+        assert [group["status"] for group in after["groups"]] == [
+            "completed", "completed", "failed"]
+        await service.close()
+        restarted = RoomService(load_config(service.configuration), service.configuration)
+        try:
+            daily_clock.advance(600)
+            await automatic(restarted, correction)
+            assert len(correction.calls) == 1
+            blocked = await restarted.handle("memory_continuity_run", {"task_id": task_id})
+            assert blocked["next_action"] == "daily_exhausted"
+            assert blocked["budget"] == after["budget"]
+            daily_clock.advance(86400)
+            await automatic(restarted, correction)
+            final = await restarted.handle("memory_continuity_run", {"task_id": task_id})
+            assert final["status"] == "completed" and final["model_calls"] == 3
+            assert final["daily_allowance"]["used"] == 1
+            assert final["budget"]["pass"] == 3 and final["budget"]["used"] == 1
+        finally:
+            await restarted.close()

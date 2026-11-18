@@ -27,7 +27,7 @@ from .continuity import (
     ContinuityValidationError, Scope,
     active_items, aware_time, needs_note_metadata,
 )
-from .proposals import parse_proposal, task_contract
+from .proposals import GroupPlan, OrdinaryRequest, SnapshotRequest, parse_proposal, task_contract
 from .continuity import note_evidence_sources
 from .maintenance_budget import ResponseLimits
 
@@ -135,7 +135,7 @@ class ContinuityWorker:
         self.store = store
         self.provider = provider
         self.timezone = timezone
-        self.scope = scope
+        self.scope: Scope = scope
         self.batch_exchanges = batch_exchanges
         self.idle_seconds = idle_seconds
         if type(recovery_calls) is not int or not 1 <= recovery_calls <= 100:
@@ -226,8 +226,11 @@ class ContinuityWorker:
         return ResponseLimits.for_task(task_id, self.output_tokens, self.max_output_chars)
 
     def _messages(self, task: dict, state: dict) -> list[dict]:
+        return self._request(task, state)[0]
+
+    def _request(self, task: dict, state: dict) -> tuple[list[dict], SnapshotRequest]:
         if task.get("repair_target"):
-            return self._repair_messages(task, state)
+            return self._repair_request(task, state)
         # Every active topic is mandatory context. Detailed bodies and complete
         # supporting exchanges are optional, but index-only notes cannot be targets.
         limits = self._response_limits(task["id"])
@@ -312,11 +315,13 @@ class ContinuityWorker:
                 document["previous_rejection"] = reason
                 break
 
-        def messages() -> list[dict]:
+        def assemble() -> tuple[list[dict], SnapshotRequest]:
             _, instructions, _, request_type = task_contract(task["id"])
             request = request_type(document, inputs=task["inputs"], state=state,
                                    scope=self.scope, timezone=self.timezone,
                                    max_notes=self.max_notes)
+            if isinstance(request, OrdinaryRequest) and (focus := task.get("group_focus")):
+                request.set_group_focus(focus["obligation"])
             payload = request.document
             previous = task.get("stages", {}).get("continuity", {}).get("recovery_state") or {}
             if ("previous_diagnostic" in payload
@@ -325,14 +330,14 @@ class ContinuityWorker:
                 # Keep the failed attempt/rule but never reinterpret its references.
                 payload["previous_diagnostic"] = {key: value for key, value in
                     payload["previous_diagnostic"].items() if key not in {"target_ref", "source_refs"}}
-            return [{"role": "system", "content": instructions},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+            return ([{"role": "system", "content": instructions},
+                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}], request)
 
         if self.counter is None:
             self.counter = TokenCounter(self.model)
 
         def fits() -> bool:
-            assembled = messages()
+            assembled, _ = assemble()
             output = self._output(task["id"])
             response_format = output.response_format if output else None
             if self.max_input_chars is not None:
@@ -413,7 +418,7 @@ class ContinuityWorker:
                 if item["id"] in rewrite_targets:
                     raise ContinuityValidationError("Required rewrite details exceed settings",
                                                     code="input_state")
-        return messages()
+        return assemble()
 
     def _contract_id(self, task: dict) -> str:
         return "repair:" + task["id"] if task.get("repair_target") else task["id"]
@@ -425,7 +430,7 @@ class ContinuityWorker:
                               or item.get("suppressed") or item.get("origin") == "user_note")
                      and not pending_repair(self.store, item["id"], self.scope)), None)
 
-    def _repair_messages(self, task: dict, state: dict) -> list[dict]:
+    def _repair_request(self, task: dict, state: dict) -> tuple[list[dict], SnapshotRequest]:
         """Supply one protected-text target and at most 32 historical originals."""
         from ..storage.support import candidates, identified_sources
         target = next((item for item in state["items"] if item["id"] == task["repair_target"]), None)
@@ -460,7 +465,7 @@ class ContinuityWorker:
         if ((self.max_input_chars is not None and chars > self.max_input_chars)
                 or not self.budget.fits(self.counter.request(messages, response_format=response_format))):
             raise ContinuityValidationError("Historical context exceeds allowance", code="input_limit")
-        return messages
+        return messages, request
 
     def _source_exchanges(self, state: dict) -> list[dict]:
         ids = list(dict.fromkeys(source["exchange_id"] for item in state.get("items", [])
@@ -503,16 +508,13 @@ class ContinuityWorker:
 
     async def _propose(self, task: dict, state: dict, *,
                        output: MaintenanceOutput | None = None,
-                       on_dispatch: Callable[[], None] | None = None) -> list[dict]:
+                       on_dispatch: Callable[[], None] | None = None
+                       ) -> list[dict] | GroupPlan:
         chunks: list[str] = []
         size = 0
         finished = False
         reasoning_seen = False
-        messages = self._messages(task, state)
-        _, _, _, request_type = task_contract(self._contract_id(task))
-        request = request_type(json.loads(messages[-1]["content"]), inputs=task["inputs"],
-                               state=state, scope=self.scope, timezone=self.timezone,
-                               max_notes=self.max_notes)
+        messages, request = self._request(task, state)
         self._request_references = request.references
         record = getattr(self.store, "record_request_metrics", None)
         output = output or self._output(self._contract_id(task))
@@ -582,6 +584,8 @@ class ContinuityWorker:
         limits = self._response_limits(self._contract_id(task))
         if self.counter.value(proposal) > limits.response_tokens:
             raise ContinuityValidationError("Response exceeds planned tokens", code="output_plan")
+        if isinstance(request, OrdinaryRequest):
+            return request.compile_groups(proposal, focus=task.get("group_focus"))
         return request.compile(proposal)
 
     def _start_attempt(self, task: dict, output: MaintenanceOutput | None) -> None:
@@ -610,11 +614,13 @@ class ContinuityWorker:
             self._attempt_id = self.store.start_maintenance_attempt(
                 task["id"], provenance, now=datetime.now(dt_timezone.utc),
                 daily_limit=self.daily_retry_calls,
+                group_id=(task.get("group_focus") or {}).get("id"),
             )
         else:
             self.store.record_maintenance_usage(
                 task["id"], "continuity", called=True, now=datetime.now(dt_timezone.utc),
-                daily_limit=self.daily_retry_calls)
+                daily_limit=self.daily_retry_calls,
+                group_id=(task.get("group_focus") or {}).get("id"))
         self._dispatched = True
 
     def _invariant_fingerprint(self, task_id: str, targets: list[str]) -> str:
@@ -720,6 +726,9 @@ class ContinuityWorker:
                     "references": self._request_references,
                     "outcome": "unchanged" if unchanged else "repair" if disposition == "repair"
                                else "deferred" if blocked else "pending"}
+        metadata = stage.get("recovery_state") or {}
+        if "metadata_outcomes" in metadata:
+            recovery["metadata_outcomes"] = metadata["metadata_outcomes"]
         self.store.prepare_maintenance_recovery(
             task["id"], call_limit=self.recovery_calls,
             fingerprint=self._recovery_fingerprint(reason_code))
@@ -735,6 +744,134 @@ class ContinuityWorker:
                                           recovery_state=recovery)
         self._last_result = reason
         return diagnostic
+
+    def _focus_group(self, task: dict, groups: list[dict]) -> dict:
+        from ..storage.groups import fail
+
+        failed = sorted((group for group in groups if group["status"] == "failed"),
+                        key=lambda group: group["corrections"])
+        has_bound_group = False
+        for focus in failed:
+            if focus["obligation"]["unbound_target"]:
+                continue
+            has_bound_group = True
+            try:
+                inputs = self.store.maintenance_group_inputs(task["id"], focus["id"])
+            except ContinuityValidationError as exc:
+                fail(self.store, task["id"], focus["id"], exc, previous_status="failed")
+                continue
+            stage = {**task["stages"]["continuity"], "reason": focus["reason"]}
+            return {**task, "inputs": inputs, "group_focus": focus,
+                    "stages": {**task["stages"], "continuity": stage}}
+        if has_bound_group:
+            raise ContinuityValidationError("Unresolved group evidence is no longer eligible",
+                                            code="evidence_changed")
+        raise ContinuityValidationError("The original target could not be established",
+                                        code="group_deferred")
+
+    async def _commit(self, task: dict, state: dict, operations: list[dict], *,
+                      group_id: str | None = None) -> None:
+        if self.commit_result is not None:
+            options = {"group_id": group_id} if group_id else {}
+            await self.commit_result(self.execution, self._attempt_id, task, state,
+                                     operations, **options)
+        else:
+            self.store.commit_continuity(
+                task["id"], operations, expected_revision=state["revision"],
+                control_revision=state["control_revision"], attempt_id=self._attempt_id,
+                max_notes=self.max_notes, group_id=group_id,
+            )
+
+    async def _commit_groups(self, task: dict, state: dict) -> None:
+        from ..storage.groups import fail
+
+        prepared = [row for row in self.store.maintenance_groups(task["id"])
+                    if row["status"] == "prepared"]
+        # Supported closures can release capacity before unrelated admissions.
+        # Replacements are already indivisible and validated as a pair.
+        prepared.sort(key=lambda row: not all(
+            op["op"] in {"archive", "resolve"} for op in row["operations"]))
+        for group in prepared:
+            await asyncio.sleep(0)
+            try:
+                await self._commit(task, state, [], group_id=group["id"])
+            except ContinuityValidationError as exc:
+                fail(self.store, task["id"], group["id"], exc)
+
+    def _group_result(self, task: dict) -> tuple[str, str | None, dict | None]:
+        rows = self.store.maintenance_groups(task["id"])
+        failures = [group for group in rows if group["status"] == "failed"]
+        if failures:
+            from .diagnostics import safe_reason
+            failure = failures[0]
+            reason = failure["reason"]
+            if len(failures) > 1:
+                reason = safe_reason("validation.group_partial") or reason
+            reason_code = reason["code"]
+            diagnostic = self._failed(
+                task, reason=validation_failure_notice(reason["explanation"]),
+                reason_code=reason_code, diagnostic=reason,
+                targets=failure["obligation"]["target_ids"],
+            )
+            saved_work = any(group["status"] in {"completed", "metadata_pending"}
+                             and (self._attempt_id is None or group["attempt_id"] == self._attempt_id)
+                             for group in rows)
+            outcome = "partial" if saved_work else "failed"
+            self._last_result = outcome
+            return outcome, reason_code, diagnostic
+        outcome = "partial" if any(group["status"] == "metadata_pending"
+                                   for group in rows) else "committed"
+        self._last_result = outcome
+        return outcome, None, None
+
+    def _retry_leaf(self, task: dict) -> dict | None:
+        status = task["stages"]["continuity"]["status"]
+        if status in {"completed", "awaiting_evidence"}:
+            return None
+        if status != "split":
+            return task
+        for child in self.store.maintenance_split(task["id"])["children"]:
+            leaf = self._retry_leaf(self.store.get_maintenance_task(child["task_id"]))
+            if leaf:
+                return leaf
+        return None
+
+    def _select_task(self, force: bool, retry_task_id: str | None,
+                     now: datetime) -> tuple[dict | None, bool]:
+        if retry_task_id:
+            task = self.store.get_maintenance_task(retry_task_id)
+            leaf = self._retry_leaf(task)
+            if not leaf:
+                return None, False
+            if leaf["id"] != task["id"] and force:
+                if not any(group["status"] == "prepared"
+                           for group in leaf["stages"]["continuity"].get("groups", [])):
+                    self.store.prepare_maintenance_recovery(
+                        task["id"], call_limit=self.recovery_calls,
+                        fingerprint=self._recovery_fingerprint(), retry=True)
+                return leaf, True
+            return leaf, False
+
+        task = self.store.pending_maintenance_task(scope=self.scope, stage="continuity",
+                                                   include_retained=force)
+        # Initial/user-requested passes and unassigned evidence precede backlog.
+        if (task or force or not self.daily_retry_calls
+                or self.store.maintenance_inputs(limit=1, scope=self.scope)):
+            return task, False
+        daily = self.store.maintenance_daily_allowance(self.daily_retry_calls, now=now)
+        next_at = daily["next_opportunity_at"]
+        if daily["exhausted"] or next_at and aware_time(next_at) > now:
+            return None, False
+        for retained in self.store.automatic_maintenance_tasks(scope=self.scope):
+            stage = retained["stages"]["continuity"]
+            if self.store.activate_automatic_maintenance(
+                retained["id"], call_limit=self.recovery_calls,
+                daily_limit=self.daily_retry_calls, now=now,
+                fingerprint=self._recovery_fingerprint(
+                    (stage.get("reason") or {}).get("code"), stage=stage),
+            ):
+                return self.store.get_maintenance_task(retained["id"]), False
+        return None, False
 
     async def run_once(self, *, force: bool = False, retry_task_id: str | None = None) -> bool:
         """Commit at most one batch; retain gaps separately from newer progress.
@@ -760,40 +897,16 @@ class ContinuityWorker:
                 self.counter = await asyncio.to_thread(TokenCounter, self.model)
             state = self.store.continuity_state(scope=self.scope, limit=None, maintenance=True)
             state["source_exchanges"] = self._source_exchanges(state)
-            task = (self.store.get_maintenance_task(retry_task_id) if retry_task_id else
-                    self.store.pending_maintenance_task(scope=self.scope, stage="continuity",
-                                                        include_retained=force))
-            force_retry_prepared = False
-            if task and task["stages"]["continuity"]["status"] == "split":
-                if force:
-                    self.store.prepare_maintenance_recovery(
-                        task["id"], call_limit=self.recovery_calls,
-                        fingerprint=self._recovery_fingerprint(), retry=True)
-                    force_retry_prepared = True
-                # A nested split is resolved to a leaf below without requesting
-                # or charging the superseded parent's original evidence again.
-                while task and task["stages"]["continuity"]["status"] == "split":
-                    task = next((self.store.get_maintenance_task(row["task_id"])
-                                 for row in self.store.maintenance_split(task["id"])["children"]
-                                 if row["status"] != "completed"), None)
             now = datetime.now(dt_timezone.utc)
-            # Initial/user-requested passes and unassigned evidence precede backlog
-            # recovery. Only one retained opportunity is released per activation.
-            if (task is None and not force and self.daily_retry_calls
-                    and not self.store.maintenance_inputs(limit=1, scope=self.scope)):
-                daily = self.store.maintenance_daily_allowance(self.daily_retry_calls, now=now)
-                next_at = daily["next_opportunity_at"]
-                if not daily["exhausted"] and (not next_at or aware_time(next_at) <= now):
-                    for retained in self.store.automatic_maintenance_tasks(scope=self.scope):
-                        if self.store.activate_automatic_maintenance(
-                            retained["id"], call_limit=self.recovery_calls,
-                            daily_limit=self.daily_retry_calls, now=now,
-                            fingerprint=self._recovery_fingerprint(
-                                (retained["stages"]["continuity"].get("reason") or {}).get("code"),
-                                stage=retained["stages"]["continuity"]),
-                        ):
-                            task = self.store.get_maintenance_task(retained["id"])
-                            break
+            task, force_retry_prepared = self._select_task(force, retry_task_id, now)
+            if retry_task_id and task is None:
+                return False
+            groups = self.store.maintenance_groups(task["id"]) if task else []
+            if task is not None and any(group["status"] == "prepared" for group in groups):
+                self._task_id = task["id"]
+                await self._commit_groups(task, state)
+                outcome, reason_code, diagnostic = self._group_result(task)
+                return outcome in {"committed", "partial"}
             if task:
                 if not self.store.prepare_maintenance_recovery(
                     task["id"], call_limit=self.recovery_calls,
@@ -811,18 +924,25 @@ class ContinuityWorker:
                     return False
                 # Re-snapshot after an edit before asking the model again. The
                 # fixed input identity/hash is preserved across every retry.
-                task = self.store.create_maintenance_task(
-                    task["inputs"], scope=self.scope, expected_revision=state["revision"],
-                    control_revision=state["control_revision"],
-                    rewrite=task["id"].startswith("narrative:"),
-                    rewrite_task_id=task["id"] if task["id"].startswith("narrative:") else None,
-                    review=task["id"].startswith("review:"),
-                    review_task_id=task["id"] if task["id"].startswith("review:") else None,
-                    review_key=str(self.max_notes),
-                    resume_task_id=task["id"],
-                    repair_target=((task["stages"]["continuity"].get("recovery_state") or {})
-                                   .get("repair_target") if task["id"].startswith("repair:") else None),
-                )
+                if groups:
+                    recovery = stage.get("recovery_state") or {}
+                    if recovery.get("repair_target") and recovery.get("outcome") != "resolved":
+                        task = {**task, "repair_target": recovery["repair_target"]}
+                    else:
+                        task = self._focus_group(task, groups)
+                else:
+                    task = self.store.create_maintenance_task(
+                        task["inputs"], scope=self.scope, expected_revision=state["revision"],
+                        control_revision=state["control_revision"],
+                        rewrite=task["id"].startswith("narrative:"),
+                        rewrite_task_id=task["id"] if task["id"].startswith("narrative:") else None,
+                        review=task["id"].startswith("review:"),
+                        review_task_id=task["id"] if task["id"].startswith("review:") else None,
+                        review_key=str(self.max_notes),
+                        resume_task_id=task["id"],
+                        repair_target=((task["stages"]["continuity"].get("recovery_state") or {})
+                                       .get("repair_target") if task["id"].startswith("repair:") else None),
+                    )
             else:
                 inputs = self.store.maintenance_inputs(limit=self.batch_exchanges, scope=self.scope)
                 damaged = self._damaged_note(state)
@@ -913,13 +1033,15 @@ class ContinuityWorker:
             output = self._output(self._contract_id(task))
             operations = await self._propose(
                 task, state, output=output, on_dispatch=lambda: self._start_attempt(task, output))
-            if self.commit_result is not None:
-                await self.commit_result(self.execution, self._attempt_id, task, state, operations)
-            else:
-                self.store.commit_continuity(task["id"], operations,
-                                             expected_revision=state["revision"],
-                                             control_revision=state["control_revision"],
-                                             attempt_id=self._attempt_id, max_notes=self.max_notes)
+            if isinstance(operations, GroupPlan):
+                from ..storage.groups import save
+                focus = task.get("group_focus")
+                save(self.store, task["id"], operations.groups, attempt_id=self._attempt_id,
+                     group_id=focus["id"] if focus else None)
+                await self._commit_groups(task, state)
+                outcome, reason_code, diagnostic = self._group_result(task)
+                return outcome in {"committed", "partial"}
+            await self._commit(task, state, operations)
             outcome = "repaired" if task.get("repair_target") else "committed"
             self._last_result = outcome
             return True
@@ -938,10 +1060,16 @@ class ContinuityWorker:
             if diagnostic["disposition"] == "resnapshot":
                 outcome = "stale"
             if task:
-                diagnostic = self._failed(task, reason=validation_failure_notice(exc.public_reason),
-                             reason_code=reason_code, diagnostic=diagnostic,
-                             immediate=outcome == "stale",
-                             targets=exc.recovery_targets)
+                if task.get("group_focus") and not task.get("repair_target"):
+                    from ..storage.groups import fail
+                    fail(self.store, task["id"], task["group_focus"]["id"], exc,
+                         previous_status="failed", attempt_id=self._attempt_id)
+                    outcome, reason_code, diagnostic = self._group_result(task)
+                else:
+                    diagnostic = self._failed(task, reason=validation_failure_notice(exc.public_reason),
+                                 reason_code=reason_code, diagnostic=diagnostic,
+                                 immediate=outcome == "stale",
+                                 targets=exc.recovery_targets)
             return False
         except TimeoutError as exc:
             reason_code = "thinking_timeout" if isinstance(exc, _ThinkingTimeout) else "timeout"
@@ -995,7 +1123,7 @@ class ContinuityWorker:
                         "validation.evidence_changed", "validation.input_overhead",
                         "validation.input_state",
                     }
-                    if splittable and (stage["attempts"] >= 2 or reason_code in {
+                    if not stage["groups"] and splittable and (stage["attempts"] >= 2 or reason_code in {
                         "validation.input_limit", "validation.output_budget",
                     }):
                         try:

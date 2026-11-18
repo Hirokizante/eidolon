@@ -354,3 +354,47 @@ async def test_v12_upgrade_preserves_original_recovery_allowance_and_evidence(
             assert restarted.maintenance_status()["evidence"] == {"processed": 0, "unresolved": 2}
         finally:
             await restarted.close()
+
+
+async def test_split_parent_reports_partial_children_and_skips_metadata_only_retry(
+    tmp_path, monkeypatch, clock,
+):
+    from test_maintenance_groups import admission
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={"continuity_enabled": True})
+        for text in ("I started a garden. I still need a follow-up date.", "Good morning."):
+            service.store.complete_turn(service.current_session["id"], text, "Understood.")
+
+        def respond(doc):
+            if len(doc["exchanges"]) != 1:
+                return {"operations": []}
+            row = doc["exchanges"][0]
+            if "garden" in row["user_content"]:
+                return {"operations": [{
+                    **admission("Garden", row["source_refs"]["user"]),
+                    "deferred_metadata": ["follow_up_at"],
+                }]}
+            return {"operations": [{"op": "no_change"}]}
+
+        provider = CompactProvider(respond, adapt=False)
+        await refresh(service, client, provider)
+        root = service.store.pending_maintenance_task()["id"]
+        clock.advance()
+        await automatic(service, provider)
+        clock.advance()
+        await automatic(service, provider)
+        saved = await client.request("memory_continuity_run", task_id=root)
+        assert saved["status"] == "partial"
+        assert saved["split"]["partial"] == 1 and saved["split"]["awaiting_evidence"] == 1
+        assert saved["split"]["children"][0]["status"] == "partial"
+
+        assert (await client.request("memory_retry", task_id=root))["refresh_queued"]
+        if service._continuity_task is not None:
+            await service._continuity_task
+        final = await client.request("memory_continuity_run", task_id=root)
+        assert final["status"] == "partial" and final["next_action"] == "awaiting_evidence"
+        assert final["split"]["completed"] == final["split"]["unresolved"] == 1
+        with pytest.raises(RuntimeError, match="needs new evidence"):
+            await client.request("memory_retry", task_id=root)
+        assert len(provider.calls) == 4

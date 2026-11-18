@@ -197,7 +197,7 @@ async def test_compact_update_and_closure_preserve_one_topic(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("failure", ["source", "background_source", "note", "stale"])
-async def test_unsafe_or_stale_compact_proposal_cannot_partially_commit(
+async def test_invalid_references_do_not_commit_their_group(
     tmp_path, monkeypatch, failure,
 ):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
@@ -208,7 +208,8 @@ async def test_unsafe_or_stale_compact_proposal_cannot_partially_commit(
                      "category": "thread", "content": "The user's interview is approaching.",
                      "sources": [doc["exchanges"][0]["source_refs"]["user"]]}
             if failure == "stale":
-                service.store.create_continuity_item("An authored garden note.", "thread")
+                service.store.create_continuity_item(
+                    "An authored garden note.", "thread", topic="Garden", importance="low")
                 return {"operations": [valid]}
             invalid = {**valid, "topic": "Other interview detail"}
             if failure in {"source", "background_source"}:
@@ -221,10 +222,11 @@ async def test_unsafe_or_stale_compact_proposal_cannot_partially_commit(
         await refresh(service, client, provider)
         state = service.store.continuity_state()
         assert state["watermark"] == 0
-        assert all(note.get("user_created") for note in state["items"])
+        assert [note["topic"] for note in state["items"]] == [
+            "Garden" if failure == "stale" else "Interview preparation"]
         assert service.store.pending_maintenance_task() is not None
         attempt = service.store.maintenance_status()["latest_attempt"]
-        assert attempt["outcome"] in {"failed", "stale"}
+        assert attempt["outcome"] == ("stale" if failure == "stale" else "partial")
         assert len(provider.calls) == 1
 
 
@@ -305,7 +307,7 @@ async def test_batch_example_citations_keep_working_as_backlog_support_accumulat
         assert service.maintenance_status()["evidence"]["unresolved"] == 0
 
 
-async def test_background_only_change_rejects_whole_patch_and_batch_refs_correct_retry(
+async def test_background_only_change_stays_pending_and_batch_refs_correct_retry(
     tmp_path, monkeypatch,
 ):
     from test_current_life_policy import seed_note
@@ -317,10 +319,8 @@ async def test_background_only_change_rejects_whole_patch_and_batch_refs_correct
             "My creative project now has sketches. My garden project needs more soil.",
             "Understood.",
         )
-        before = service.store.continuity_state()
-
         def respond(doc):
-            current = doc["items"][0]
+            current = next(item for item in doc["items"] if item["topic"] == note["topic"])
             background = current["sources"][0]["source_ref"]
             assert background.startswith("background")
             batch = doc["batch_source_refs"]
@@ -330,7 +330,7 @@ async def test_background_only_change_rejects_whole_patch_and_batch_refs_correct
                            if row["exchange_id"] == current["sources"][0]["exchange_id"])
             assert support["source_refs"]["user"] == background
             corrected = "previous_rejection" in doc
-            return {"operations": [{
+            operations = [{
                 "op": "upsert", "topic": "Garden project", "importance": "low",
                 "category": "thread", "content": "The user's garden project needs more soil.",
                 "sources": [batch[0]],
@@ -339,11 +339,13 @@ async def test_background_only_change_rejects_whole_patch_and_batch_refs_correct
                 "importance": "low", "category": "thread",
                 "content": "The user's creative project now has sketches.",
                 "sources": [background, batch[0]] if corrected else [background],
-            }]}
+            }]
+            return {"operations": operations[1:] if corrected else operations}
 
         provider = CompactProvider(respond)
         await refresh(service, client, provider)
-        assert service.store.continuity_state() == before
+        assert service.store.get_continuity_item(note["id"]) == note
+        assert service.store.continuity_state()["active_count"] == 2
         task = service.store.pending_maintenance_task()
         assert task["stages"]["continuity"]["reason"]["code"] == "validation.batch_source"
         await refresh(service, client, provider)
@@ -406,6 +408,7 @@ async def test_metadata_preserves_evidence_and_pending_fields_across_restart(tmp
             deferred_metadata=["follow_up_at"]))
         state = (await refresh(service, client, provider))["continuity"]
         assert state["maintenance"]["unresolved"]["metadata"] == 1
+        assert state["maintenance"]["evidence"] == {"processed": 1, "unresolved": 1}
         second = state["items"][0]
         assert second["event_at"] == first["event_at"]
         assert second["promise_owner"] == "assistant"
@@ -414,6 +417,7 @@ async def test_metadata_preserves_evidence_and_pending_fields_across_restart(tmp
 
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         run = await client.request("memory_continuity_run", task_id=run_id)
+        assert run["status"] == "partial" and run["next_action"] == "awaiting_evidence"
         assert run["metadata_outcomes"] == [
             {"operation": 1, "field": "event_at", "outcome": "omitted", "reason": "unsupported_date"},
             {"operation": 1, "field": "follow_up_at", "outcome": "deferred", "reason": "awaiting_evidence"},
@@ -435,6 +439,9 @@ async def test_metadata_preserves_evidence_and_pending_fields_across_restart(tmp
         final = (await refresh(service, client, CompactProvider(correct)))["continuity"]["items"][0]
         assert final["follow_up_at"] == "2027-02-08T16:00:00+00:00"
         assert final.get("event_at") is final.get("promise_owner") is final.get("promise_kind") is None
+        assert (await client.request("memory_continuity_run", task_id=run_id))["status"] == "completed"
+        assert (await client.request("status"))["maintenance"]["evidence"] == {
+            "processed": 3, "unresolved": 0}
         assert not final.get("pending_metadata")
         assert (await client.request("memory_state"))["continuity"]["maintenance"]["unresolved"]["total"] == 0
 

@@ -1356,3 +1356,45 @@ async def test_retry_selected_retained_batch_keeps_draft_and_warning(size, monke
         await pilot.pause()
         await pilot.press("escape", "escape")
         assert app.focused is composer and composer.text == "Keep this draft 雨"
+
+
+@pytest.mark.parametrize("size", [(80, 24), (60, 18), (48, 12)])
+async def test_partial_run_displays_group_outcomes_and_keeps_retry_reachable(size, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("EIDOLON_ASCII", "1")
+
+    class PartialClient(MemoryClient):
+        async def request(self, method, **params):
+            result = await super().request(method, **params)
+            if method == "memory_continuity_run":
+                result.update(status="partial", next_action="retry_required", groups=[
+                    {"status": "completed", "reason": None},
+                    {"status": "failed", "reason": {"version": 2, "code": "validation.reference"}},
+                ])
+            return result
+
+    client = PartialClient()
+    client.memory["continuity"]["maintenance"]["stages"][0]["status"] = "partial"
+    app = RoomApp(AppConfig(), client=client)
+    async with app.run_test(size=size) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("Synthetic draft")
+        app.open_memory(runs=True)
+        await pilot.pause()
+        screen = app.screen
+        table = screen.query_one(DataTable)
+        assert "Partially saved" in table.get_row("maintenance:synthetic-task")[0].plain
+        table.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "Change group 1 (Complete)" in detail_text(screen)
+        assert "Change group 2 (Needs retry)" in detail_text(screen)
+        assert "Use only the note_ref and source_refs" in detail_text(screen)
+        retry = screen.query_one("#memory-retry", Button)
+        assert retry.display and not retry.disabled
+        await pilot.resize_terminal(40, 10)
+        await pilot.pause()
+        assert screen.has_class("too-small")
+        await pilot.resize_terminal(*size)
+        await pilot.press("escape", "escape")
+        assert app.focused is composer and composer.text == "Synthetic draft"

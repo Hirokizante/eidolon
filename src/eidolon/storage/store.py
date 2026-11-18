@@ -45,11 +45,11 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 16:
+        if version > 17:
             self.db.close()
             raise ValueError("This database requires a newer Eidolon version")
         self.migration_backup_path: Path | None = None
-        if version < 16 and self.db.execute(
+        if version < 17 and self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone():
             # SQLite's backup API captures a consistent snapshot, including WAL
@@ -60,7 +60,7 @@ class Store:
             backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_dir.chmod(0o700)
             stamp = datetime.now(dt_timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v16-{stamp}.sqlite3"
+            self.migration_backup_path = backup_dir / f"{self.path.name}.pre-v17-{stamp}.sqlite3"
             with sqlite3.connect(self.migration_backup_path) as backup:
                 self.db.backup(backup)
             self.migration_backup_path.chmod(0o600)
@@ -328,7 +328,21 @@ class Store:
                 if not self.db.in_transaction:
                     self.db.execute("BEGIN IMMEDIATE")
                 migrate(self)
-            self.db.execute("PRAGMA user_version=16")
+            self.db.execute("""
+                CREATE TABLE IF NOT EXISTS maintenance_groups (
+                    id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES maintenance_tasks(id),
+                    position INTEGER NOT NULL, positions TEXT NOT NULL, obligation TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN
+                        ('prepared','failed','completed','metadata_pending')),
+                    operations TEXT, reason TEXT, execution TEXT, attempt_id TEXT,
+                    metadata TEXT, metadata_outcomes TEXT, corrections INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(task_id,position)
+                )
+            """)
+            self.db.execute("""
+                CREATE INDEX IF NOT EXISTS maintenance_groups_status ON maintenance_groups(status)
+            """)
+            self.db.execute("PRAGMA user_version=17")
         self.db.commit()
         self.path.chmod(0o600)
 
@@ -963,6 +977,11 @@ class Store:
             "created": row["revision"] == 1,
         } for row in rows]}
 
+    def maintenance_groups(self, task_id: str) -> list[dict]:
+        from .groups import load
+        with self._lock:
+            return load(self, task_id)
+
     def _maintenance_task(self, task_id: str) -> dict:
         row = self.db.execute(
             "SELECT * FROM maintenance_tasks WHERE id=?", (task_id,),
@@ -998,6 +1017,12 @@ class Store:
                 "WHERE task_id=? AND stage='continuity'", (root_id,),
             ).fetchone()[0]
             result["split"] = self.maintenance_split(result["task_id"])
+            from .groups import status
+            groups, metadata_outcomes = status(self, result["task_id"])
+            result["groups"] = groups
+            if groups:
+                result["recovery_state"] = {**(result["recovery_state"] or {}),
+                                            "metadata_outcomes": metadata_outcomes}
         else:
             limit = result.get("recovery_limit")
             limit = limit if limit is not None else 6
@@ -1006,8 +1031,11 @@ class Store:
                                 "remaining": max(0, limit - used), "exhausted": used >= limit,
                                 "pass": result.get("recovery_pass", 1)}
         result["paused"] = bool(result.get("pause_fingerprint"))
-        result["set_aside"] = result["status"] not in {"completed", "split"} and bool(
-            result.get("set_aside") or result["budget"]["exhausted"])
+        result["set_aside"] = (
+            result["status"] not in {"completed", "split", "awaiting_evidence"}
+            and not any(group["status"] == "prepared" for group in result.get("groups", []))
+            and bool(result.get("set_aside") or result["budget"]["exhausted"])
+        )
         return result
 
     def _maintenance_root(self, task_id: str) -> str:
@@ -1041,7 +1069,9 @@ class Store:
                 "SELECT task_id,parent_id FROM maintenance_lineage WHERE parent_id=? UNION ALL "
                 "SELECT l.task_id,l.parent_id FROM maintenance_lineage l "
                 "JOIN children c ON l.parent_id=c.task_id) "
-                "SELECT c.*,s.status,s.set_aside,s.pause_fingerprint IS NOT NULL AS paused "
+                "SELECT c.*,s.status,s.set_aside,s.pause_fingerprint IS NOT NULL AS paused,"
+                "EXISTS(SELECT 1 FROM maintenance_groups g WHERE g.task_id=c.task_id "
+                "AND g.status IN ('completed','metadata_pending')) AS saved_groups "
                 "FROM children c JOIN maintenance_stages s "
                 "ON s.task_id=c.task_id AND s.stage='continuity' "
                 "JOIN maintenance_tasks t ON t.id=c.task_id ORDER BY t.input_watermark,t.id",
@@ -1053,14 +1083,26 @@ class Store:
             leaves = [row for row in rows if row["task_id"] not in parents]
             root_id = self._maintenance_root(task_id)
             exhausted = self._maintenance_family_budget(root_id)["exhausted"]
-            return {"children": [{key: row[key] for key in ("task_id", "parent_id", "status")}
+            unfinished = [row for row in leaves if row["status"] != "completed"]
+            progress = [row for row in unfinished if row["saved_groups"]]
+            links = {row["task_id"]: row["parent_id"] for row in rows}
+            partial_tasks = set()
+            for row in progress:
+                child_id = row["task_id"]
+                while child_id in links and child_id not in partial_tasks:
+                    partial_tasks.add(child_id)
+                    child_id = links[child_id]
+            return {"children": [{"task_id": row["task_id"], "parent_id": row["parent_id"],
+                                  "status": "partial" if row["task_id"] in partial_tasks
+                                  else row["status"]}
                                  for row in rows if row["parent_id"] == task_id],
-                    "completed": sum(row["status"] == "completed" for row in leaves),
-                    "unresolved": sum(row["status"] != "completed" for row in leaves),
-                    "retained": sum(row["status"] != "completed" and bool(
-                        row["set_aside"] or exhausted) for row in leaves),
-                    "paused": sum(row["status"] != "completed" and bool(row["paused"])
-                                  for row in leaves)}
+                    "completed": len(leaves) - len(unfinished),
+                    "unresolved": len(unfinished),
+                    "partial": len(progress),
+                    "awaiting_evidence": sum(row["status"] == "awaiting_evidence" for row in unfinished),
+                    "retained": sum(row["status"] != "awaiting_evidence" and bool(
+                        row["set_aside"] or exhausted) for row in unfinished),
+                    "paused": sum(bool(row["paused"]) for row in unfinished)}
 
     def split_maintenance_task(self, task_id: str) -> list[str]:
         """Atomically transfer whole unresolved exchanges to two durable children.
@@ -1077,7 +1119,8 @@ class Store:
                 return [row["task_id"] for row in split["children"]]
             stage = task["stages"]["continuity"]
             if (task_id.startswith(("narrative:", "review:")) or len(task["inputs"]) < 2
-                    or stage["status"] != "failed" or stage["budget"]["exhausted"]):
+                    or stage["status"] != "failed" or stage["budget"]["exhausted"]
+                    or stage["groups"]):
                 return []
             assigned = [row[0] for row in self.db.execute(
                 "SELECT exchange_id FROM continuity_evidence WHERE task_id=? AND processed=0 "
@@ -1289,9 +1332,11 @@ class Store:
             # Cooldown still belongs to the active pass; retained work is separate.
             for row in rows:
                 task = self._maintenance_task(row["id"])
-                if include_retained or (not task["stages"][stage]["set_aside"]
-                                        and not task["stages"][stage]["paused"]
-                                        and task["stages"][stage]["recovery_source"] != "automatic"):
+                saved = task["stages"][stage]
+                prepared = any(group["status"] == "prepared" for group in saved.get("groups", []))
+                if (include_retained or prepared or
+                        not (saved["set_aside"] or saved["paused"]
+                             or saved["recovery_source"] == "automatic")):
                     return task
             return None
 
@@ -1435,7 +1480,7 @@ class Store:
             raise ValueError("Recovery call limit must be an integer from 1 to 100")
         with self._lock, self.db:
             row = self.get_maintenance_stage(task_id)
-            if row is None or row["status"] == "completed":
+            if row is None or row["status"] in {"completed", "awaiting_evidence"}:
                 return False
             root_id = self._maintenance_root(task_id)
             if retry:
@@ -1495,7 +1540,7 @@ class Store:
                 "'validation.evidence_changed') OR "
                 "? THEN 1 ELSE set_aside END "
                 "WHERE task_id=? AND stage=? "
-                "AND status NOT IN ('completed','split')",
+                "AND status NOT IN ('completed','split','awaiting_evidence')",
                 (str(error)[:1000], retry_at, utc_now(), json.dumps(read_reason(diagnostic) if diagnostic else safe_reason(reason_code)),
                  pause_fingerprint, json.dumps(recovery_state), reason_code, exhausted, task_id, stage),
             )
@@ -1605,7 +1650,7 @@ class Store:
 
     def start_maintenance_attempt(self, task_id: str, provenance: dict,
                                   stage: str = "continuity", *, now: datetime | None = None,
-                                  daily_limit: int = 6) -> str:
+                                  daily_limit: int = 6, group_id: str | None = None) -> str:
         from ..memory.proposals import CONTRACT_VERSIONS
         from ..providers.maintenance import CAPABILITY_SOURCES, OUTPUT_MODES
 
@@ -1656,7 +1701,7 @@ class Store:
             ).fetchone()
             if status is None:
                 raise ValueError("Maintenance stage is missing")
-            if status["status"] in {"completed", "split"}:
+            if status["status"] in {"completed", "split", "awaiting_evidence"}:
                 raise ValueError("Maintenance stage is already completed or split")
             if self.db.execute(
                 "SELECT 1 FROM maintenance_attempts WHERE stage=? AND outcome='running' "
@@ -1670,6 +1715,9 @@ class Store:
                 raise ValueError("Maintenance recovery is paused or exhausted")
             daily_period = self._charge_automatic_maintenance(task_id, now, daily_limit)
             attempt_id = str(uuid.uuid4())
+            if group_id is not None:
+                from .groups import note_correction
+                note_correction(self, task_id, group_id, attempt_id)
             self.db.execute(
                 "INSERT INTO maintenance_attempts(id,task_id,stage,provenance,started_at,outcome,"
                 "recovery_source,recovery_pass,daily_period) VALUES (?,?,?,?,?,'running',?,?,?)",
@@ -1715,7 +1763,7 @@ class Store:
                                     reason_code: str | None = None,
                                     diagnostic: dict | None = None) -> None:
         from ..memory.diagnostics import safe_reason, read_reason
-        if outcome not in {"committed", "repaired", "failed", "interrupted", "stale", "configuration_error"}:
+        if outcome not in {"committed", "partial", "repaired", "failed", "interrupted", "stale", "configuration_error"}:
             raise ValueError("Invalid auxiliary attempt outcome")
         attempt = self.get_maintenance_attempt(attempt_id)
         if not attempt or attempt["outcome"] != "running":
@@ -1753,7 +1801,7 @@ class Store:
     def record_maintenance_usage(self, task_id: str, stage: str = "continuity", *,
                                   usage: dict | None = None, called: bool = False,
                                   attempt_id: str | None = None, now: datetime | None = None,
-                                  daily_limit: int = 6) -> None:
+                                  daily_limit: int = 6, group_id: str | None = None) -> None:
         if stage not in {"continuity", "summary", "reflection"}:
             raise ValueError("Invalid maintenance stage")
         if usage is not None:
@@ -1766,10 +1814,13 @@ class Store:
             self._maintenance_task(task_id)
             if called:
                 recovery = self.get_maintenance_stage(task_id, stage)
-                if (recovery is None or recovery["status"] in {"completed", "split"}
+                if (recovery is None or recovery["status"] in {"completed", "split", "awaiting_evidence"}
                         or recovery["paused"] or recovery["budget"]["exhausted"]):
                     raise ValueError("Maintenance recovery is paused or exhausted")
                 self._charge_automatic_maintenance(task_id, now, daily_limit)
+                if group_id is not None:
+                    from .groups import note_correction
+                    note_correction(self, task_id, group_id, attempt_id)
             if usage and attempt_id:
                 attempt = self.get_maintenance_attempt(attempt_id)
                 if not attempt or attempt["task_id"] != task_id or attempt["stage"] != stage:
@@ -1845,70 +1896,121 @@ class Store:
             checked.append({**source, "input_hash": self._continuity_hash(exchange)})
         return checked
 
+    def _check_continuity_execution(self, task_id: str, attempt_id: str | None) -> dict | None:
+        if attempt_id is None:
+            return None
+        attempt = self.get_maintenance_attempt(attempt_id)
+        route = self.auxiliary_route()
+        if (attempt is None or attempt["task_id"] != task_id
+                or attempt["stage"] != "continuity" or attempt["outcome"] != "running"
+                or route["revision"] != attempt["provenance"]["routing_revision"]
+                or route["fingerprint"] != attempt["provenance"]["route_fingerprint"]):
+            raise ContinuityValidationError("Auxiliary routing changed", code="revision")
+        return attempt
+
+    def maintenance_group_inputs(self, task_id: str, group_id: str) -> list[dict]:
+        with self._lock:
+            group = next(row for row in self.maintenance_groups(task_id) if row["id"] == group_id)
+            return self._group_commit_inputs(self._maintenance_task(task_id), group)
+
+    def _group_commit_inputs(self, task: dict, group: dict) -> list[dict]:
+        ids = group["obligation"]["source_ids"]
+        current = self._continuity_exchange_rows(
+            scope=task["scope"], exchange_ids=ids, limit=len(ids),
+        )
+        originals = [row for row in task["inputs"] if row["id"] in ids]
+        if current != originals or [row["id"] for row in current] != ids:
+            raise ContinuityValidationError("Maintenance evidence changed or is no longer eligible",
+                                            code="evidence_changed")
+        assigned = self.db.execute(
+            "SELECT exchange_id FROM continuity_evidence WHERE scope=? AND task_id=? "
+            "AND processed=0 ORDER BY exchange_id", (task["scope"], task["id"]),
+        ).fetchall()
+        if not set(ids) <= {row[0] for row in assigned}:
+            raise ContinuityValidationError("Maintenance evidence belongs to another batch",
+                                            code="conflict")
+        return current
+
     def commit_continuity(self, task_id: str, operations: list[dict], *,
                           expected_revision: int, control_revision: int,
-                          attempt_id: str | None = None, max_notes: int = 12) -> dict:
-        """Apply a validated patch and its stage watermark in one CAS transaction."""
-        if not isinstance(operations, list) or not operations or len(operations) > 32:
-            raise ContinuityValidationError(
-                "A maintenance result requires bounded explicit operations",
-                code="schema",
-            )
+                          attempt_id: str | None = None, max_notes: int = 12,
+                          group_id: str | None = None) -> dict:
+        """Commit an indivisible legacy patch or one prepared dependency group."""
         with self._lock, self.db:
             self.db.execute("BEGIN IMMEDIATE")
             task = self._maintenance_task(task_id)
             scope = task["scope"]
-            if task["stages"]["continuity"]["status"] == "completed":
-                return self.continuity_state(scope)
-            if task["stages"]["continuity"]["status"] == "split":
-                raise ContinuityValidationError(
-                    "Split maintenance parents cannot commit a proposal",
-                    code="conflict",
-                )
-            if attempt_id is not None:
-                attempt = self.get_maintenance_attempt(attempt_id)
+            groups = self.maintenance_groups(task_id)
+            group = None
+            grouped_repair = (groups and group_id is None and isinstance(operations, list)
+                              and len(operations) == 1 and isinstance(operations[0], dict)
+                              and operations[0].get("op") == "repair_support")
+            if group_id is not None:
+                group = next((row for row in groups if row["id"] == group_id), None)
+                if group is None:
+                    raise ContinuityValidationError("Unknown maintenance group", code="conflict")
+                if group["status"] in {"completed", "metadata_pending"}:
+                    return self.continuity_state(scope)
+                if group["status"] != "prepared":
+                    raise ContinuityValidationError("Maintenance group needs correction", code="conflict")
                 route = self.auxiliary_route()
-                if (attempt is None or attempt["task_id"] != task_id
-                        or attempt["stage"] != "continuity" or attempt["outcome"] != "running"
-                        or route["revision"] != attempt["provenance"]["routing_revision"]
-                        or route["fingerprint"] != attempt["provenance"]["route_fingerprint"]):
-                    raise ContinuityValidationError(
-                        "Auxiliary routing changed; retry the pending stage",
-                        code="revision",
-                    )
+                execution = group["execution"]
+                if execution and (route["revision"] != execution["routing_revision"]
+                                  or route["fingerprint"] != execution["route_fingerprint"]):
+                    raise ContinuityValidationError("Auxiliary routing changed", code="revision")
+                operations = group["operations"]
+                attempt_id = group["attempt_id"]
+            elif groups and not grouped_repair:
+                raise ContinuityValidationError("Prepared groups must commit individually", code="conflict")
+            if not isinstance(operations, list) or not operations or len(operations) > 32:
+                raise ContinuityValidationError("A result requires bounded explicit operations",
+                                                code="schema")
+            status = task["stages"]["continuity"]["status"]
+            if status == "completed":
+                return self.continuity_state(scope)
+            if status == "split":
+                raise ContinuityValidationError("Split maintenance parents cannot commit a proposal",
+                                                code="conflict")
             state = self._continuity_scope(scope)
-            if (state["revision"] != expected_revision
-                    or state["control_revision"] != control_revision
-                    or task["expected_revision"] != expected_revision
-                    or task["control_revision"] != control_revision):
-                raise ContinuityValidationError(
-                    "Continuity state changed; regenerate the proposal",
-                    code="revision",
-                )
-            current = self._continuity_exchange_rows(
-                scope=scope, exchange_ids=task["input_ids"], limit=len(task["input_ids"]))
-            if not task_id.startswith(("narrative:", "review:", "repair:")):
-                assigned = self.db.execute(
-                    "SELECT exchange_id FROM continuity_evidence WHERE scope=? AND task_id=? "
-                    "AND processed=0 ORDER BY exchange_id", (scope, task_id),
-                ).fetchall()
-                if [row[0] for row in assigned] != task["input_ids"]:
-                    raise ContinuityValidationError(
-                        "Maintenance evidence is already processed or belongs to another batch",
-                        code="conflict",
-                    )
-            if (self._continuity_hash(current) != task["input_hash"]
-                    or current != task["inputs"]):
-                raise ContinuityValidationError("Maintenance evidence changed or is no longer eligible",
-                                                code="evidence_changed")
+            if grouped_repair:
+                from .support import commit_repair
+                self._check_continuity_execution(task_id, attempt_id)
+                if state["revision"] != expected_revision or state["control_revision"] != control_revision:
+                    raise ContinuityValidationError("Continuity state changed", code="revision")
+                return commit_repair(self, task, operations[0], attempt_id=attempt_id)
+            if group:
+                current = self._group_commit_inputs(task, group)
+            else:
+                self._check_continuity_execution(task_id, attempt_id)
+                if (state["revision"] != expected_revision
+                        or state["control_revision"] != control_revision
+                        or task["expected_revision"] != expected_revision
+                        or task["control_revision"] != control_revision):
+                    raise ContinuityValidationError("Continuity state changed; regenerate the proposal",
+                                                    code="revision")
+                current = self._continuity_exchange_rows(
+                    scope=scope, exchange_ids=task["input_ids"], limit=len(task["input_ids"]))
+                if not task_id.startswith(("narrative:", "review:", "repair:")):
+                    assigned = self.db.execute(
+                        "SELECT exchange_id FROM continuity_evidence WHERE scope=? AND task_id=? "
+                        "AND processed=0 ORDER BY exchange_id", (scope, task_id),
+                    ).fetchall()
+                    if [row[0] for row in assigned] != task["input_ids"]:
+                        raise ContinuityValidationError(
+                            "Maintenance evidence is already processed or belongs to another batch",
+                            code="conflict",
+                        )
+                if self._continuity_hash(current) != task["input_hash"] or current != task["inputs"]:
+                    raise ContinuityValidationError("Maintenance evidence changed or is no longer eligible",
+                                                    code="evidence_changed")
             if any(operation.get("op") == "repair_support" for operation in operations
                    if isinstance(operation, dict)):
                 from .support import commit_repair
-                if len(operations) != 1:
+                if group or len(operations) != 1:
                     raise ContinuityValidationError("Repair must stand alone", code="schema")
                 return commit_repair(self, task, operations[0], attempt_id=attempt_id)
             recovery = task["stages"]["continuity"].get("recovery_state") or {}
-            if recovery.get("repair_target") and recovery.get("outcome") != "resolved":
+            if not group and recovery.get("repair_target") and recovery.get("outcome") != "resolved":
                 raise ContinuityValidationError("Repair must finish before ordinary maintenance",
                                                 code="saved_support")
             from ..memory.continuity import (
@@ -1929,7 +2031,7 @@ class Store:
                     prior_ids[start:start + 32], scope=scope)})
             from ..memory.metadata import METADATA_KEYS, METADATA_REASONS, field_outcome
             metadata_outcomes = []
-            pending_metadata = False
+            deferred_fields: dict[str, list[str]] = {}
             changed, targets = 0, set()
             for index, operation in enumerate(operations):
                 if not isinstance(operation, dict):
@@ -1945,7 +2047,9 @@ class Store:
                     )
                 action = operation.get("op", operation.get("operation"))
                 if action == "no_change":
-                    if (len(operations) != 1 or operation.get("expected_revision") != expected_revision
+                    needs_snapshot = group is None or bool(group["obligation"]["changes"])
+                    if (len(operations) != 1
+                            or needs_snapshot and operation["expected_revision"] != state["revision"]
                             or set(operation) - {"op", "operation", "expected_revision", "sources"}
                             or operation.get("sources") or operation.get("item_id")
                             or operation.get("content")):
@@ -1976,12 +2080,13 @@ class Store:
                                    or not isinstance(outcome, str) or outcome not in METADATA_REASONS
                                    for key, outcome in fields.items())):
                         raise ContinuityValidationError("Invalid metadata outcome", code="schema")
-                    metadata_outcomes.extend(field_outcome(index + 1, key, reason)
+                    position = group["positions"][index] if group else index
+                    metadata_outcomes.extend(field_outcome(position + 1, key, reason)
                                              for key, reason in fields.items())
                 if set(operation) - allowed:
                     raise ContinuityValidationError("Malformed continuity operation", code='schema')
                 item_id = operation.get("item_id") or str(uuid.uuid5(
-                    uuid.NAMESPACE_URL, f"eidolon-room:continuity-item:{task_id}:{index}",
+                    uuid.NAMESPACE_URL, f"eidolon-room:continuity-item:{group_id or task_id}:{index}",
                 ))
                 if not isinstance(item_id, str) or not item_id or item_id in targets:
                     raise ContinuityValidationError(
@@ -2099,10 +2204,10 @@ class Store:
                     for field, stored in METADATA_KEYS.items():
                         if fields.get(field) == "awaiting_evidence":
                             pending.add(field)
+                            deferred_fields.setdefault(item_id, []).append(field)
                         elif stored in operation:
                             pending.discard(field)
                     if pending:
-                        pending_metadata = True
                         item["pending_metadata"] = sorted(pending)
                     else:
                         item.pop("pending_metadata", None)
@@ -2241,45 +2346,67 @@ class Store:
                 changed += 1
             validate_note_capacity(operations, capacity_items, max_notes=max_notes, scope=scope)
             new_revision = state["revision"] + int(changed > 0)
-            self.db.execute(
-                "UPDATE continuity_scopes SET revision=?,watermark=? WHERE scope=?",
-                (new_revision, max(state["watermark"], task["input_watermark"]), scope),
-            )
-            self.db.execute(
-                "UPDATE continuity_evidence SET processed=1 WHERE scope=? AND task_id=?",
-                (scope, task_id),
-            )
-            self.db.execute(
-                "UPDATE maintenance_stages SET status='completed',set_aside=0,attempts=attempts+1,"
-                "error=NULL,reason=NULL,recovery_state=?,"
-                "next_retry_at=NULL,committed_revision=?,updated_at=? WHERE task_id=? AND stage='continuity'",
-                (json.dumps({**recovery, "metadata_outcomes": metadata_outcomes,
-                             "outcome": "deferred" if pending_metadata else "resolved"}),
-                 new_revision, utc_now(), task_id),
-            )
-            if attempt_id is not None:
-                self._finish_maintenance_attempt(attempt_id, "committed")
-                attempt = self.get_maintenance_attempt(attempt_id)
+            self.db.execute("UPDATE continuity_scopes SET revision=? WHERE scope=?",
+                            (new_revision, scope))
+            from .groups import reconcile, reconcile_metadata
+            reconcile_metadata(self, scope, revised_ids=targets, revision=new_revision)
+            if group:
+                from ..memory.diagnostics import safe_reason
+                self.db.execute(
+                    "UPDATE maintenance_groups SET status=?,reason=?,operations=NULL,metadata=?,"
+                    "metadata_outcomes=? WHERE id=?",
+                    ("metadata_pending" if deferred_fields else "completed",
+                     json.dumps(safe_reason("validation.metadata_pending")) if deferred_fields else None,
+                     json.dumps(deferred_fields), json.dumps(metadata_outcomes), group_id),
+                )
+                reconcile(self, task_id, revision=new_revision, attempt_id=attempt_id)
+            else:
+                self._complete_continuity(task, new_revision, attempt_id, {
+                    **recovery, "metadata_outcomes": metadata_outcomes,
+                    "outcome": "deferred" if deferred_fields else "resolved",
+                })
+            return self.continuity_state(scope)
+
+    def _complete_continuity(self, task: dict, revision: int, attempt_id: str | None,
+                             recovery: dict) -> None:
+        task_id, scope = task["id"], task["scope"]
+        self.db.execute(
+            "UPDATE continuity_scopes SET watermark=max(watermark,?) WHERE scope=?",
+            (task["input_watermark"], scope),
+        )
+        self.db.execute(
+            "UPDATE continuity_evidence SET processed=1 WHERE scope=? AND task_id=?",
+            (scope, task_id),
+        )
+        self.db.execute(
+            "UPDATE maintenance_stages SET status='completed',set_aside=0,attempts=attempts+1,"
+            "error=NULL,reason=NULL,recovery_state=?,pause_fingerprint=NULL,"
+            "next_retry_at=NULL,committed_revision=?,updated_at=? WHERE task_id=? AND stage='continuity'",
+            (json.dumps(recovery), revision, utc_now(), task_id),
+        )
+        if attempt_id is not None:
+            self._finish_maintenance_attempt(attempt_id, "committed")
+            attempt = self.get_maintenance_attempt(attempt_id)
+            if attempt and attempt["outcome"] == "committed":
                 self.db.execute(
                     "UPDATE maintenance_stages SET committed_execution=? WHERE task_id=? AND stage=?",
                     (json.dumps(attempt), task_id, "continuity"),
                 )
-            parent = task.get("parent_id")
-            while parent:
-                if self.db.execute(
-                    "SELECT 1 FROM maintenance_lineage l JOIN maintenance_stages s "
-                    "ON s.task_id=l.task_id WHERE l.parent_id=? AND s.stage='continuity' "
-                    "AND s.status!='completed'", (parent,),
-                ).fetchone():
-                    break
-                self.db.execute(
-                    "UPDATE maintenance_stages SET status='completed',error=NULL,reason=NULL,"
-                    "recovery_state=json_set(coalesce(recovery_state,'{}'),'$.outcome','resolved'),"
-                    "set_aside=0,next_retry_at=NULL,updated_at=? "
-                    "WHERE task_id=? AND stage='continuity' AND status='split'", (utc_now(), parent),
-                )
-                parent = self._maintenance_task(parent).get("parent_id")
-            return self.continuity_state(scope)
+        parent = task.get("parent_id")
+        while parent:
+            if self.db.execute(
+                "SELECT 1 FROM maintenance_lineage l JOIN maintenance_stages s "
+                "ON s.task_id=l.task_id WHERE l.parent_id=? AND s.stage='continuity' "
+                "AND s.status!='completed'", (parent,),
+            ).fetchone():
+                break
+            self.db.execute(
+                "UPDATE maintenance_stages SET status='completed',error=NULL,reason=NULL,"
+                "recovery_state=json_set(coalesce(recovery_state,'{}'),'$.outcome','resolved'),"
+                "set_aside=0,next_retry_at=NULL,updated_at=? "
+                "WHERE task_id=? AND stage='continuity' AND status='split'", (utc_now(), parent),
+            )
+            parent = self._maintenance_task(parent).get("parent_id")
 
     def create_continuity_item(self, content: str, category: str, *,
                                topic: str, importance: str, scope: str = "real_life",
@@ -2369,6 +2496,13 @@ class Store:
                     elif item.get("category") == "emotion":
                         item.pop("expires_at", None)
                 item[key] = value
+            if pending := item.get("pending_metadata"):
+                from ..memory.metadata import METADATA_KEYS
+                remaining = [field for field in pending if METADATA_KEYS[field] not in changes]
+                if remaining:
+                    item["pending_metadata"] = remaining
+                else:
+                    item.pop("pending_metadata", None)
             if {"topic", "importance"} <= changes.keys():
                 item.pop("metadata_pending", None)
             if item["state"] == "open":
@@ -2382,6 +2516,9 @@ class Store:
                 "UPDATE continuity_scopes SET revision=revision+1,control_revision=control_revision+1 "
                 "WHERE scope=?", (row["scope"],),
             )
+            from .groups import reconcile_metadata
+            reconcile_metadata(self, scope, revised_ids={item_id},
+                               revision=self._continuity_scope(scope)["revision"])
             return self._continuity_item(self.db.execute(
                 "SELECT * FROM continuity_items WHERE id=?", (item_id,),
             ).fetchone())
@@ -2417,6 +2554,9 @@ class Store:
                 "UPDATE continuity_scopes SET revision=revision+1,control_revision=control_revision+1 "
                 "WHERE scope=?", (scope,),
             )
+            from .groups import reconcile_metadata
+            reconcile_metadata(self, scope, revised_ids={item_id},
+                               revision=self._continuity_scope(scope)["revision"])
 
     def mark_continuity_followup(self, item_ids: list[str], at: str | None = None, *,
                                  expected_revision: int | None = None,
