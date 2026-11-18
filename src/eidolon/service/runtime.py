@@ -1160,7 +1160,7 @@ class RoomService:
                 return None
             # A complete run fits the socket allowance without source inventories,
             # hashes, or other provenance repeated for every historical version.
-            fields = {"category", "content", "state", "event_at", "expires_at", "follow_up_at",
+            fields = {"category", "content", "state", "pending_metadata", "event_at", "expires_at", "follow_up_at",
                       "observed_at", "last_mention_at", "promise_owner", "promise_kind"}
             saved_stage = self.store.get_maintenance_stage(task_id)
             if saved_stage is None:

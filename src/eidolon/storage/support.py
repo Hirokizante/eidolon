@@ -37,14 +37,35 @@ def carry_metadata_support(item: dict, operation: dict, sources: list[dict]) -> 
     Older notes have no per-field source inventory. Their complete current support
     is the conservative starting point. Store identities only alongside the note.
     """
-    from ..memory.continuity import ContinuityValidationError
+    from ..memory.continuity import ContinuityValidationError, date_literals, promise_candidate
+
+    selections = operation.get("metadata_selections", {})
+    fields = ("event_at", "follow_up_at", "promise_owner")
+    if not isinstance(selections, dict) or any(
+        field not in fields or not operation.get(field) for field in selections
+    ):
+        raise ContinuityValidationError("Invalid metadata selection", code="source")
 
     selected = {identity(source): source for source in sources}
     prior = {identity(source): source for source in item.get("sources", [])}
     inventory = item.get("metadata_support", {})
     support = {}
-    for field in ("event_at", "follow_up_at", "promise_owner"):
-        if field in operation:
+    for field in fields:
+        if field in selections:
+            value = selections[field]
+            if field == "promise_owner":
+                backed = [source for index, source in enumerate(sources)
+                          if type(value) is int and index == value
+                          and source["role"] == operation[field]
+                          and promise_candidate(source["excerpt"]) == operation.get("promise_kind")]
+            else:
+                literal = value.casefold() if isinstance(value, str) else ""
+                backed = [source for source in sources
+                          if literal in date_literals(source["excerpt"].casefold())]
+            if not backed:
+                raise ContinuityValidationError("Missing original for selected metadata", code="source")
+            support[field] = [identity(source) for source in backed]
+        elif field in operation:
             if operation[field] is not None:
                 support[field] = [identity(source) for source in sources]
         elif item.get(field):

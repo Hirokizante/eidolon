@@ -18,7 +18,8 @@ from eidolon.memory.coordinator import (
     CONTEXT_PREFIX, CONTEXT_SUFFIX, CONTINUITY_PREFIX, render_record,
 )
 from eidolon.memory.models import MemoryRecord
-from eidolon.memory.diagnostics import model_label, read_reason, reason_details, safe_usage
+from eidolon.memory.metadata import METADATA_REASONS
+from eidolon.memory.diagnostics import metadata_outcomes, model_label, read_reason, reason_details, safe_usage
 from eidolon.ui.forms import FormModal
 from eidolon.ui.memory_notes import (
     NOTE_CATEGORIES, NOTE_IMPORTANCE, NoteDeleteScreen, NoteEditorScreen,
@@ -107,6 +108,11 @@ def note_details(row: dict) -> str:
     parts = [row["topic"], heading, str(row.get("content", ""))]
     if row.get("metadata_pending"):
         parts.append("Topic and importance await classification during maintenance.")
+    pending = row.get("pending_metadata", [])
+    labels = [label for field, label in (("event_at", "event date"), ("follow_up_at", "follow-up date"),
+                                         ("promise_source", "promise")) if field in pending]
+    if labels:
+        parts.append("Awaiting evidence for " + ", ".join(labels) + ".")
     if row.get("decision_reason"):
         parts.append("Decision: " + row["decision_reason"])
     event = row.get("event_at") or row.get("event_date")
@@ -176,12 +182,6 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         parts.append(descriptions[row["status"]])
     if reason:
         parts.append(reason_details(reason))
-    for entry in row.get("metadata_outcomes", []):
-        label = {"event_at": "event date", "follow_up_at": "follow-up date",
-                 "promise_source": "promise"}.get(entry["field"], "metadata")
-        explanation = ("awaiting supporting evidence" if entry["outcome"] == "deferred"
-                       else "unsupported selection")
-        parts.append(f"Operation {entry['operation']} · {label} {entry['outcome']} ({explanation}).")
     split = row.get("split")
     if split:
         parts.append(f"Smaller groups: {split['completed']} complete; "
@@ -306,6 +306,11 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
             new_label + note_version_details(after, timezone_name, compact=compact),
             ("Previous version\n" if compact else "Previous version · ") + previous,
         ])
+    for entry in metadata_outcomes(row):
+        label = {"event_at": "event date", "follow_up_at": "follow-up date",
+                 "promise_source": "promise"}.get(entry["field"], "metadata")
+        explanation = METADATA_REASONS[entry["reason"]]
+        parts.append(f"Operation {entry['operation']} · {label} {entry['outcome']} ({explanation}).")
     return "\n\n".join(parts)
 
 
@@ -725,6 +730,8 @@ class MemoryScreen(FormModal):
                        f"{retained} {'batch' if retained == 1 else 'batches'} set aside. "
                        "Open Run history for retry timing and allowance." if
                        unresolved.get("set_aside") else
+                       "Current life metadata is waiting for evidence. Open Run history for details."
+                       if unresolved.get("metadata") and not unresolved.get("recovering") else
                        "Current life is recovering. Open Run history for causes and next steps.")
             self.status(message, problem=True)
         elif maintenance.get("running"):

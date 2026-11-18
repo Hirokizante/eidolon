@@ -741,37 +741,23 @@ async def test_failed_batch_retry_identity_and_stage_independence_survive_restar
     assert store._maintenance_task(task["id"])["stages"]["continuity"]["status"] == "completed"
 
 
-async def test_late_commitment_rejection_explains_retry_and_recovers_whole_batch(store):
-    add(store, "The garden illustration is ready. I will show it to you tomorrow.")
+async def test_explicit_later_commitment_commits_without_retry(store):
+    original = "The garden illustration is ready. I will show it to you tomorrow."
+    add(store, original)
 
     def propose(document):
         result = learn(document)
-        if "previous_rejection" not in document:
-            result["operations"][0].update(promise_owner="user", promise_kind="conversation")
+        result["operations"][0].update(promise_owner="user", promise_kind="conversation")
         return result
 
-    worker = ContinuityWorker(store, Provider(transform=propose))
-    assert not await worker.run_once(force=True)
-    task = store.pending_maintenance_task()
-    error = task["stages"]["continuity"]["error"]
-    assert "beginning with an explicit first-person commitment" in error
-    assert "garden" not in error
-    assert store.continuity_state()["watermark"] == 0
-    assert store.continuity_state()["items"] == []
-
-    # A restarted worker receives safe feedback with the same immutable inputs.
-    replacement = ContinuityWorker(store, Provider(transform=propose))
-    assert await replacement.run_once(force=True)
-    request = json.loads(replacement.provider.calls[0][-1]["content"])
-    assert "Omit promise metadata otherwise" in request["previous_rejection"]
-    committed = store._maintenance_task(task["id"])
-    assert committed["input_ids"] == task["input_ids"]
-    assert committed["stages"]["continuity"]["error"] is None
+    provider = Provider(transform=propose)
+    worker = ContinuityWorker(store, provider)
+    assert await worker.run_once(force=True)
+    assert store.pending_maintenance_task() is None
+    assert len(provider.calls) == 1
     item = store.continuity_state()["items"][0]
-    assert item["content"] != task["inputs"][0]["user_content"]
-    assert item["sources"][0]["excerpt"] == task["inputs"][0]["user_content"]
-    assert "promise_owner" not in item
-    assert worker.store.maintenance_status()["error"] is None
+    assert item["sources"][0]["excerpt"] == original
+    assert item["promise_owner"] == "user" and item["promise_kind"] == "conversation"
 
 
 async def test_misnamed_op_feedback_recovers_same_batch_after_restart(store):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from .continuity import ContinuityValidationError
+from .metadata import METADATA_KEYS, METADATA_REASONS, field_outcome
 from .proposals import CONTRACT_VERSIONS
 from eidolon.providers.maintenance import CAPABILITY_SOURCES, OUTPUT_MODES
 
@@ -184,11 +185,11 @@ def metadata_outcomes(recovery: dict | None) -> list[dict]:
     rows = recovery.get("metadata_outcomes") if isinstance(recovery, dict) else None
     if not isinstance(rows, list):
         return []
-    return [{key: row[key] for key in ("operation", "field", "outcome")}
+    return [field_outcome(row["operation"], row["field"], row["reason"])
             for row in rows[:72] if isinstance(row, dict)
             and type(row.get("operation")) is int and 1 <= row["operation"] <= 24
-            and row.get("field") in ("event_at", "follow_up_at", "promise_source")
-            and row.get("outcome") in ("omitted", "deferred")]
+            and isinstance(row.get("field"), str) and row["field"] in METADATA_KEYS
+            and isinstance(row.get("reason"), str) and row["reason"] in METADATA_REASONS]
 
 
 def public_attempt(attempt: dict | None) -> dict | None:

@@ -231,6 +231,7 @@ async def test_unsafe_or_stale_compact_proposal_cannot_partially_commit(
 @pytest.mark.parametrize("text,has_candidates", [
     ("I will practice for my interview tomorrow.", True),
     ("Maybe I will practice for my interview tomorrow.", False),
+    ("I will practice for my interview tomorrow, although the venue might change.", True),
 ])
 async def test_optional_candidates_keep_supported_metadata_and_uncertainty_in_prose(
     tmp_path, monkeypatch, text, has_candidates,
@@ -241,7 +242,7 @@ async def test_optional_candidates_keep_supported_metadata_and_uncertainty_in_pr
         def respond(doc):
             exchange = doc["exchanges"][0]
             candidates = exchange["metadata_candidates"]["user"]
-            assert bool(candidates.get("dates")) is has_candidates
+            assert candidates["dates"] == ["tomorrow"]
             assert bool(candidates.get("promise_kind")) is has_candidates
             op = {"op": "upsert", "topic": "Interview preparation", "importance": "moderate",
                   "category": "thread", "content": "The user discussed possible interview practice tomorrow.",
@@ -373,7 +374,8 @@ async def test_unsupported_metadata_commits_narrative_and_discloses_fields(tmp_p
         assert "practice" in note["content"]
         assert not {"event_at", "follow_up_at", "promise_owner"}.intersection(note)
         assert run["attempts"][0]["metadata_outcomes"] == [
-            {"operation": 1, "field": field, "outcome": "omitted"}
+            {"operation": 1, "field": field, "outcome": "omitted",
+             "reason": "unsupported_promise" if field == "promise_source" else "unsupported_date"}
             for field in ("event_at", "follow_up_at", "promise_source")
         ]
 
@@ -402,7 +404,9 @@ async def test_metadata_preserves_evidence_and_pending_fields_across_restart(tmp
         provider = CompactProvider(lambda doc: update(
             doc, "The venue is chosen. Follow-up timing is undecided.", event_at="yesterday",
             deferred_metadata=["follow_up_at"]))
-        second = (await refresh(service, client, provider))["continuity"]["items"][0]
+        state = (await refresh(service, client, provider))["continuity"]
+        assert state["maintenance"]["unresolved"]["metadata"] == 1
+        second = state["items"][0]
         assert second["event_at"] == first["event_at"]
         assert second["promise_owner"] == "assistant"
         assert second["pending_metadata"] == ["follow_up_at"]
@@ -411,8 +415,8 @@ async def test_metadata_preserves_evidence_and_pending_fields_across_restart(tmp
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         run = await client.request("memory_continuity_run", task_id=run_id)
         assert run["metadata_outcomes"] == [
-            {"operation": 1, "field": "event_at", "outcome": "omitted"},
-            {"operation": 1, "field": "follow_up_at", "outcome": "deferred"},
+            {"operation": 1, "field": "event_at", "outcome": "omitted", "reason": "unsupported_date"},
+            {"operation": 1, "field": "follow_up_at", "outcome": "deferred", "reason": "awaiting_evidence"},
         ]
         saved = await client.request("memory_continuity_item", item_id=first["id"])
         assert saved["pending_metadata"] == ["follow_up_at"]
@@ -432,3 +436,67 @@ async def test_metadata_preserves_evidence_and_pending_fields_across_restart(tmp
         assert final["follow_up_at"] == "2027-02-08T16:00:00+00:00"
         assert final.get("event_at") is final.get("promise_owner") is final.get("promise_kind") is None
         assert not final.get("pending_metadata")
+        assert (await client.request("memory_state"))["continuity"]["maintenance"]["unresolved"]["total"] == 0
+
+
+async def test_relative_literal_shared_by_different_local_days_is_omitted(tmp_path, monkeypatch):
+    from test_memory_maintenance import add
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        add(service.store, "The rehearsal is tomorrow.", timestamp="2026-11-01T15:30:00+00:00")
+        add(service.store, "The concert is tomorrow.", timestamp="2026-11-01T16:30:00+00:00")
+        provider = CompactProvider(lambda doc: {"operations": [{
+            "op": "upsert", "topic": "Concert", "category": "thread", "importance": "moderate",
+            "content": "The user has a rehearsal and a concert on different days.",
+            "sources": [row["source_refs"]["user"] for row in doc["exchanges"]],
+            "event_at": "tomorrow",
+        }]})
+        state = await refresh(service, client, provider)
+        assert state["continuity"]["items"][0].get("event_at") is None
+        task = service.store.maintenance_status()["latest_attempt"]["task_id"]
+        run = await client.request("memory_continuity_run", task_id=task)
+        assert run["metadata_outcomes"] == [{"operation": 1, "field": "event_at", "outcome": "omitted", "reason": "ambiguous_date"}]
+
+
+async def test_carry_only_originals_supporting_saved_date_at_citation_limit(tmp_path, monkeypatch):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        session = service.current_session["id"]
+        service.store.complete_turn(session, "The concert opens on 2027-02-09.", "Understood.")
+        for detail in ("The invitation is printed.", "The venue is ready.", "Tickets are available."):
+            service.store.complete_turn(session, detail, "Thanks for the concert update.")
+
+        def propose(doc):
+            return {"operations": [{
+                "op": "upsert", "topic": "Concert", "category": "thread", "importance": "moderate",
+                "content": "The concert arrangements are progressing.",
+                "sources": [ref for row in doc["exchanges"] for ref in row["source_refs"].values()],
+                **({"note_ref": doc["items"][0]["note_ref"]} if doc["items"] else
+                   {"event_at": "2027-02-09"}),
+            }]}
+
+        provider = CompactProvider(propose)
+        initial = (await refresh(service, client, provider))["continuity"]["items"][0]
+        assert initial["source_count"] == 8
+        service.store.complete_turn(session, "The concert invitations are in the mail.", "Understood.")
+        updated = (await refresh(service, client, provider))["continuity"]["items"][0]
+        assert updated["revision"] == initial["revision"] + 1
+        assert updated["event_at"] == initial["event_at"]
+        assert updated["source_count"] == 3
+
+
+async def test_two_promise_kinds_in_one_original_cannot_assign_the_wrong_kind(tmp_path, monkeypatch):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        service.store.complete_turn(
+            service.current_session["id"], "Which concert reminders will you handle?",
+            "I will use the already configured concert reminder. I will ask how the concert went.",
+        )
+        provider = CompactProvider(lambda doc: {"operations": [{
+            "op": "upsert", "topic": "Concert", "category": "relationship", "importance": "moderate",
+            "content": "The companion agreed to ask how the concert went.",
+            "sources": ["s2"], "promise_source": "s2",
+        }]})
+        state = await refresh(service, client, provider)
+        assert state["continuity"]["items"][0].get("promise_kind") is None
+        attempt = state["continuity"]["maintenance"]["latest_attempt"]
+        assert attempt["outcome"] == "committed"
+        assert attempt["metadata_outcomes"][0]["reason"] == "unsupported_promise"

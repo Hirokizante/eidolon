@@ -56,6 +56,7 @@ def maintenance_indicator(status: dict) -> str:
         return ""
     state = ("check settings" if unresolved.get("configuration_attention") else
              "evidence set aside" if unresolved.get("set_aside") else
+             "awaiting evidence" if unresolved.get("metadata") and not unresolved.get("recovering") else
              "recovering" if status.get("maintenance", {}).get("automatic") else "needs retry")
     return f"Life: {state} /runs"
 

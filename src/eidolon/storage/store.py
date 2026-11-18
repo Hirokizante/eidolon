@@ -1558,6 +1558,12 @@ class Store:
                              "recovering" if saved["status"] == "pending" else
                              problem_state(read_reason(json.loads(row[0]) if row[0] else None)))
                 unresolved[condition] += 1
+            pending_fields = self.db.execute(
+                "SELECT sum(json_array_length(data,'$.pending_metadata')) FROM continuity_items "
+                "WHERE scope=?", (scope,),
+            ).fetchone()[0]
+            if pending_fields:
+                unresolved["metadata"] = pending_fields
             unresolved["total"] = sum(unresolved.values())
             successful = self.db.execute(
                 "SELECT max(s.updated_at) FROM maintenance_stages s JOIN maintenance_tasks t "
@@ -1921,7 +1927,9 @@ class Store:
             for start in range(0, len(prior_ids), 32):
                 chronology_rows.update({entry["id"]: entry for entry in self.continuity_evidence(
                     prior_ids[start:start + 32], scope=scope)})
+            from ..memory.metadata import METADATA_KEYS, METADATA_REASONS, field_outcome
             metadata_outcomes = []
+            pending_metadata = False
             changed, targets = 0, set()
             for index, operation in enumerate(operations):
                 if not isinstance(operation, dict):
@@ -1957,17 +1965,19 @@ class Store:
                            "promise_kind", "content_format"}
                 allowed.update({"change", "topic", "importance", "replaces_item_id", "archive_reason",
                                 "decision_reason"})
+                if (action == "upsert" and operation.get("content_format") == "narrative"
+                        and not task_id.startswith(("narrative:", "review:", "repair:"))):
+                    allowed.update({"metadata_selections", "metadata_outcomes"})
                 fields = operation.get("metadata_outcomes", {})
                 if "metadata_outcomes" in operation:
                     if (action != "upsert" or operation.get("content_format") != "narrative"
                             or not isinstance(fields, dict)
-                            or any(key not in {"event_at", "follow_up_at", "promise_source"}
-                                   or outcome not in ("omitted", "deferred")
+                            or any(key not in METADATA_KEYS or METADATA_KEYS[key] in operation
+                                   or not isinstance(outcome, str) or outcome not in METADATA_REASONS
                                    for key, outcome in fields.items())):
                         raise ContinuityValidationError("Invalid metadata outcome", code="schema")
-                    allowed.add("metadata_outcomes")
-                    metadata_outcomes.extend({"operation": index + 1, "field": key, "outcome": value}
-                                             for key, value in fields.items())
+                    metadata_outcomes.extend(field_outcome(index + 1, key, reason)
+                                             for key, reason in fields.items())
                 if set(operation) - allowed:
                     raise ContinuityValidationError("Malformed continuity operation", code='schema')
                 item_id = operation.get("item_id") or str(uuid.uuid5(
@@ -2081,9 +2091,21 @@ class Store:
                         "Continuity content must preserve cited original wording",
                         code="content",
                     )
-                item = dict(previous or {"id": item_id, "scope": scope, "state": "open",
+                item: dict = dict(previous or {"id": item_id, "scope": scope, "state": "open",
                                          "locked": False, "sources": []})
                 change = operation.get("change") or {}
+                if narrative and action == "upsert":
+                    pending = set(item.get("pending_metadata", []))
+                    for field, stored in METADATA_KEYS.items():
+                        if fields.get(field) == "awaiting_evidence":
+                            pending.add(field)
+                        elif stored in operation:
+                            pending.discard(field)
+                    if pending:
+                        pending_metadata = True
+                        item["pending_metadata"] = sorted(pending)
+                    else:
+                        item.pop("pending_metadata", None)
                 if change.get("kind") == "background":
                     context = {"content": change["context"], "sources": [
                         {key: value for key, value in source.items() if key != "excerpt"}
@@ -2141,16 +2163,6 @@ class Store:
                     if narrative and not format_rewrite:
                         from .support import carry_metadata_support
                         sources = carry_metadata_support(item, operation, sources)
-                        pending = set(item.get("pending_metadata", []))
-                        for field in ("event_at", "follow_up_at", "promise_source"):
-                            if fields.get(field) == "deferred":
-                                pending.add(field)
-                            elif ("promise_owner" if field == "promise_source" else field) in operation:
-                                pending.discard(field)
-                        if pending:
-                            item["pending_metadata"] = sorted(pending)
-                        else:
-                            item.pop("pending_metadata", None)
                         if category != "emotion" and previous and previous["category"] == "emotion":
                             item.pop("expires_at", None)
                     elif not format_rewrite and not task_id.startswith("narrative:"):
@@ -2242,8 +2254,7 @@ class Store:
                 "error=NULL,reason=NULL,recovery_state=?,"
                 "next_retry_at=NULL,committed_revision=?,updated_at=? WHERE task_id=? AND stage='continuity'",
                 (json.dumps({**recovery, "metadata_outcomes": metadata_outcomes,
-                             "outcome": "deferred" if any(entry["outcome"] == "deferred"
-                                 for entry in metadata_outcomes) else "resolved"}),
+                             "outcome": "deferred" if pending_metadata else "resolved"}),
                  new_revision, utc_now(), task_id),
             )
             if attempt_id is not None:

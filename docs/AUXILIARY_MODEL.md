@@ -463,12 +463,13 @@ Unknown references, incomplete operations, protected-note changes, unsupported
 transitions, invalid replacements, and stale transactional snapshots reject the
 entire proposal. Invalid operations are never dropped to produce a success.
 
-The app offers verified date-literal and promise-kind candidates from complete
+The app offers calendar literals and attributable promise-kind candidates from complete
 originals. Candidates establish eligibility, not relevance: the model chooses
-`event_at`/`follow_up_at` or a cited `promise_source` when it belongs to that note.
+`event_at`/`follow_up_at` or a cited `promise_source` only when the relevant claim is established in full context. A literal can appear in a
+question, hypothetical or fictional passage. Keep that distinction in the narrative.
 The compiler supplies the promise speaker and kind; it does not schedule actions.
 Omitting a field preserves its saved value. An unsupported selection also preserves
-the value and its supporting originals. Run details identify each omitted field.
+the value and its supporting originals. Run details identify each rejected selection and explicit deferral, with its reason.
 To remove a value, submit JSON null on an evidenced, temporally ordered correction.
 Clearing `promise_source` removes both speaker and kind. List actionable fields that
 await new evidence in `deferred_metadata` on the upsert. They remain on the note
