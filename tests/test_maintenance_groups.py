@@ -343,3 +343,61 @@ async def test_correction_cannot_substitute_a_different_exchange(tmp_path, monke
         assert run["status"] == "partial"
         assert run["groups"][0]["reason"]["code"] == "validation.conflict"
         assert len(run["changes"]) == 1
+
+
+async def test_group_correction_with_context_expansion_keeps_the_original_obligation(
+    tmp_path, monkeypatch,
+):
+    from test_current_life_policy import seed_note
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        history = seed_note(service.store, topic="Quilting lessons")
+        note = seed_note(service.store)
+        service.store.complete_turn(service.current_session["id"],
+                                    "My project has sketches and my garden needs work.", "Okay.")
+
+        def initial(doc):
+            ref = next(n["note_ref"] for n in doc["items"] if n["topic"] == note["topic"])
+            fresh = doc["batch_source_refs"][0]
+            return {"operations": [
+                {**admission(note["topic"], "s999"), "note_ref": ref},
+                admission("Garden", fresh),
+            ]}
+
+        state = await refresh(service, client, CompactProvider(initial, adapt=False))
+        task_id = state["continuity"]["maintenance"]["latest_attempt"]["task_id"]
+        # The correction may also request context from another indexed note.
+        # Remove optional details from the first pass by populating unrelated topics.
+        for i in range(12):
+            service.store.create_continuity_item(
+                "Synthetic exhibit background.", "thread", topic=f"Exhibit {i}",
+                importance="moderate", max_notes=64)
+        await client.request("save_preferences", preferences={"continuity_max_notes": 64})
+
+        def correct(doc):
+            target = next(n for n in doc["topic_index"] if n["topic"] == note["topic"])
+            prior = next(n for n in doc["topic_index"] if n["topic"] == history["topic"])
+            assert doc["unresolved_group"]["note_refs"] == [target["note_ref"]]
+            if "expanded_note_ref" not in doc:
+                assert not prior["detail_available"]
+                return {"operations": [{"op": "defer", "reason": "context_required",
+                                        "note_ref": prior["note_ref"]}]}
+            assert prior["detail_available"]
+            return {"operations": [{
+                **admission(note["topic"], doc["batch_source_refs"][0]),
+                "note_ref": target["note_ref"], "content": "The user's project now has sketches.",
+            }]}
+
+        provider = CompactProvider(correct, adapt=False)
+        service.continuity_worker.provider = provider
+        assert (await client.request("memory_retry", task_id=task_id))["refresh_queued"]
+        if service._continuity_task is not None:
+            await service._continuity_task
+        assert len(provider.calls) == 2
+        run = await client.request("memory_continuity_run", task_id=task_id)
+        assert run["status"] == "completed" and run["budget"]["used"] == 2
+        assert len(run["attempts"]) == 3
+        assert [entry["status"] for entry in run["groups"]] == ["completed", "completed"]
+        assert service.store.get_continuity_item(note["id"])["content"] == (
+            "The user's project now has sketches."
+        )

@@ -72,15 +72,16 @@ The schema also counts toward an explicit character allowance. Nothing is clippe
 to manufacture a fit. An unknown context window remains unknown; removing a
 character cap does not establish the provider's actual capacity.
 
-The response cap also bounds work: smaller allowances select fewer whole
-exchanges, fewer operations and shorter prose. The request carries per-field and
-total prose limits, which are checked locally. Planning leaves 10% (at least 32
-tokens) for response estimation and reserves JSON/reference bookkeeping before
-allocating prose. Ordinary, capacity and legacy tasks use their own overheads and
-operation ceilings. For example, 512 output tokens permits one ordinary operation
-and one complete exchange per new batch; the default 4096 allows up to eight.
-One exchange can still require more work than estimated; it remains pending if
-the model cannot express the useful changes within the plan.
+Smaller response allowances lead the planner to select fewer whole exchanges and
+ask for fewer operations and shorter prose. Planning leaves 10% (at least 32
+tokens) for estimation and reserves JSON/reference bookkeeping before allocating
+prose. For example, with 512 output tokens the planner asks for one ordinary
+operation and selects one exchange per new batch. The default 4096 plans up to
+eight. A complete proposal may exceed these estimates. The app still enforces
+the task's operation and field bounds, the response character cap, provider
+completion status, and the configured token limits when the provider reports
+enough usage to check them. Exact token consumption stays unknown when usage is
+missing. The planning tokenizer's count is an estimate on compatible routes.
 
 Reasoning/thinking can consume the output allowance. If output is incomplete,
 reduce supported reasoning effort or increase Max Response Length within the bounds.
@@ -422,8 +423,8 @@ Ordinary evidence maintenance uses the versioned `current-life-ordinary-v3`
 proposal contract in [proposals.py](../src/eidolon/memory/proposals.py).
 The model chooses substantive changes in one request: topic, importance,
 category, prose, supporting sources, and closure/replacement decisions.
-It returns `{"operations":[...]}` with 1–24 explicit operations, further bounded
-by the request's `response_limits`. A new note is:
+It returns `{"operations":[...]}` with 1–24 explicit operations. The request's
+`response_limits` gives planning targets for a complete proposal. A new note is:
 
 ```json
 {"operations":[{"op":"upsert","topic":"Interview preparation","importance":"moderate","category":"thread","content":"The user's interview is approaching; practice remains undecided.","sources":["s1"],"change":{"kind":"development","evidence":["s1"]}}]}
@@ -447,19 +448,30 @@ warranted, rather than a fallback for an invalid operation.
 
 Every request includes `topic_index`, with stable local note references, topics,
 importance, protection and detail availability for every active note. Selected
-`items` contain full note details; their saved background appears as complete
-`supporting_exchanges`, separate from the new `exchanges`. Index-only notes are
-visible for duplicate/protection decisions but cannot be changed. Legacy targets
+`items` contain full note details. For larger collections the worker ranks
+optional details using the batch, topics, saved note text and linked evidence.
+Ranking helps select context for this request. The complete index stays available
+for duplicate and protection decisions, and updates require the detailed note.
+Saved support appears as complete `supporting_exchanges`, separate from the new
+`exchanges`. Legacy targets
 must fit with their required details before dispatch. Capacity-only review needs
 the saved note details for policy decisions and preserves its evidence locally.
 
-When useful work needs an index-only note's details, return sole
+When useful work needs an indexed note's details or earlier evidence, return sole
 `{"operations":[{"op":"defer","reason":"context_required","note_ref":"n1"}]}`.
+The worker can make one follow-up call with that note prioritized and eligible,
+previously unseen originals from its evidence history. The complete batch and
+index remain in the request. Any extra `historical_originals` include saved
+dispositions and provide read-only context. The batch and existing note support
+keep their separate citation roles. The follow-up uses the same route and
+request limits and consumes a call from the same root allowance and, when
+applicable, the daily allowance. An unavailable expansion or a second context
+request leaves the evidence pending.
+
 When the useful changes cannot fit the response plan, return sole
-`{"operations":[{"op":"defer","reason":"response_budget"}]}`. Deferral retains
-the evidence and reports the limiting condition; it is not a successful no-change
-and does not complete a partial set of operations. Increase the relevant allowance
-and refresh to reconsider the retained work.
+`{"operations":[{"op":"defer","reason":"response_budget"}]}`. Deferral retains the
+evidence and reports the limiting condition. The work remains unresolved for a
+future retry or a relevant change in evidence or settings.
 
 Note references (`n1`, etc.) and source references are bounded and local to the
 displayed request; reusing them from another request is unsupported. In ordinary

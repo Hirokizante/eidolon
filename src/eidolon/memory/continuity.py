@@ -101,6 +101,8 @@ class ContinuityValidationError(ValueError):
         "input_state": "The complete topic/protection index or required note details exceed "
                        "the input settings. Increase the auxiliary input allowance/context window "
                        "in Preferences. Evidence is kept.",
+        "context_required": "More note context is required. The evidence is kept for retry.",
+        "context_tokens": "The provider reported usage above the configured context window.",
     }
     REASONS.update({
         "timestamp": "Source timestamps must be valid and include a timezone.",

@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 from collections.abc import Callable
 from contextlib import aclosing
 from datetime import datetime, timedelta, timezone as dt_timezone
@@ -27,12 +28,52 @@ from .continuity import (
     ContinuityValidationError, Scope,
     active_items, aware_time, needs_note_metadata,
 )
-from .proposals import GroupPlan, OrdinaryRequest, SnapshotRequest, parse_proposal, task_contract
+from .proposals import (
+    ContextRequired, GroupPlan, OrdinaryRequest, SnapshotRequest, parse_proposal, task_contract,
+)
 from .continuity import note_evidence_sources
 from .maintenance_budget import ResponseLimits
 
 
 LEGACY_REWRITE_BATCH_NOTES = 4
+FOCUSED_NOTE_LIMIT = 6
+EXPANSION_ORIGINAL_LIMIT = 8
+
+
+def _context_words(text: str) -> set[str]:
+    return set(re.findall(r"[^\W\d_]{4,}", text.casefold())) - {
+        "about", "after", "also", "another", "been", "before", "could", "from", "have",
+        "just", "more", "only", "other", "should", "some", "still", "than", "that",
+        "their", "them", "then", "there", "these", "they", "this", "those", "under",
+        "user", "want", "were", "what", "when", "where", "which", "will", "with", "would",
+    }
+
+
+def _focused_notes(items: list[dict], inputs: list[dict], evidence: dict[int, dict],
+                   *, targets: set[str], at_capacity: bool) -> list[dict]:
+    """Rank optional detail while leaving the complete index in its original order."""
+    if len(items) <= FOCUSED_NOTE_LIMIT:
+        return items
+    words = _context_words(" ".join(row[role + "_content"] for row in inputs
+                                    for role in ("user", "assistant")))
+    ranked = []
+    for item in items:
+        saved = " ".join(evidence[source["exchange_id"]].get(source["role"] + "_content", "")
+                         for source in note_evidence_sources(item)
+                         if source["exchange_id"] in evidence)
+        score = (3 * len(words & _context_words(item.get("topic", "")))
+                 + len(words & _context_words(item.get("content", "") + " " + saved)))
+        ranked.append((score, item))
+    selected = [item for score, item in sorted(ranked, key=lambda pair: -pair[0])
+                if score and item["id"] not in targets][:FOCUSED_NOTE_LIMIT]
+    if at_capacity and len(selected) < FOCUSED_NOTE_LIMIT:
+        # Give capacity decisions some eligible replacement detail as well.
+        fallback = [item for _, item in ranked if item not in selected
+                    and item["id"] not in targets and item.get("state") == "open"
+                    and not (item.get("locked") or item.get("manual_lock")
+                             or item.get("user_created") or item.get("origin") == "user_note")]
+        selected.extend(fallback[:FOCUSED_NOTE_LIMIT - len(selected)])
+    return [item for item in items if item["id"] in targets] + selected
 
 
 def validation_failure_notice(reason: str) -> str:
@@ -171,7 +212,12 @@ class ContinuityWorker:
 
     def _configure_budget(self, profile: Any) -> None:
         self.budget = ContextBudget.for_profile(profile)
-        thinking = getattr(profile, "parameters", {}).get("thinking")
+        parameters = getattr(profile, "parameters", {})
+        self._output_token_cap = next((parameters[key] for key in
+                                      ("max_tokens", "max_completion_tokens")
+                                      if type(parameters.get(key)) is int and parameters[key] > 0),
+                                     None)
+        thinking = parameters.get("thinking")
         reserve = (thinking.get("budget_tokens") if isinstance(thinking, dict)
                    and thinking.get("type") != "disabled" else None)
         self.output_tokens = max(0, self.budget.output_tokens - (
@@ -228,7 +274,9 @@ class ContinuityWorker:
     def _messages(self, task: dict, state: dict) -> list[dict]:
         return self._request(task, state)[0]
 
-    def _request(self, task: dict, state: dict) -> tuple[list[dict], SnapshotRequest]:
+    def _request(self, task: dict, state: dict, *,
+                 expansion: ContextRequired | None = None,
+                 output: MaintenanceOutput | None = None) -> tuple[list[dict], SnapshotRequest]:
         if task.get("repair_target"):
             return self._repair_request(task, state)
         # Every active topic is mandatory context. Detailed bodies and complete
@@ -252,6 +300,8 @@ class ContinuityWorker:
             raise ContinuityValidationError("Complete topic index exceeds reference bounds",
                                             code="input_state")
         rewrite = task["id"].startswith("narrative:")
+        review = task["id"].startswith("review:")
+        expanded_id = expansion.note_id if expansion else None
         rewrite_limit = limits.max_operations
         task_ids = {row["exchange_id"] for row in task["inputs"]}
         rewrite_targets: set[str] = set()
@@ -317,12 +367,15 @@ class ContinuityWorker:
 
         def assemble() -> tuple[list[dict], SnapshotRequest]:
             _, instructions, _, request_type = task_contract(task["id"])
-            request = request_type(document, inputs=task["inputs"], state=state,
+            request = request_type(document, inputs=task["inputs"],
+                                   state={**state, "source_exchanges": document["supporting_exchanges"]},
                                    scope=self.scope, timezone=self.timezone,
                                    max_notes=self.max_notes)
             if isinstance(request, OrdinaryRequest) and (focus := task.get("group_focus")):
                 request.set_group_focus(focus["obligation"])
             payload = request.document
+            if expansion:
+                payload["expanded_note_ref"] = expansion.note_ref
             previous = task.get("stages", {}).get("continuity", {}).get("recovery_state") or {}
             if ("previous_diagnostic" in payload
                     and previous.get("references") != request.references):
@@ -336,10 +389,11 @@ class ContinuityWorker:
         if self.counter is None:
             self.counter = TokenCounter(self.model)
 
+        output = output or self._output(task["id"])
+        response_format = output.response_format if output else None
+
         def fits() -> bool:
             assembled, _ = assemble()
-            output = self._output(task["id"])
-            response_format = output.response_format if output else None
             if self.max_input_chars is not None:
                 chars = sum(len(json.dumps(message, ensure_ascii=False)) for message in assembled)
                 if response_format:
@@ -366,7 +420,20 @@ class ContinuityWorker:
                                             code="input_limit")
         evidence = {row["exchange_id"]: row for row in state.get("source_exchanges", [])}
         evidence.update({row["exchange_id"]: row for row in task["inputs"]})
-        for item in items:
+        previous = self._request_references or {}
+        targets = set((task.get("group_focus") or {}).get("obligation", {}).get("target_ids", []))
+        details = (items if rewrite or review else
+                   _focused_notes(items, task["inputs"], evidence, targets=targets,
+                                  at_capacity=document["available_slots"] == 0))
+        if expansion is not None:
+            expanded_item = next((item for item in items if item["id"] == expanded_id), None)
+            if expanded_item is None:
+                raise expansion
+            correction_targets = [item for item in details
+                                  if item["id"] in targets and item["id"] != expanded_id]
+            details = [*correction_targets, expanded_item,
+                       *(item for item in details if item["id"] not in targets | {expanded_id})]
+        for item in details:
             entry = {key: item[key] for key in fields if key in item}
             if item.get("content_format") != "narrative" and item.get("sources"):
                 # A legacy note's content is already present in its originals.
@@ -375,10 +442,12 @@ class ContinuityWorker:
             supporting = document["supporting_exchanges"]
             supplied_ids = task_ids | {row["exchange_id"] for row in supporting}
             required_ids = {source["exchange_id"] for source in note_evidence_sources(item)}
-            if not task["id"].startswith("review:") and not required_ids <= evidence.keys():
+            if not review and not required_ids <= evidence.keys():
+                if expansion is not None and item["id"] == expanded_id:
+                    raise expansion
                 continue
             extra = [evidence[key] for key in sorted(required_ids - supplied_ids)
-                     if key in evidence and not task["id"].startswith("review:")]
+                     if key in evidence and not review]
             document["supporting_exchanges"] = supporting + [
                 {key: value for key, value in row.items() if key not in {"user", "assistant", "id"}}
                 for row in extra]
@@ -415,10 +484,53 @@ class ContinuityWorker:
                 document["supporting_exchanges"] = supporting
                 if convert:
                     document["legacy_rewrite_ids"].pop()
+                if expansion and item["id"] == expanded_id:
+                    raise ContextRequired(item["id"], expansion.note_ref, code="input_state")
+                if (expansion and item["id"] in targets
+                        and item["id"] in previous.get("notes", {}).values()):
+                    raise expansion
                 if item["id"] in rewrite_targets:
                     raise ContinuityValidationError("Required rewrite details exceed settings",
                                                     code="input_state")
+            if detail_fits and item["id"] == expanded_id and not (rewrite or review):
+                already_supplied = {source["exchange_id"]
+                                    for source in previous.get("sources", {}).values()}
+                self._add_historical_context(document, item["id"],
+                                             supplied_ids | required_ids | already_supplied, fits)
+        if expansion:
+            prior_notes = previous.get("notes", {})
+            if expanded_id in prior_notes.values() and not document.get("historical_originals"):
+                raise expansion
         return assemble()
+
+    def _add_historical_context(self, document: dict, note_id: str, supplied_ids: set[int],
+                                fits: Callable[[], bool]) -> None:
+        from ..storage.support import associations
+
+        by_exchange: dict[int, dict[str, str]] = {}
+        for source in reversed(associations(self.store, note_id, self.scope)):
+            key = source["exchange_id"]
+            if not source["eligible"] or key in supplied_ids:
+                continue
+            by_exchange.setdefault(key, {})[source["role"]] = source["disposition"]
+        # Both original messages travel together. A retracted association in
+        # either role makes the whole exchange ineligible as optional history.
+        ids = [key for key, roles in by_exchange.items() if "retracted" not in roles.values()][:32]
+        originals = {row["exchange_id"]: row for row in
+                     self.store.continuity_evidence(ids, scope=self.scope)}
+        for key in ids:
+            if key not in originals:
+                continue
+            rows = document.setdefault("historical_originals", [])
+            rows.append({field: value for field, value in originals[key].items()
+                         if field not in {"user", "assistant", "id"}})
+            rows[-1]["saved_dispositions"] = by_exchange[key]
+            if not fits():
+                rows.pop()
+                if not rows:
+                    del document["historical_originals"]
+            elif len(rows) == EXPANSION_ORIGINAL_LIMIT:
+                break
 
     def _contract_id(self, task: dict) -> str:
         return "repair:" + task["id"] if task.get("repair_target") else task["id"]
@@ -508,13 +620,14 @@ class ContinuityWorker:
 
     async def _propose(self, task: dict, state: dict, *,
                        output: MaintenanceOutput | None = None,
-                       on_dispatch: Callable[[], None] | None = None
+                       on_dispatch: Callable[[], None] | None = None,
+                       prepared: tuple[list[dict], SnapshotRequest] | None = None,
                        ) -> list[dict] | GroupPlan:
         chunks: list[str] = []
         size = 0
         finished = False
         reasoning_seen = False
-        messages, request = self._request(task, state)
+        messages, request = prepared or self._request(task, state, output=output)
         self._request_references = request.references
         record = getattr(self.store, "record_request_metrics", None)
         output = output or self._output(self._contract_id(task))
@@ -535,7 +648,7 @@ class ContinuityWorker:
                 asyncio.timeout(self.timeout),
                 aclosing(measured_stream(
                     self.provider.stream(messages, tools=None, presentation="plain", **options),
-                    record=record_metrics if record else None,
+                    record=record_metrics if record else None, validate_usage=self._check_token_usage,
                 )) as stream,
             ):
                 async for event in stream:
@@ -563,10 +676,10 @@ class ContinuityWorker:
                             code="tools",
                         )
                     elif event.get("type") == "usage":
-                        counts = numeric_usage(event.get("usage"))
-                        if counts and self.store is not None:
+                        usage = numeric_usage(event.get("usage"))
+                        if usage and self.store is not None:
                             self.store.record_maintenance_usage(
-                                task["id"], "continuity", usage=counts,
+                                task["id"], "continuity", usage=usage,
                                 attempt_id=self._attempt_id)
                     elif event.get("type") == "finish":
                         if event.get("reason") != "stop":
@@ -581,16 +694,28 @@ class ContinuityWorker:
             raise ContinuityValidationError("The maintenance stream did not finish cleanly",
                                             code="output_incomplete")
         proposal = parse_proposal("".join(chunks))
-        limits = self._response_limits(self._contract_id(task))
-        if self.counter.value(proposal) > limits.response_tokens:
-            raise ContinuityValidationError("Response exceeds planned tokens", code="output_plan")
         if isinstance(request, OrdinaryRequest):
             return request.compile_groups(proposal, focus=task.get("group_focus"))
         return request.compile(proposal)
 
-    def _start_attempt(self, task: dict, output: MaintenanceOutput | None) -> None:
+    def _check_token_usage(self, metrics: dict, usage: dict) -> None:
+        # These are provider counters. The planning tokenizer cannot establish
+        # actual usage on an arbitrary compatible route.
+        output = max(metrics.get("output_tokens") or 0, usage.get("output_tokens", 0),
+                     usage.get("completion_tokens", 0))
+        if self._output_token_cap is not None and output > self._output_token_cap:
+            raise ContinuityValidationError("Reported output exceeds the cap", code="output_tokens")
+        context = max(metrics.get("context_tokens") or 0, usage.get("total_tokens", 0),
+                      (metrics.get("input_tokens") or 0) + output)
+        if self.budget.window is not None and context > self.budget.window:
+            raise ContinuityValidationError("Reported usage exceeds the context window",
+                                            code="context_tokens")
+
+    def _start_attempt(self, task: dict, output: MaintenanceOutput | None, *,
+                       expansion: bool = False) -> None:
         if self._dispatched:
             return
+        group_id = (task.get("group_focus") or {}).get("id")
         if self.execution is not None:
             provenance = self.execution.provenance()
             original_output = {key: provenance.get(key) for key in
@@ -614,14 +739,42 @@ class ContinuityWorker:
             self._attempt_id = self.store.start_maintenance_attempt(
                 task["id"], provenance, now=datetime.now(dt_timezone.utc),
                 daily_limit=self.daily_retry_calls,
-                group_id=(task.get("group_focus") or {}).get("id"),
+                group_id=group_id, group_continuation=expansion,
             )
         else:
             self.store.record_maintenance_usage(
                 task["id"], "continuity", called=True, now=datetime.now(dt_timezone.utc),
                 daily_limit=self.daily_retry_calls,
-                group_id=(task.get("group_focus") or {}).get("id"))
+                group_id=group_id, group_continuation=expansion)
         self._dispatched = True
+
+    async def _propose_with_context(self, task: dict, state: dict, *,
+                                    output: MaintenanceOutput | None,
+                                    prepared: tuple[list[dict], SnapshotRequest]
+                                    ) -> list[dict] | GroupPlan:
+        try:
+            return await self._propose(
+                task, state, output=output, prepared=prepared,
+                on_dispatch=lambda: self._start_attempt(task, output))
+        except ContextRequired as exc:
+            stage = self.store.get_maintenance_stage(task["id"])
+            if (stage["budget"]["exhausted"]
+                    or stage["recovery_source"] == "automatic" and self.daily_allowance["exhausted"]):
+                raise
+            expanded = self._request(task, state, expansion=exc, output=output)
+            if self._attempt_id is not None:
+                from .diagnostics import safe_reason
+                reason_code = "validation." + exc.code
+                self.store.finish_maintenance_attempt(
+                    self._attempt_id, "failed", reason_code=reason_code,
+                    diagnostic=safe_reason(reason_code, context={
+                        **exc.context, "attempt_id": self._attempt_id,
+                    }))
+            self._attempt_id = None
+            self._dispatched = False
+        return await self._propose(
+            task, state, output=output, prepared=expanded,
+            on_dispatch=lambda: self._start_attempt(task, output, expansion=True))
 
     def _invariant_fingerprint(self, task_id: str, targets: list[str]) -> str:
         task = self.store.get_maintenance_task(task_id)
@@ -1025,14 +1178,14 @@ class ContinuityWorker:
             self._task_id = task["id"]
             # The task may be from an older worker configuration. Enforce the
             # allowance again without truncating its immutable evidence set.
-            self._messages(task, state)
+            output = self._output(self._contract_id(task))
+            prepared = self._request(task, state, output=output)
             claim = getattr(self.store, "claim_maintenance_stage", None)
             if claim and not claim(task["id"], "continuity"):
                 self._last_result = "already claimed"
                 return False
-            output = self._output(self._contract_id(task))
-            operations = await self._propose(
-                task, state, output=output, on_dispatch=lambda: self._start_attempt(task, output))
+            operations = await self._propose_with_context(
+                task, state, output=output, prepared=prepared)
             if isinstance(operations, GroupPlan):
                 from ..storage.groups import save
                 focus = task.get("group_focus")

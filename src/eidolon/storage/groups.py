@@ -105,11 +105,12 @@ def save(store: Store, task_id: str, proposals: list[GroupProposal], *,
         )
 
 
-def note_correction(store: Store, task_id: str, group_id: str, attempt_id: str | None) -> None:
+def note_correction(store: Store, task_id: str, group_id: str, attempt_id: str | None, *,
+                    continuation: bool = False) -> None:
     if not store.db.execute(
-        "UPDATE maintenance_groups SET corrections=corrections+1,attempt_id=? "
+        "UPDATE maintenance_groups SET corrections=corrections+?,attempt_id=? "
         "WHERE task_id=? AND id=? AND status='failed'",
-        (attempt_id, task_id, group_id),
+        (int(not continuation), attempt_id, task_id, group_id),
     ).rowcount:
         raise ContinuityValidationError("Maintenance group no longer needs correction", code="conflict")
 

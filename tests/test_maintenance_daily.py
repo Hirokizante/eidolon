@@ -511,3 +511,39 @@ async def test_multiple_change_group_corrections_share_daily_allowance_after_res
             assert final["budget"]["pass"] == 3 and final["budget"]["used"] == 1
         finally:
             await restarted.close()
+
+
+@pytest.mark.parametrize("daily_limit", [1, 2])
+async def test_automatic_context_expansion_respects_remaining_daily_calls(
+    tmp_path, monkeypatch, daily_clock, daily_limit,
+):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={
+            "continuity_enabled": True, "continuity_recovery_calls": 1,
+            "continuity_daily_retry_calls": daily_limit, "continuity_max_notes": 64,
+        })
+        note = seed_note(service.store)
+        for i in range(12):
+            service.store.create_continuity_item(
+                "Unrelated exhibit background.", "thread", topic=f"Exhibit {i}",
+                importance="moderate", max_notes=64)
+        service.store.complete_turn(service.current_session["id"], "The supplier called.", "Okay.")
+        await refresh(service, client, CompactProvider(lambda doc: {"operations": []}))
+        task = service.store.pending_maintenance_task()
+        await client.request("save_preferences", preferences={"continuity_recovery_calls": 2})
+        daily_clock.advance(600)
+
+        def respond(doc):
+            target = next(entry for entry in doc["topic_index"] if entry["topic"] == note["topic"])
+            if not target["detail_available"]:
+                return {"operations": [{"op": "defer", "reason": "context_required",
+                                        "note_ref": target["note_ref"]}]}
+            assert doc["expanded_note_ref"] == target["note_ref"]
+            return {"operations": [{"op": "no_change"}]}
+
+        provider = CompactProvider(respond, adapt=False)
+        await automatic(service, provider)
+        stage = service.store.get_maintenance_stage(task["id"])
+        assert len(provider.calls) == daily_limit == stage["budget"]["used"]
+        assert service.continuity_worker.daily_allowance["used"] == daily_limit
+        assert stage["status"] == ("failed" if daily_limit == 1 else "completed")

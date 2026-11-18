@@ -1650,7 +1650,8 @@ class Store:
 
     def start_maintenance_attempt(self, task_id: str, provenance: dict,
                                   stage: str = "continuity", *, now: datetime | None = None,
-                                  daily_limit: int = 6, group_id: str | None = None) -> str:
+                                  daily_limit: int = 6, group_id: str | None = None,
+                                  group_continuation: bool = False) -> str:
         from ..memory.proposals import CONTRACT_VERSIONS
         from ..providers.maintenance import CAPABILITY_SOURCES, OUTPUT_MODES
 
@@ -1717,7 +1718,7 @@ class Store:
             attempt_id = str(uuid.uuid4())
             if group_id is not None:
                 from .groups import note_correction
-                note_correction(self, task_id, group_id, attempt_id)
+                note_correction(self, task_id, group_id, attempt_id, continuation=group_continuation)
             self.db.execute(
                 "INSERT INTO maintenance_attempts(id,task_id,stage,provenance,started_at,outcome,"
                 "recovery_source,recovery_pass,daily_period) VALUES (?,?,?,?,?,'running',?,?,?)",
@@ -1801,7 +1802,8 @@ class Store:
     def record_maintenance_usage(self, task_id: str, stage: str = "continuity", *,
                                   usage: dict | None = None, called: bool = False,
                                   attempt_id: str | None = None, now: datetime | None = None,
-                                  daily_limit: int = 6, group_id: str | None = None) -> None:
+                                  daily_limit: int = 6, group_id: str | None = None,
+                                  group_continuation: bool = False) -> None:
         if stage not in {"continuity", "summary", "reflection"}:
             raise ValueError("Invalid maintenance stage")
         if usage is not None:
@@ -1820,7 +1822,8 @@ class Store:
                 self._charge_automatic_maintenance(task_id, now, daily_limit)
                 if group_id is not None:
                     from .groups import note_correction
-                    note_correction(self, task_id, group_id, attempt_id)
+                    note_correction(self, task_id, group_id, attempt_id,
+                                    continuation=group_continuation)
             if usage and attempt_id:
                 attempt = self.get_maintenance_attempt(attempt_id)
                 if not attempt or attempt["task_id"] != task_id or attempt["stage"] != stage:

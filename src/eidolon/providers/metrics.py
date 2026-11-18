@@ -85,7 +85,9 @@ def request_metrics(usage: dict, duration: object, *, timings: dict | None = Non
 
 
 async def measured_stream(stream: AsyncIterator[dict], *,
-                          record: Callable[..., Any] | None = None) -> AsyncIterator[dict]:
+                          record: Callable[..., Any] | None = None,
+                          validate_usage: Callable[[dict, dict], None] | None = None
+                          ) -> AsyncIterator[dict]:
     """Record one completed, failed, or cancelled dispatch, including unknown usage."""
     started = monotonic()
     metrics = dict.fromkeys(METRIC_NAMES)
@@ -118,6 +120,8 @@ async def measured_stream(stream: AsyncIterator[dict], *,
                     complete = event.get("reason") in {"stop", "tool_calls"}
                     outcome = "completed" if complete else "failed"
                 yield event
+                if event.get("type") == "usage" and validate_usage is not None:
+                    validate_usage(metrics, usage)
     except (asyncio.CancelledError, GeneratorExit):
         if outcome != "completed":
             outcome = "cancelled"
