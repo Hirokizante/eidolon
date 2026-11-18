@@ -1921,6 +1921,7 @@ class Store:
             for start in range(0, len(prior_ids), 32):
                 chronology_rows.update({entry["id"]: entry for entry in self.continuity_evidence(
                     prior_ids[start:start + 32], scope=scope)})
+            metadata_outcomes = []
             changed, targets = 0, set()
             for index, operation in enumerate(operations):
                 if not isinstance(operation, dict):
@@ -1956,6 +1957,17 @@ class Store:
                            "promise_kind", "content_format"}
                 allowed.update({"change", "topic", "importance", "replaces_item_id", "archive_reason",
                                 "decision_reason"})
+                fields = operation.get("metadata_outcomes", {})
+                if "metadata_outcomes" in operation:
+                    if (action != "upsert" or operation.get("content_format") != "narrative"
+                            or not isinstance(fields, dict)
+                            or any(key not in {"event_at", "follow_up_at", "promise_source"}
+                                   or outcome not in ("omitted", "deferred")
+                                   for key, outcome in fields.items())):
+                        raise ContinuityValidationError("Invalid metadata outcome", code="schema")
+                    allowed.add("metadata_outcomes")
+                    metadata_outcomes.extend({"operation": index + 1, "field": key, "outcome": value}
+                                             for key, value in fields.items())
                 if set(operation) - allowed:
                     raise ContinuityValidationError("Malformed continuity operation", code='schema')
                 item_id = operation.get("item_id") or str(uuid.uuid5(
@@ -2126,14 +2138,26 @@ class Store:
                         item["content_format"] = "narrative"
                     else:
                         item.pop("content_format", None)
-                    # A new claim cannot inherit temporal assertions or promise
-                    # classifications supported only by the superseded wording.
-                    # Earlier values remain available in revision history.
-                    for key in ("event_at", "expires_at", "follow_up_at", "promise_owner",
-                                "promise_kind"):
-                        if (key not in operation and not task_id.startswith("narrative:")
-                                and not format_rewrite):
-                            item.pop(key, None)
+                    if narrative and not format_rewrite:
+                        from .support import carry_metadata_support
+                        sources = carry_metadata_support(item, operation, sources)
+                        pending = set(item.get("pending_metadata", []))
+                        for field in ("event_at", "follow_up_at", "promise_source"):
+                            if fields.get(field) == "deferred":
+                                pending.add(field)
+                            elif ("promise_owner" if field == "promise_source" else field) in operation:
+                                pending.discard(field)
+                        if pending:
+                            item["pending_metadata"] = sorted(pending)
+                        else:
+                            item.pop("pending_metadata", None)
+                        if category != "emotion" and previous and previous["category"] == "emotion":
+                            item.pop("expires_at", None)
+                    elif not format_rewrite and not task_id.startswith("narrative:"):
+                        for key in ("event_at", "expires_at", "follow_up_at", "promise_owner",
+                                    "promise_kind"):
+                            if key not in operation:
+                                item.pop(key, None)
                     for key in ("observed_at", "event_at", "expires_at", "follow_up_at",
                                 "last_mention_at"):
                         if key in operation:
@@ -2215,10 +2239,12 @@ class Store:
             )
             self.db.execute(
                 "UPDATE maintenance_stages SET status='completed',set_aside=0,attempts=attempts+1,"
-                "error=NULL,reason=NULL,recovery_state=json_set(coalesce(recovery_state,'{}'),"
-                "'$.outcome','resolved'),"
+                "error=NULL,reason=NULL,recovery_state=?,"
                 "next_retry_at=NULL,committed_revision=?,updated_at=? WHERE task_id=? AND stage='continuity'",
-                (new_revision, utc_now(), task_id),
+                (json.dumps({**recovery, "metadata_outcomes": metadata_outcomes,
+                             "outcome": "deferred" if any(entry["outcome"] == "deferred"
+                                 for entry in metadata_outcomes) else "resolved"}),
+                 new_revision, utc_now(), task_id),
             )
             if attempt_id is not None:
                 self._finish_maintenance_attempt(attempt_id, "committed")

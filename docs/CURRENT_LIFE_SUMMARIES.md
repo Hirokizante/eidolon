@@ -264,7 +264,7 @@ Reopening the migrated database neither duplicates associations nor resets calls
 
 ### Replay and source chronology
 
-Ordinary maintenance uses the `current-life-ordinary-v2` contract. Each change
+Ordinary maintenance uses the `current-life-ordinary-v3` contract. Each change
 explicitly declares one of five meanings: background enrichment, current development,
 correction, closure, or reopening. State-changing kinds designate the cited batch
 observations supporting that particular claim. Corrections, closures and reopenings
@@ -312,8 +312,8 @@ commits are tracked separately in issue #36.
 Existing notes, immutable revisions and pending batches remain readable without a
 semantic data rewrite or database schema change. For old notes without a designated
 state observation, chronology conservatively uses the latest selected original;
-it never infers relevance from old wording. New ordinary attempts request fresh v2
-intent, including for pre-upgrade pending work. Old v1 output is not translated into
+it never infers relevance from old wording. New ordinary attempts request fresh v3
+intent, including for pre-upgrade pending work. Older output is not translated into
 new intent. Previous attempt provenance, evidence, root/pass budgets and daily
 accounting survive. Legacy conversion and capacity tasks retain their own contracts.
 
@@ -327,6 +327,14 @@ Both budgets and daily usage survive restart. Preferences → Current life expos
 both limits; /runs shows remaining daily calls, next eligibility, and automatic
 versus user-requested attempts. Retry batch requests a separate bounded pass and
 rechecks chronology against the latest notes. See [recovery settings](AUXILIARY_MODEL.md#bounded-recovery-and-configuration-pauses).
+
+An unsupported event date, follow-up date or promise can be omitted while the
+summary is saved. Run details identify the field and operation. Existing supported
+values survive an omitted or rejected replacement. A supported explicit correction
+can clear a value. An actionable field waiting for evidence stays pending on the
+note across restarts. Later updates can resolve it without retrying the original
+batch. Uncertain timing stays in prose. Category expiry and the record of an actual
+follow-up are managed by the application.
 
 Dates, promise metadata and closing a topic still depend on complete original
 statements. Generated prose cannot establish those changes. These deterministic

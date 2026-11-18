@@ -351,3 +351,84 @@ async def test_background_only_change_rejects_whole_patch_and_batch_refs_correct
             "The user's creative project now has sketches.")
         assert service.store.continuity_state()["active_count"] == 2
         assert len(provider.calls) == 2
+
+
+async def test_unsupported_metadata_commits_narrative_and_discloses_fields(tmp_path, monkeypatch):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        service.store.complete_turn(service.current_session["id"], "My interview is coming up.",
+                                    "We could practice for it.")
+        provider = CompactProvider(lambda doc: {"operations": [{
+            "op": "upsert", "topic": "Interview preparation", "importance": "moderate",
+            "category": "thread", "content": "The interview is approaching and practice is possible.",
+            "sources": list(doc["exchanges"][0]["source_refs"].values()),
+            "event_at": "tomorrow", "follow_up_at": [], "promise_source": "unknown",
+        }]})
+        await refresh(service, client, provider)
+        attempt = service.store.maintenance_status()["latest_attempt"]
+        run = await client.request("memory_continuity_run", task_id=attempt["task_id"])
+        assert run["status"] == "completed"
+        assert run["next_action"] == "complete"
+        assert len(provider.calls) == 1
+        note = run["changes"][0]["after"]
+        assert "practice" in note["content"]
+        assert not {"event_at", "follow_up_at", "promise_owner"}.intersection(note)
+        assert run["attempts"][0]["metadata_outcomes"] == [
+            {"operation": 1, "field": field, "outcome": "omitted"}
+            for field in ("event_at", "follow_up_at", "promise_source")
+        ]
+
+
+async def test_metadata_preserves_evidence_and_pending_fields_across_restart(tmp_path, monkeypatch):
+    def update(doc, summary, **fields):
+        exchange = doc["exchanges"][0]
+        note = doc["items"][0] if doc["items"] else None
+        return {"operations": [{
+            "op": "upsert", "topic": "Exhibition", "category": "thread", "importance": "moderate",
+            "content": summary, "sources": list(exchange["source_refs"].values()),
+            **({"note_ref": note["note_ref"]} if note else {}), **fields,
+        }]}
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        service.store.complete_turn(service.current_session["id"], "My exhibition opens tomorrow.",
+                                    "I will attend the exhibition. Could we invite someone?")
+        provider = CompactProvider(lambda doc: update(
+            doc, "The exhibition opens tomorrow and the companion plans to attend.",
+            event_at="tomorrow", promise_source=doc["exchanges"][0]["source_refs"]["assistant"]))
+        first = (await refresh(service, client, provider))["continuity"]["items"][0]
+        assert first["promise_owner"] == "assistant"
+
+        service.store.complete_turn(service.current_session["id"],
+                                    "I chose the venue. I still need to pick a follow-up date.", "OK.")
+        provider = CompactProvider(lambda doc: update(
+            doc, "The venue is chosen. Follow-up timing is undecided.", event_at="yesterday",
+            deferred_metadata=["follow_up_at"]))
+        second = (await refresh(service, client, provider))["continuity"]["items"][0]
+        assert second["event_at"] == first["event_at"]
+        assert second["promise_owner"] == "assistant"
+        assert second["pending_metadata"] == ["follow_up_at"]
+        run_id = service.store.maintenance_status()["latest_attempt"]["task_id"]
+
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        run = await client.request("memory_continuity_run", task_id=run_id)
+        assert run["metadata_outcomes"] == [
+            {"operation": 1, "field": "event_at", "outcome": "omitted"},
+            {"operation": 1, "field": "follow_up_at", "outcome": "deferred"},
+        ]
+        saved = await client.request("memory_continuity_item", item_id=first["id"])
+        assert saved["pending_metadata"] == ["follow_up_at"]
+        assert any("exhibition opens tomorrow" in s["excerpt"] for s in saved["sources"])
+        service.store.complete_turn(service.current_session["id"],
+                                    "Correction: there is no opening date. Follow up on 2027-02-09.",
+                                    "I can no longer commit to attending.")
+        def correct(doc):
+            assert doc["items"][0]["pending_metadata"] == ["follow_up_at"]
+            return update(doc, "The opening date is unset and attendance is uncertain.",
+                          change={"kind": "correction", "intent": "Withdraw opening and attendance.",
+                                  "temporal": "ordered",
+                                  "evidence": list(doc["exchanges"][0]["source_refs"].values())},
+                          event_at=None, promise_source=None, follow_up_at="2027-02-09")
+
+        final = (await refresh(service, client, CompactProvider(correct)))["continuity"]["items"][0]
+        assert final["follow_up_at"] == "2027-02-08T16:00:00+00:00"
+        assert final.get("event_at") is final.get("promise_owner") is final.get("promise_kind") is None
+        assert not final.get("pending_metadata")

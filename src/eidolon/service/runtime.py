@@ -23,7 +23,7 @@ from eidolon.mcp import MCPManager
 from eidolon.memory import HindsightMemory, OutboxDispatcher
 from eidolon.memory.maintenance import ContinuityWorker, synthetic_maintenance_test
 from eidolon.memory.diagnostics import (
-    model_label, public_attempt, read_reason, recovery_outcome, safe_usage,
+    metadata_outcomes, model_label, public_attempt, read_reason, recovery_outcome, safe_usage,
 )
 from eidolon.memory.recovery import ManagedMemoryService
 from eidolon.providers import OpenAIProvider, ProviderError
@@ -444,6 +444,7 @@ class RoomService:
             "updated_at", "change_count", "unresolved_count", "budget", "paused", "set_aside",
             "root_id", "split", "recovery_source",
         )}, "reason": None if completed else read_reason(row.get("reason")),
+            "metadata_outcomes": metadata_outcomes(row.get("recovery_state")),
             "paused": paused,
             "usage": safe_usage(row.get("usage")),
             "usage_totals": safe_usage(row.get("usage_totals")),
@@ -476,7 +477,7 @@ class RoomService:
         # allowance even though the number of displayed rows is bounded.
         continuity["items"] = [{
             **{key: value for key, value in item.items()
-               if key not in {"sources", "last_followup_evidence"}},
+               if key not in {"sources", "last_followup_evidence", "metadata_support"}},
             "source_count": len(item["sources"]) if isinstance(item.get("sources"), list) else 0,
             "detail_available": True,
         } for item in continuity["items"]]

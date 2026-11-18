@@ -263,7 +263,7 @@ class ContinuityWorker:
                     if len(rewrite_targets) == min(LEGACY_REWRITE_BATCH_NOTES, rewrite_limit):
                         break
             items.sort(key=lambda item: item["id"] not in rewrite_targets)
-        fields = ("id", "revision", "category", "topic", "importance", "metadata_pending",
+        fields = ("id", "revision", "category", "topic", "importance", "metadata_pending", "pending_metadata",
                   "content", "content_format", "origin", "historical_context", "change_kind",
                   "scope", "state", "status", "observed_at",
                   "locked", "manual_lock", "user_created", "invalidated", "event_at", "expires_at",

@@ -531,22 +531,22 @@ def _validate_sources(operation: ContinuityOperation, rows: dict[int, dict]) -> 
     return found
 
 
+def _statements(content: str) -> list[str]:
+    """Keep punctuation on its statement so a question stays qualified."""
+    return re.split(r"(?<=[.!?;])\s+|\n+", content)
+
+
 def _supported_date(value: str, sources: list[ContinuitySource], rows: dict[int, dict],
                     timezone: str) -> str:
     """Only accept an explicitly mentioned date or relative calendar expression."""
     resolved: set[str] = set()
     for source in sources:
-        if value.casefold() in {"today", "tomorrow", "yesterday"}:
-            present = re.search(r"\b" + value.casefold() + r"\b", source.excerpt.casefold())
-        else:
-            # A written calendar date cannot establish a model-invented hour.
-            present = value in source.excerpt
-        if present:
-            if _qualified_claim(source.excerpt):
-                raise ContinuityValidationError("A qualified date cannot be asserted as an event",
-                                                code="date")
-            timestamp = source_timestamp(rows[source.exchange_id], source.role)
-            resolved.add(resolve_event_time(value, timestamp, timezone))
+        for statement in _statements(source.excerpt):
+            if not re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", statement, re.IGNORECASE):
+                continue
+            if not _qualified_claim(statement):
+                timestamp = source_timestamp(rows[source.exchange_id], source.role)
+                resolved.add(resolve_event_time(value, timestamp, timezone))
     if len(resolved) != 1:
         raise ContinuityValidationError("An event date has missing or ambiguous source evidence",
                                         code="date")
@@ -641,9 +641,10 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
                 code="promise_author",
             )
         # Check the author's evidence, never the generated summary's wording.
-        commitments = [source["excerpt"] for source in sources if source["role"] == owner
-                       and re.match(r"\s*(?:I\s+(?:promise|promised|will|shall)|I['’]ll)\b",
-                                    source["excerpt"], re.IGNORECASE)]
+        commitments = [statement for source in sources if source["role"] == owner
+                       for statement in (_statements(source["excerpt"]) if narrative else [source["excerpt"]])
+                       if re.match(r"\s*(?:I\s+(?:promise|promised|will|shall)|I['’]ll)\b",
+                                    statement, re.IGNORECASE)]
         if not commitments:
             raise ContinuityValidationError("A promise requires an explicit commitment",
                                             code="promise_commitment")
@@ -977,15 +978,17 @@ def optional_metadata_candidates(source: dict, row: dict, *, timezone: str = "UT
         dates.append(value)
     if dates:
         candidates["dates"] = dates
-    for kind in ("conversation", "scheduled"):
-        try:
-            validate_transition_evidence({
-                "op": "upsert", "content": original, "sources": [citation.model_dump()],
-                "promise_owner": source["role"], "promise_kind": kind,
-            })
-        except ContinuityValidationError:
-            continue
-        candidates["promise_kind"] = kind
+    for statement in _statements(original):
+        for kind in ("conversation", "scheduled"):
+            try:
+                validate_transition_evidence({
+                    "op": "upsert", "content": statement,
+                    "sources": [{**citation.model_dump(), "excerpt": statement}],
+                    "promise_owner": source["role"], "promise_kind": kind,
+                })
+            except ContinuityValidationError:
+                continue
+            candidates["promise_kind"] = kind
     return candidates
 
 

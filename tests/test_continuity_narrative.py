@@ -243,7 +243,7 @@ async def test_pending_new_chats_finish_before_separate_legacy_conversion(
     prose = "The user's interview is approaching; practice is still undecided."
 
     def rewrite(document):
-        if document.get("contract") == "current-life-ordinary-v2":
+        if document.get("contract") == "current-life-ordinary-v3":
             assert "legacy_rewrite_ids" not in document
             assert [row["exchange_id"] for row in document["exchanges"]] == [fresh["exchange_id"]]
             return {"operations": [{"op": "no_change", "expected_revision": document["snapshot_revision"]}]}

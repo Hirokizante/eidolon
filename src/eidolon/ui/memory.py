@@ -176,6 +176,12 @@ def run_details(row: dict, timezone_name: str, *, compact: bool = False) -> str:
         parts.append(descriptions[row["status"]])
     if reason:
         parts.append(reason_details(reason))
+    for entry in row.get("metadata_outcomes", []):
+        label = {"event_at": "event date", "follow_up_at": "follow-up date",
+                 "promise_source": "promise"}.get(entry["field"], "metadata")
+        explanation = ("awaiting supporting evidence" if entry["outcome"] == "deferred"
+                       else "unsupported selection")
+        parts.append(f"Operation {entry['operation']} · {label} {entry['outcome']} ({explanation}).")
     split = row.get("split")
     if split:
         parts.append(f"Smaller groups: {split['completed']} complete; "

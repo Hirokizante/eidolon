@@ -180,6 +180,17 @@ def safe_usage(value: dict | None) -> dict | None:
             and type(amount) in {int, float} and 0 <= amount <= 2**63 - 1} or None
 
 
+def metadata_outcomes(recovery: dict | None) -> list[dict]:
+    rows = recovery.get("metadata_outcomes") if isinstance(recovery, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [{key: row[key] for key in ("operation", "field", "outcome")}
+            for row in rows[:72] if isinstance(row, dict)
+            and type(row.get("operation")) is int and 1 <= row["operation"] <= 24
+            and row.get("field") in ("event_at", "follow_up_at", "promise_source")
+            and row.get("outcome") in ("omitted", "deferred")]
+
+
 def public_attempt(attempt: dict | None) -> dict | None:
     if attempt is None:
         return None
@@ -194,5 +205,6 @@ def public_attempt(attempt: dict | None) -> dict | None:
         "id", "task_id", "stage", "started_at", "ended_at", "outcome", "elapsed_seconds",
         "recovery_source", "recovery_pass", "daily_period",
     )}, "reason": read_reason(attempt.get("reason")),
+        "metadata_outcomes": metadata_outcomes(attempt.get("recovery_state")),
         "model": model_label(attempt.get("provenance", {}).get("model")),
         "usage": safe_usage(attempt.get("usage")), **output}

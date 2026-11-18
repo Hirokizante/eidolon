@@ -464,7 +464,7 @@ async def test_v1_pending_task_resumes_with_new_decision_and_preserved_accountin
         assert service.store.get_maintenance_stage(task_id)["budget"] == before
 
         def respond(doc):
-            assert doc["contract"] == "current-life-ordinary-v2"
+            assert doc["contract"] == "current-life-ordinary-v3"
             return {
                 "operations": [
                     {
@@ -484,7 +484,7 @@ async def test_v1_pending_task_resumes_with_new_decision_and_preserved_accountin
         details = await client.request("memory_continuity_run", task_id=task_id)
         assert {attempt["contract"] for attempt in details["attempts"]} == {
             "current-life-ordinary-v1",
-            "current-life-ordinary-v2",
+            "current-life-ordinary-v3",
         }
         assert details["budget"]["pass"] == before["pass"] + 1
         assert details["budget"]["used"] == 1  # Explicit refresh starts one bounded pass.

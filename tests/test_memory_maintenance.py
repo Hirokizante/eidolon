@@ -126,7 +126,7 @@ def explicit_changes(proposal, document):
     Cases about background, corrections, reopening or semantic uncertainty must
     supply their own decision. All cited batch observations support old fixtures.
     """
-    if document.get("contract") != "current-life-ordinary-v2":
+    if document.get("contract") != "current-life-ordinary-v3":
         return proposal
     operations = []
     for original in proposal.get("operations", []):
