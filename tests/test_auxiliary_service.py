@@ -611,12 +611,12 @@ async def test_synthetic_test_validates_real_contract_without_writing(
         assert result["connected"] is True
         assert result["contract_compatible"] is compatible and result["ok"] is compatible
         assert result["output_mode"] == "prompt"
-        assert result["contract"] == "current-life-ordinary-v2"
+        assert result["contract"] == "current-life-ordinary-v3"
         assert len(seen) == 1 and seen[0]["model"] == "synthetic-draft-model"
         assert seen[0]["max_tokens"] == 512
         assert "Private synthetic marker" not in json.dumps(seen)
         document = json.loads(seen[0]["messages"][-1]["content"])
-        assert document["contract"] == "current-life-ordinary-v2"
+        assert document["contract"] == "current-life-ordinary-v3"
         assert document["exchanges"][0]["source_refs"]["user"] == "s1"
         assert s.configuration.read_bytes() == before
         assert s.store.continuity_state() == state
@@ -662,7 +662,7 @@ async def test_maintenance_constraints_and_effective_provenance_survive_restart(
                 await asyncio.wait_for(s._continuity_task, 5)
         latest = (await client.request("status"))["maintenance"]["latest_attempt"]
         assert latest["outcome"] == "committed" and latest["output_mode"] == mode
-        assert latest["contract"] == "current-life-ordinary-v2"
+        assert latest["contract"] == "current-life-ordinary-v3"
         assert latest["capability_source"] == "configured_verification"
         assert len(s.store.continuity_state()["items"]) == 1
         assert len(payloads) == 1

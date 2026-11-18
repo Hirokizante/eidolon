@@ -531,20 +531,48 @@ def _validate_sources(operation: ContinuityOperation, rows: dict[int, dict]) -> 
     return found
 
 
+def _statements(content: str) -> list[str]:
+    """Find first-person clauses while keeping each clause's punctuation."""
+    return re.split(r"(?<=[.!?;])\s+|\n+|,\s+(?:but|and|although|while)\s+(?=I\b)",
+                    content, flags=re.IGNORECASE)
+
+
+def _commitment_kinds(content: str, *, narrative: bool) -> set[str]:
+    kinds = set()
+    for statement in _statements(content) if narrative else [content]:
+        opening = re.match(r"\s*(?:I\s+(?:promise|promised|will|shall)|I['’]ll)\b",
+                           statement, re.IGNORECASE)
+        if not opening:
+            continue
+        # Ordinary selections interpret the claim in its full context. Check
+        # direct negation locally without applying unrelated modal words to it.
+        negated = re.match(r"\s+(?:not|never)\b", statement[opening.end():], re.IGNORECASE)
+        if negated or (not narrative and _qualified_claim(statement)):
+            kinds.add("qualified")
+        elif re.search(
+            r"\b(?:already\s+(?:scheduled|configured|set)|existing\s+(?:scheduled|configured)|"
+            r"(?:is|was|has been|have been)\s+(?:already\s+)?(?:scheduled|configured))\b",
+            statement, re.IGNORECASE,
+        ):
+            kinds.add("scheduled")
+        else:
+            kinds.add("conversation")
+    return kinds
+
+
 def _supported_date(value: str, sources: list[ContinuitySource], rows: dict[int, dict],
-                    timezone: str) -> str:
+                    timezone: str, *, interpreted: bool = False) -> str:
     """Only accept an explicitly mentioned date or relative calendar expression."""
     resolved: set[str] = set()
     for source in sources:
-        if value.casefold() in {"today", "tomorrow", "yesterday"}:
-            present = re.search(r"\b" + value.casefold() + r"\b", source.excerpt.casefold())
+        original = source.excerpt or ""
+        if interpreted or value.casefold() in {"today", "tomorrow", "yesterday"}:
+            present = re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", original, re.IGNORECASE)
         else:
-            # A written calendar date cannot establish a model-invented hour.
-            present = value in source.excerpt
+            present = value in original
         if present:
-            if _qualified_claim(source.excerpt):
-                raise ContinuityValidationError("A qualified date cannot be asserted as an event",
-                                                code="date")
+            if not interpreted and _qualified_claim(original):
+                raise ContinuityValidationError("A qualified date requires interpretation", code="date")
             timestamp = source_timestamp(rows[source.exchange_id], source.role)
             resolved.add(resolve_event_time(value, timestamp, timezone))
     if len(resolved) != 1:
@@ -629,6 +657,15 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
         )
     validate_change(operation, item, new_exchange_ids=new_exchange_ids)
     owner, kind = operation.get("promise_owner"), operation.get("promise_kind")
+    if narrative and operation["op"] == "upsert" and not is_legacy_rewrite(operation, item):
+        if ("promise_owner" in operation) != ("promise_kind" in operation):
+            raise ContinuityValidationError("Promise author and kind must change together",
+                                            code="promise_metadata")
+        cleared = any(key in operation and operation[key] is None
+                      for key in ("event_at", "follow_up_at", "promise_owner"))
+        if cleared and (item is None or (operation.get("change") or {}).get("kind") != "correction"):
+            raise ContinuityValidationError("Clearing metadata requires an evidenced correction",
+                                            code="change_contract")
     if bool(owner) != bool(kind):
         raise ContinuityValidationError(
             "A promise must identify both author and kind",
@@ -640,21 +677,15 @@ def validate_transition_evidence(operation: dict, item: dict | None = None, *,
                 "A promise requires the original author's statement",
                 code="promise_author",
             )
-        # Check the author's evidence, never the generated summary's wording.
-        commitments = [source["excerpt"] for source in sources if source["role"] == owner
-                       and re.match(r"\s*(?:I\s+(?:promise|promised|will|shall)|I['’]ll)\b",
-                                    source["excerpt"], re.IGNORECASE)]
-        if not commitments:
+        kinds = set().union(*(_commitment_kinds(source["excerpt"], narrative=narrative)
+                              for source in sources if source["role"] == owner))
+        if not kinds:
             raise ContinuityValidationError("A promise requires an explicit commitment",
                                             code="promise_commitment")
-        if all(_qualified_claim(excerpt) for excerpt in commitments):
+        if kinds == {"qualified"}:
             raise ContinuityValidationError("A qualified or negated statement is not an open promise",
                                             code="promise_qualified")
-        if kind == "scheduled" and not any(not _qualified_claim(excerpt) and re.search(
-            r"\b(?:already\s+(?:scheduled|configured|set)|existing\s+(?:scheduled|configured)|"
-            r"(?:is|was|has been|have been)\s+(?:already\s+)?(?:scheduled|configured))\b",
-            excerpt, re.IGNORECASE,
-        ) for excerpt in commitments):
+        if kind == "scheduled" and kind not in kinds:
             raise ContinuityValidationError("A scheduled promise requires existing-action evidence",
                                             code="promise_scheduled")
 
@@ -773,6 +804,7 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                         scope: Scope = "real_life", timezone: str = "UTC",
                         supporting_inputs: list[dict] | None = None,
                         require_narrative: bool = False,
+                        metadata_outcomes: dict[int, dict[str, str]] | None = None,
                         max_notes: int = DEFAULT_MAX_NOTES) -> list[dict]:
     """Validate a whole proposal before the Store performs its atomic CAS commit.
 
@@ -932,9 +964,15 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
             for field in ("event_at", "follow_up_at"):
                 value = getattr(operation, field)
                 if value:
-                    result[field] = _supported_date(
-                        value, [ContinuitySource.model_validate(source) for source in result["sources"]],
-                        rows, timezone)
+                    try:
+                        result[field] = _supported_date(value, [
+                            ContinuitySource.model_validate(source) for source in result["sources"]
+                        ], rows, timezone, interpreted=metadata_outcomes is not None)
+                    except ContinuityValidationError as exc:
+                        if metadata_outcomes is None or exc.code != "date":
+                            raise
+                        result.pop(field)
+                        metadata_outcomes[index][field] = "ambiguous_date"
             if operation.expires_at and not policy_archive:
                 expiry = aware_time(operation.expires_at)
                 if expiry <= max(timestamps):
@@ -951,10 +989,20 @@ def validate_operations(proposal: dict, *, inputs: list[dict], state: dict,
                 result["expires_at"] = expiry.isoformat()
             if operation.category == "emotion" and not policy_archive:
                 # A temporary feeling can never turn into an undated permanent trait.
-                result.setdefault("expires_at", (max(timestamps) + timedelta(hours=48)).isoformat())
+                result.setdefault("expires_at", (aware_time(observed) + timedelta(hours=48)).isoformat())
             normalized.append(result)
     validate_note_capacity(normalized, state.get("items", []), max_notes=max_notes, scope=scope)
     return normalized
+
+
+def date_literals(content: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(
+        r"\b(?:\d{4}-\d{2}-\d{2}|today|tomorrow|yesterday)\b", content, re.IGNORECASE)))
+
+
+def promise_candidate(content: str) -> str | None:
+    kinds = _commitment_kinds(content, narrative=True) - {"qualified"}
+    return kinds.pop() if len(kinds) == 1 else None
 
 
 def optional_metadata_candidates(source: dict, row: dict, *, timezone: str = "UTC") -> dict:
@@ -964,27 +1012,17 @@ def optional_metadata_candidates(source: dict, row: dict, *, timezone: str = "UT
     date/commitment belongs to the note rather than treating any mention as an event.
     """
     original = _source_text(row, source["role"])
-    citation = ContinuitySource.model_validate({**source, "excerpt": original})
     candidates: dict = {}
     dates = []
-    for value in dict.fromkeys(re.findall(
-        r"\b(?:\d{4}-\d{2}-\d{2}|today|tomorrow|yesterday)\b", original, re.IGNORECASE,
-    )):
+    for value in date_literals(original):
         try:
-            _supported_date(value, [citation], {row["exchange_id"]: row}, timezone)
+            resolve_event_time(value, source_timestamp(row, source["role"]), timezone)
         except ContinuityValidationError:
             continue
         dates.append(value)
     if dates:
         candidates["dates"] = dates
-    for kind in ("conversation", "scheduled"):
-        try:
-            validate_transition_evidence({
-                "op": "upsert", "content": original, "sources": [citation.model_dump()],
-                "promise_owner": source["role"], "promise_kind": kind,
-            })
-        except ContinuityValidationError:
-            continue
+    if kind := promise_candidate(original):
         candidates["promise_kind"] = kind
     return candidates
 

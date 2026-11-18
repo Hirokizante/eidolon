@@ -694,7 +694,17 @@ async def test_run_finishing_refreshes_note_versions_without_moving_focus_or_scr
 
 
 async def test_run_comparison_resize_keeps_versions_and_prioritizes_wording_at_the_floor():
-    app = RoomApp(AppConfig(memory={"enabled": True, "save_enabled": True, "bank": "hermes"}), client=MemoryClient())
+    class MetadataClient(MemoryClient):
+        async def request(self, method, **params):
+            result = await super().request(method, **params)
+            if method == "memory_continuity_run":
+                result["metadata_outcomes"] = [
+                    {"operation": 1, "field": "event_at", "outcome": "omitted", "reason": "unsupported_date"},
+                    {"operation": 1, "field": "promise_source", "outcome": "deferred", "reason": "awaiting_evidence"},
+                ]
+            return result
+
+    app = RoomApp(AppConfig(memory={"enabled": True, "save_enabled": True, "bank": "hermes"}), client=MetadataClient())
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.open_memory()
@@ -707,8 +717,11 @@ async def test_run_comparison_resize_keeps_versions_and_prioritizes_wording_at_t
         screen.read_selection("maintenance:synthetic-task")
         await pilot.pause()
         assert detail_text(screen).startswith("Oct 14")
+        assert "Operation 1 · event date omitted (no supported date literal" in detail_text(screen)
+        assert "Operation 1 · promise deferred (awaiting supporting evidence)" in detail_text(screen)
         await pilot.resize_terminal(48, 12)
         await pilot.pause()
+        assert "Operation 1 · promise deferred (awaiting supporting evidence)" in detail_text(screen)
         assert detail_text(screen).startswith("New version")
         assert NOTE_TEXT in detail_text(screen) and OLD_NOTE_TEXT in detail_text(screen)
         assert screen.query_one("#memory-detail-scroll").region.height >= 2

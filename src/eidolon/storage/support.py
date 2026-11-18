@@ -31,6 +31,59 @@ def identified_sources(value: object) -> list[dict]:
             and source.get("origin") == source["role"] + "_statement"]
 
 
+def carry_metadata_support(item: dict, operation: dict, sources: list[dict]) -> list[dict]:
+    """Keep the originals behind carried values eligible for future source checks.
+
+    Older notes have no per-field source inventory. Their complete current support
+    is the conservative starting point. Store identities only alongside the note.
+    """
+    from ..memory.continuity import ContinuityValidationError, date_literals, promise_candidate
+
+    selections = operation.get("metadata_selections", {})
+    fields = ("event_at", "follow_up_at", "promise_owner")
+    if not isinstance(selections, dict) or any(
+        field not in fields or not operation.get(field) for field in selections
+    ):
+        raise ContinuityValidationError("Invalid metadata selection", code="source")
+
+    selected = {identity(source): source for source in sources}
+    prior = {identity(source): source for source in item.get("sources", [])}
+    inventory = item.get("metadata_support", {})
+    support = {}
+    for field in fields:
+        if field in selections:
+            value = selections[field]
+            if field == "promise_owner":
+                backed = [source for index, source in enumerate(sources)
+                          if type(value) is int and index == value
+                          and source["role"] == operation[field]
+                          and promise_candidate(source["excerpt"]) == operation.get("promise_kind")]
+            else:
+                literal = value.casefold() if isinstance(value, str) else ""
+                backed = [source for source in sources
+                          if literal in date_literals(source["excerpt"].casefold())]
+            if not backed:
+                raise ContinuityValidationError("Missing original for selected metadata", code="source")
+            support[field] = [identity(source) for source in backed]
+        elif field in operation:
+            if operation[field] is not None:
+                support[field] = [identity(source) for source in sources]
+        elif item.get(field):
+            keys = [tuple(key) for key in inventory.get(field, [])]
+            if not keys or not all(key in prior for key in keys):
+                keys = list(prior)
+            selected.update((key, prior[key]) for key in keys)
+            support[field] = keys
+    if len(selected) > 8:
+        raise ContinuityValidationError("Carried metadata support exceeds the citation limit",
+                                        code="support_preservation", field="sources")
+    if support:
+        item["metadata_support"] = support
+    else:
+        item.pop("metadata_support", None)
+    return list(selected.values())
+
+
 def migrate(store: Store) -> None:
     """Run inside the version migration transaction, before advancing user_version."""
     store.db.execute("""CREATE TABLE IF NOT EXISTS continuity_support (

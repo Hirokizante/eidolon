@@ -402,7 +402,7 @@ compare candidates with synthetic evidence before relying on them.
 
 ## Developer reference: routing and provenance
 
-Ordinary evidence maintenance uses the versioned `current-life-ordinary-v2`
+Ordinary evidence maintenance uses the versioned `current-life-ordinary-v3`
 proposal contract in [proposals.py](../src/eidolon/memory/proposals.py).
 The model chooses substantive changes in one request: topic, importance,
 category, prose, supporting sources, and closure/replacement decisions.
@@ -422,7 +422,7 @@ in `sources`. Background preserves the current claim and status. Ambiguous conse
 changes use `defer` with `semantic_uncertainty` and preserve current state; unresolved
 correction timing also defers. Source relevance and claim-level qualifiers remain the
 model's responsibility in full original context. Existing pending batches request new
-v2 decisions with their original evidence/accounting; saved v1 attempts remain readable.
+v3 decisions with their original evidence and accounting. Saved v1 and v2 attempts remain readable.
 A replacement pairs an archive with reason
 `replaced` and empty sources (no prose) with a new upsert's `replaces_ref` and
 tradeoff reason. Legitimate no-change is exactly
@@ -463,11 +463,19 @@ Unknown references, incomplete operations, protected-note changes, unsupported
 transitions, invalid replacements, and stale transactional snapshots reject the
 entire proposal. Invalid operations are never dropped to produce a success.
 
-The app offers verified date-literal and promise-kind candidates from complete
+The app offers calendar literals and attributable promise-kind candidates from complete
 originals. Candidates establish eligibility, not relevance: the model chooses
-`event_at`/`follow_up_at` or a cited `promise_source` when it belongs to that note.
+`event_at`/`follow_up_at` or a cited `promise_source` only when the relevant claim is established in full context. A literal can appear in a
+question, hypothetical or fictional passage. Keep that distinction in the narrative.
 The compiler supplies the promise speaker and kind; it does not schedule actions.
-When metadata is unavailable or uncertain, supported details remain in prose.
+Omitting a field preserves its saved value. An unsupported selection also preserves
+the value and its supporting originals. Run details identify each rejected selection and explicit deferral, with its reason.
+To remove a value, submit JSON null on an evidenced, temporally ordered correction.
+Clearing `promise_source` removes both speaker and kind. List actionable fields that
+await new evidence in `deferred_metadata` on the upsert. They remain on the note
+as `pending_metadata` across restarts and later requests until a supported set
+or clear resolves them. The narrative can commit in the original request.
+Keep uncertain timing in the narrative.
 Emotion expiry remains application policy. Only whitespace and one complete
 outer JSON Markdown fence are tolerated locally. Duplicate keys, commentary,
 partial JSON, and substantive repairs are rejected; streams must finish cleanly.

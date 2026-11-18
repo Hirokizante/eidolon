@@ -103,6 +103,7 @@ async def test_old_background_enriches_history_without_replacing_or_reopening(
                             "category": note["category"],
                             "content": note["content"],
                             "sources": ["s1"],
+                            "deferred_metadata": ["follow_up_at"],
                             "change": {
                                 "kind": "background",
                                 "context": "The boxes were built by the user's grandmother.",
@@ -115,6 +116,7 @@ async def test_old_background_enriches_history_without_replacing_or_reopening(
         saved = service.store.get_continuity_item(note["id"])
         for field in ("content", "state", "observed_at", "sources"):
             assert saved[field] == note[field]
+        assert saved["pending_metadata"] == ["follow_up_at"]
         assert [entry["content"] for entry in saved["historical_context"]] == [
             "The boxes were built by the user's grandmother."
         ]
@@ -464,7 +466,7 @@ async def test_v1_pending_task_resumes_with_new_decision_and_preserved_accountin
         assert service.store.get_maintenance_stage(task_id)["budget"] == before
 
         def respond(doc):
-            assert doc["contract"] == "current-life-ordinary-v2"
+            assert doc["contract"] == "current-life-ordinary-v3"
             return {
                 "operations": [
                     {
@@ -484,7 +486,7 @@ async def test_v1_pending_task_resumes_with_new_decision_and_preserved_accountin
         details = await client.request("memory_continuity_run", task_id=task_id)
         assert {attempt["contract"] for attempt in details["attempts"]} == {
             "current-life-ordinary-v1",
-            "current-life-ordinary-v2",
+            "current-life-ordinary-v3",
         }
         assert details["budget"]["pass"] == before["pass"] + 1
         assert details["budget"]["used"] == 1  # Explicit refresh starts one bounded pass.
@@ -522,7 +524,8 @@ async def test_new_contract_never_guesses_intent_or_borrows_uncited_evidence(
         assert service.store.pending_maintenance_task() is not None
 
 
-@pytest.mark.parametrize("failure", ["missing", "uncited", "clipped", "old", "wrong_kind", "policy_change"])
+@pytest.mark.parametrize("failure", ["missing", "uncited", "clipped", "old", "wrong_kind",
+                                      "policy_change", "unsupported_clear", "partial_promise_clear"])
 def test_direct_commit_rechecks_change_contract_and_rolls_back(tmp_path, failure):
     from contextlib import closing
 
@@ -564,6 +567,10 @@ def test_direct_commit_rechecks_change_contract_and_rolls_back(tmp_path, failure
             update["change"]["evidence"][0]["excerpt"] = "needs another vehicle."
         elif failure == "wrong_kind":
             update["change"] = {"kind": "background", "context": "Attempted replacement."}
+        elif failure == "unsupported_clear":
+            update["event_at"] = None
+        elif failure == "partial_promise_clear":
+            update["promise_kind"] = None
         if failure == "policy_change":
             update.update(op="archive", sources=[], archive_reason="replaced",
                           decision_reason="Keep the more important transport topic.",
