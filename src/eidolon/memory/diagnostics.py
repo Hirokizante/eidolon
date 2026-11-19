@@ -42,7 +42,7 @@ REASONS = {
 }
 CONFIGURATION_REASONS = {"configuration", "authentication", "validation.input_limit",
                          "validation.input_overhead", "validation.input_state",
-                         "validation.output_budget"}
+                         "validation.output_budget", "validation.context_tokens"}
 
 
 DISPOSITIONS = {"correct", "resnapshot", "resize", "repair", "defer", "pause", "transport_retry"}
@@ -67,7 +67,7 @@ def recovery_disposition(code: str) -> str:
         return "resnapshot"
     if code in {"validation.repair_unresolved", "validation.support_preservation",
                 "validation.semantic_uncertainty", "validation.metadata_pending",
-                "validation.group_deferred"}:
+                "validation.group_deferred", "validation.context_required"}:
         return "defer"
     if code == "validation.saved_support":
         return "repair"

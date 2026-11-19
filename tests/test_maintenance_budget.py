@@ -264,28 +264,69 @@ async def test_single_oversized_exchange_is_retained_whole_with_source_reason(tm
         assert service.store.continuity_state()["watermark"] == 0
 
 
+@pytest.mark.parametrize("usage", [None, 512, 513])
+async def test_soft_response_estimate_yields_to_reported_output_cap(tmp_path, monkeypatch, usage):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await select(service, max_output_tokens=512, output_token_field="max_completion_tokens",
+                     reasoning_effort="low", timeout_seconds=17)
+        service.store.complete_turn(service.current_session["id"],
+                                    "My creative project and quilt are unfinished.", "Okay.")
+        content = "The project remains unfinished. " + "AbC123_xYz 987Q " * 70
+        payloads = []
+
+        def respond(request):
+            payload = json.loads(request.content)
+            payloads.append(payload)
+            doc = json.loads(payload["messages"][-1]["content"])
+            assert len(content) > doc["response_limits"]["max_content_chars"]
+            assert doc["response_limits"]["max_operations"] == 1
+            assert payload["max_completion_tokens"] == 512 and payload["reasoning_effort"] == "low"
+            source = doc["batch_source_refs"][0]
+            proposal = {"operations": [
+                {"op": "upsert", "topic": topic, "category": "thread", "importance": "moderate",
+                 "content": text, "sources": [source],
+                 "change": {"kind": "development", "evidence": [source]}}
+                for topic, text in (("Creative project", content), ("Quilt", "The quilt is unfinished."))
+            ]}
+            packet = {"choices": [{"delta": {"content": json.dumps(proposal)}, "finish_reason": "stop"}]}
+            if usage is not None:
+                packet["usage"] = {"completion_tokens": usage}
+            return httpx.Response(200, text="data: " + json.dumps(packet) + "\n\ndata: [DONE]\n\n")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            provider = OpenAIProvider(service._auxiliary_execution.profile(), client=http)
+            result = await refresh(service, client, provider)
+        assert len(payloads) == 1 and service.continuity_worker.timeout == 17
+        latest = service.store.maintenance_status()["latest_attempt"]
+        assert latest["usage"] == ({"completion_tokens": usage} if usage is not None else None)
+        if usage == 513:
+            assert result["continuity"]["items"] == []
+            assert latest["reason"]["code"] == "validation.output_tokens"
+        else:
+            notes = {item["topic"]: item["content"] for item in result["continuity"]["items"]}
+            assert notes == {"Creative project": content, "Quilt": "The quilt is unfinished."}
+            assert latest["outcome"] == "committed"
+
+
 @pytest.mark.parametrize("excess", ["operations", "prose"])
-async def test_response_that_ignores_planned_limits_cannot_complete_evidence(
-    tmp_path, monkeypatch, excess,
-):
+async def test_response_product_bounds_still_apply(tmp_path, monkeypatch, excess):
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         await select(service, max_output_tokens=512)
         service.store.complete_turn(service.current_session["id"], "My project is unfinished.", "Okay.")
 
         def respond(doc):
-            if excess == "operations":
-                return {"operations": [{"op": "no_change"}] * 2}
-            return {"operations": [{"op": "upsert", "topic": "Creative project",
-                                    "category": "thread", "importance": "moderate",
-                                    "content": "Project background. " * 30,
-                                    "sources": [doc["exchanges"][0]["source_refs"]["user"]]}]}
+            source = doc["batch_source_refs"][0]
+            op = {"op": "upsert", "topic": "Creative project", "category": "thread",
+                  "importance": "moderate", "content": "x" * (1201 if excess == "prose" else 50),
+                  "sources": [source], "change": {"kind": "development", "evidence": [source]}}
+            return {"operations": [op] * (25 if excess == "operations" else 1)}
 
-        provider = CompactProvider(respond)
+        provider = CompactProvider(respond, adapt=False)
         await refresh(service, client, provider)
         assert len(provider.calls) == 1
         assert service.store.continuity_state()["watermark"] == 0
         task = service.store.pending_maintenance_task()
-        assert task["stages"]["continuity"]["reason"]["code"] == "validation.output_plan"
+        assert task["stages"]["continuity"]["reason"]["code"] == "validation.schema"
 
 
 async def test_reducing_output_splits_a_captured_batch_without_dispatching_over_plan(
@@ -372,6 +413,8 @@ async def test_existing_collection_over_inspector_limit_still_has_a_complete_top
 async def test_optional_background_reference_limit_keeps_the_index_and_allows_progress(
     tmp_path, monkeypatch,
 ):
+    from eidolon.storage.support import record
+
     async with room(tmp_path, monkeypatch) as (service, client, _, _):
         prototype = service.store.create_continuity_item(
             "Saved project background.", "thread", topic="Project 0", importance="moderate")
@@ -385,13 +428,24 @@ async def test_optional_background_reference_limit_keeps_the_index_and_allows_pr
         with service.store.db:
             service.store.db.execute("DELETE FROM continuity_items")
             for i in range(64):
+                originals = evidence if i == 0 else evidence[i * 8:(i + 1) * 8]
                 sources = [{"exchange_id": row["exchange_id"], "document_id": row["document_id"],
                             "role": "user", "origin": "user_statement", "excerpt": row["user_content"],
-                            "input_hash": service.store._continuity_hash(row)}
-                           for row in evidence[i * 8:(i + 1) * 8]]
+                            "input_hash": service.store._continuity_hash(row)} for row in originals]
                 note = {**prototype, "id": f"project-{i}", "topic": f"Project {i}",
-                        "origin": "derived", "content_format": "narrative", "sources": sources,
+                        "origin": "derived", "content_format": "narrative", "sources": sources[:8],
                         "locked": False, "user_created": False}
+                if i == 0:
+                    # A legacy collection can hold more linked history than a
+                    # current write admits. Keep every saved identity eligible.
+                    note["topic"] = "Geology archive"
+                    note["historical_context"] = [
+                        {"content": "Older context.", "sources": [source]} for source in sources[8:]
+                    ]
+                    record(service.store, {**note, "sources": sources},
+                           task_id=None, change_origin="migration")
+                elif i == 1:
+                    note["topic"] = "Mineral survey"
                 service.store.db.execute("INSERT INTO continuity_items VALUES (?,?,?,?,?)",
                                          (note["id"], "real_life", 1, json.dumps(note),
                                           note["observed_at"]))
@@ -402,7 +456,8 @@ async def test_optional_background_reference_limit_keeps_the_index_and_allows_pr
             service.store.db.executemany(
                 "INSERT INTO continuity_evidence(scope,exchange_id,processed) "
                 "VALUES ('real_life',?,1)", [(row["exchange_id"],) for row in evidence])
-        service.store.complete_turn(service.current_session["id"], "Hello.", "Hello.")
+        service.store.complete_turn(service.current_session["id"],
+                                    "The geology archive and mineral survey are ongoing.", "Okay.")
         seen = []
 
         def respond(doc):
@@ -411,9 +466,195 @@ async def test_optional_background_reference_limit_keeps_the_index_and_allows_pr
 
         await refresh(service, client, CompactProvider(respond))
         assert len(seen) == 1
-        assert len(seen[0]["topic_index"]) == 64
-        assert len(seen[0]["items"]) == 63
+        index = {entry["topic"]: entry for entry in seen[0]["topic_index"]}
+        assert len(index) == 64 and not index["Geology archive"]["detail_available"]
+        assert index["Mineral survey"]["detail_available"]
+        assert seen[0]["supporting_exchanges"]
         assert all(row["user_content"] == "My project is ongoing."
                    and row["assistant_content"] == "We can revisit it."
                    for row in seen[0]["supporting_exchanges"])
         assert service.store.pending_maintenance_task() is None
+
+
+async def test_focused_refresh_expands_one_note_with_complete_background(tmp_path, monkeypatch):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={"continuity_max_notes": 64})
+        original = "My ceramics kiln still needs a new element. " + "The studio is quiet. " * 30
+        target = seed_note(service.store, topic="Ceramics kiln", text=original)
+        related = seed_note(service.store, topic="Beekeeping", text="My apiary needs another hive.")
+        for i in range(24):
+            service.store.create_continuity_item(
+                f"Synthetic unrelated details for exhibit {i}.", "thread",
+                topic=f"Exhibit {i}", importance="moderate", max_notes=64)
+        batch = "The apiary is unchanged. The other repair now has a delivery date."
+        service.store.complete_turn(service.current_session["id"], batch, "I wrote that down.")
+        seen = []
+
+        def respond(doc):
+            seen.append(doc)
+            index = {note["topic"]: note for note in doc["topic_index"]}
+            assert len(index) == 26 and index["Exhibit 23"]["protected"] is True
+            assert doc["exchanges"][0]["user_content"] == batch
+            fresh = doc["exchanges"][0]["source_refs"]["user"]
+            assert fresh == "s1" and fresh in doc["batch_source_refs"]
+            ref = index[target["topic"]]["note_ref"]
+            details = {note["topic"] for note in doc["items"]}
+            if len(seen) == 1:
+                assert related["topic"] in details
+                assert target["topic"] not in details
+                assert len(details) < 12
+                return {"operations": [{"op": "defer", "reason": "context_required",
+                                        "note_ref": ref}]}
+            assert ref == next(note["note_ref"] for note in doc["items"]
+                               if note["topic"] == target["topic"])
+            prior = next(row for row in doc["supporting_exchanges"] if row["user_content"] == original)
+            background = prior["source_refs"]["user"]
+            assert background.startswith("background") and background not in doc["batch_source_refs"]
+            return {"operations": [{"op": "upsert", "note_ref": ref, "topic": target["topic"],
+                                    "category": "thread", "importance": "low",
+                                    "content": "The user's ceramics kiln element has a delivery date.",
+                                    "sources": [fresh, background],
+                                    "change": {"kind": "development", "evidence": [fresh]}}]}
+
+        await refresh(service, client, CompactProvider(respond, adapt=False))
+        assert len(seen) == 2
+        saved = service.store.get_continuity_item(target["id"])
+        assert saved["content"] == "The user's ceramics kiln element has a delivery date."
+        committed = service.store.maintenance_status()["latest_attempt"]
+        stage = service.store.get_maintenance_stage(committed["task_id"])
+        assert stage["budget"]["used"] == 2
+        attempts = service.store.maintenance_attempts(committed["task_id"])
+        assert len(attempts) == 2
+        assert attempts[0]["provenance"] == attempts[1]["provenance"]
+
+
+@pytest.mark.parametrize("allowance,schema_status", [(1, "enforced"), (2, "enforced"), (2, "ignored")])
+async def test_historical_expansion_uses_existing_route_and_never_loops(
+    tmp_path, monkeypatch, allowance, schema_status,
+):
+    config = make_config(tmp_path)
+    profile = config.selected_provider()
+    profile.maintenance_output_support = [MaintenanceOutputSupport(
+        endpoint=profile.endpoint, model=profile.model, json_schema=schema_status,
+        reasoning_effort="low")]
+    monkeypatch.setattr("test_service.make_config", lambda _: config)
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await client.request("save_preferences", preferences={"continuity_recovery_calls": allowance})
+        await select(service, max_output_tokens=1024, reasoning_effort="low", timeout_seconds=17)
+        original = "My creative project began as a pen sketch."
+        note = seed_note(service.store, text=original)
+        session_id = service.current_session["id"]
+        recent = "My creative project is now a watercolor."
+        service.store.complete_turn(session_id, recent, "That sounds promising.")
+
+        def update(doc):
+            source = doc["batch_source_refs"][0]
+            return {"operations": [{"op": "upsert", "note_ref": doc["items"][0]["note_ref"],
+                                    "topic": note["topic"], "category": "thread", "importance": "low",
+                                    "content": "The user's creative project is now a watercolor.",
+                                    "sources": [source],
+                                    "change": {"kind": "development", "evidence": [source]}}]}
+
+        saved = await refresh(service, client, CompactProvider(update, adapt=False))
+        assert saved["continuity"]["items"][0]["content"] == (
+            "The user's creative project is now a watercolor."
+        )
+        batch = "Did my creative project begin with watercolor?"
+        service.store.complete_turn(session_id, batch, "Let's check the original.")
+        payloads = []
+
+        def respond(request):
+            payload = json.loads(request.content)
+            payloads.append(payload)
+            doc = json.loads(payload["messages"][-1]["content"])
+            ref = doc["items"][0]["note_ref"]
+            assert doc["exchanges"][0]["user_content"] == batch
+            assert doc["supporting_exchanges"][0]["user_content"] == recent
+            if len(payloads) == 1:
+                assert "historical_originals" not in doc
+            else:
+                assert doc["expanded_note_ref"] == ref
+                prior, = doc["historical_originals"]
+                assert prior["user_content"] == original
+                assert prior["assistant_content"]
+                assert "source_refs" not in prior
+            result = {"operations": [{"op": "defer", "reason": "context_required", "note_ref": ref}]}
+            packet = {"choices": [{"delta": {"content": json.dumps(result)}, "finish_reason": "stop"}]}
+            return httpx.Response(200, text="data: " + json.dumps(packet) + "\n\ndata: [DONE]\n\n")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            await refresh(service, client,
+                          OpenAIProvider(service._auxiliary_execution.profile(), client=http))
+        assert len(payloads) == allowance
+        for payload in payloads:
+            assert payload["reasoning_effort"] == "low" and payload["max_tokens"] == 1024
+            if schema_status == "enforced":
+                assert payload["response_format"] == payloads[0]["response_format"]
+                assert payload["response_format"]["type"] == "json_schema"
+            else:
+                assert "response_format" not in payload
+        task = service.store.pending_maintenance_task()
+        stage = task["stages"]["continuity"]
+        assert stage["reason"]["code"] == "validation.context_required"
+        assert stage["budget"]["used"] == allowance
+        assert task["inputs"][0]["user_content"] == batch
+        attempts = service.store.maintenance_attempts(task["id"])
+        assert len(attempts) == allowance
+        assert all(a["provenance"] == attempts[0]["provenance"] for a in attempts)
+        assert attempts[0]["provenance"]["capability_source"] == "configured_verification"
+        assert attempts[0]["provenance"]["output_mode"] == (
+            "json_schema" if schema_status == "enforced" else "prompt"
+        )
+
+
+@pytest.mark.parametrize("body,finish,code", [
+    ('{"operations":[{"op":"no_change"}]}', "length", "output_incomplete"),
+    ('{"operations":[{"op":"no_change"}],"operations":[]}', "stop", "output_json"),
+    ('{"operations":[{"op":"upsert","topic":"Creative project"}]}', "stop", "metadata_missing"),
+    (" " * 24_001, "stop", "output_limit"),
+])
+async def test_unusable_stream_keeps_evidence_available(tmp_path, monkeypatch, body, finish, code):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        service.store.complete_turn(service.current_session["id"], "My project is ongoing.", "Okay.")
+
+        class ScriptedProvider:
+            async def stream(self, messages, **options):
+                yield {"type": "token", "text": body}
+                yield {"type": "finish", "reason": finish}
+
+        result = await refresh(service, client, ScriptedProvider())
+        assert result["continuity"]["items"] == []
+        task = service.store.pending_maintenance_task()
+        assert task["stages"]["continuity"]["reason"]["code"] == "validation." + code
+        assert task["inputs"][0]["user_content"] == "My project is ongoing."
+
+
+@pytest.mark.parametrize("packets,code", [
+    ([{"timings": {"predicted_n": 513}}], "output_tokens"),
+    ([{"usage": {"completion_tokens": 513}}, {"usage": {"completion_tokens": 7}}],
+     "output_tokens"),
+    ([{"usage": {"input_tokens": 6000, "cache_read_input_tokens": 4000, "output_tokens": 20}}],
+     "context_tokens"),
+    ([{"usage": {"prompt_tokens": 9850, "completion_tokens": 50, "total_tokens": 10_001}}],
+     "context_tokens"),
+])
+async def test_normalized_provider_usage_enforces_configured_cap(
+    tmp_path, monkeypatch, packets, code,
+):
+    async with room(tmp_path, monkeypatch) as (service, client, _, _):
+        await select(service, max_output_tokens=512, context_window=10_000)
+        service.store.complete_turn(service.current_session["id"], "Hello.", "Hello.")
+        complete = {"choices": [{"delta": {"content": '{"operations":[{"op":"no_change"}]}'},
+                                 "finish_reason": "stop"}]}
+        events = "".join("data: " + json.dumps(packet) + "\n\n"
+                         for packet in [complete, *packets]) + "data: [DONE]\n\n"
+
+        def respond(request):
+            return httpx.Response(200, text=events)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            await refresh(service, client,
+                          OpenAIProvider(service._auxiliary_execution.profile(), client=http))
+        task = service.store.pending_maintenance_task()
+        assert task["stages"]["continuity"]["reason"]["code"] == "validation." + code
+        assert task["inputs"][0]["user_content"] == "Hello."

@@ -63,7 +63,7 @@ auxiliary:
   context_chars: null  # optional cap includes instructions, schema, state and whole exchanges
   context_window: null  # tokens for this binding; unknown stays unknown
   timeout_seconds: 60
-  max_output_tokens: 4096  # also bounds batch size, operation count and prose; never raised on retry
+  max_output_tokens: 4096  # provider cap used to plan batch size and response detail
   output_token_field: max_tokens  # or max_completion_tokens; never both
   reasoning_effort: null  # separate: omit unless explicitly supported/configured
   thinking_mode: null  # optional disabled | adaptive; requires endpoint support

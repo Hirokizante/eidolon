@@ -259,14 +259,14 @@ async def test_maintenance_snapshots_names_before_budgeting_and_renews_on_retry(
     provider = HeldProvider(result="not JSON")
     worker = ContinuityWorker(store, provider, identity=configured)
     budgeted = []
-    assemble = worker._messages
+    assemble = worker._request
 
-    def capture(task, state):
-        messages = assemble(task, state)
+    def capture(task, state, **options):
+        messages, request = assemble(task, state, **options)
         budgeted.append(json.loads(messages[-1]["content"])["current_identity"])
-        return messages
+        return messages, request
 
-    monkeypatch.setattr(worker, "_messages", capture)
+    monkeypatch.setattr(worker, "_request", capture)
     running = asyncio.create_task(worker.run_once(force=True))
     try:
         await asyncio.wait_for(tokenizing.wait(), 2)
@@ -282,7 +282,7 @@ async def test_maintenance_snapshots_names_before_budgeting_and_renews_on_retry(
         assert json.loads(provider.calls[0][-1]["content"])["current_identity"] == original_names
         pending = store.pending_maintenance_task()
         # Outside a failed attempt, standalone assembly sees the latest names.
-        standalone = assemble(pending, store.continuity_state())
+        standalone, _ = assemble(pending, store.continuity_state())
         assert json.loads(standalone[-1]["content"])["current_identity"] == next_names.model_dump()
         worker.provider = Provider()
         budgeted.clear()
@@ -910,14 +910,17 @@ def test_many_newer_archived_items_cannot_hide_an_older_open_thread_from_proposa
                  "last_mention_at": f"2026-10-{15 + index % 10:02}T00:00:00+00:00"}
                 for index in range(65)]
     open_item = {"id": "old-open", "revision": 1, "state": "open", "scope": "real_life",
-                 "content": "An unfinished creative project.",
+                 "topic": "Creative project", "content": "An unfinished creative project.",
                  "last_mention_at": "2026-10-01T00:00:00+00:00"}
-    messages = worker._messages({"id": "test-task", "scope": "real_life", "inputs": []},
+    add(store, "My creative project now has a sketch.")
+    source, = store.continuity_inputs()
+    messages = worker._messages({"id": "test-task", "scope": "real_life", "inputs": [source]},
                                 {"revision": 1, "control_revision": 0,
                                  "items": [*archived, open_item]})
-    items = json.loads(messages[-1]["content"])["items"]
-    assert items[0]["id"] == "old-open"
-    assert len(items) == 9
+    request = json.loads(messages[-1]["content"])
+    target = next(note for note in request["topic_index"] if note["topic"] == "Creative project")
+    assert target["detail_available"]
+    assert {note["id"] for note in request["items"]} == {"old-open"}
 
 
 def test_excluded_and_foreign_scope_notes_never_reenter_maintenance_as_inactive(store):
